@@ -23,8 +23,11 @@ impl Default for StatusDrop {
 }
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
-	// Set up tracing with file logging
+	// Set up tracing with file logging (truncate old logs)
 	let log_file = v_utils::xdg_state_file!("telegram.log");
+	if log_file.exists() {
+		std::fs::remove_file(&log_file)?;
+	}
 	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
 	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
@@ -110,6 +113,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 
 		// Save session
+		if let Some(parent) = session_file.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
 		client.session().save_to_file(&session_file)?;
 		info!("Session saved to {}", session_file.display());
 	}
