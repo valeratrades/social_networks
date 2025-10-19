@@ -3,7 +3,21 @@ use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 
 #[derive(Debug, Default, derive_new::new, Clone, MyConfigPrimitives)]
 pub struct AppConfig {
-	// TODO: Add configuration fields as needed
+	pub discord: DiscordConfig,
+	pub telegram: TelegramConfig,
+}
+
+#[derive(Debug, Default, Clone, derive_new::new, MyConfigPrimitives)]
+pub struct DiscordConfig {
+	pub user_token: String,
+	pub monitored_users: Vec<String>,
+	pub my_username: String,
+}
+
+#[derive(Debug, Default, Clone, derive_new::new, MyConfigPrimitives)]
+pub struct TelegramConfig {
+	pub bot_token: String,
+	pub chat_id: i64,
 }
 
 impl AppConfig {

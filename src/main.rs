@@ -1,12 +1,13 @@
 mod config;
 mod discord;
 mod telegram;
+mod telegram_notifier;
 mod twitter;
 mod youtube;
 
 use clap::{Args, Parser, Subcommand};
 use config::AppConfig;
-use v_utils::{clientside, utils::exit_on_error};
+use v_utils::utils::exit_on_error;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -33,7 +34,7 @@ enum Commands {
 struct NoArgs {}
 
 fn main() {
-	clientside!();
+	color_eyre::install().unwrap();
 	let cli = Cli::parse();
 
 	let config = exit_on_error(AppConfig::read(cli.config));
@@ -43,12 +44,5 @@ fn main() {
 		Commands::Twitter(args) => twitter::main(config, args),
 		Commands::Youtube(args) => youtube::main(config, args),
 	};
-
-	match success {
-		Ok(_) => std::process::exit(0),
-		Err(e) => {
-			eprintln!("Error: {}", e);
-			std::process::exit(1);
-		}
-	}
+	exit_on_error(success);
 }
