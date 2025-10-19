@@ -1,6 +1,6 @@
 use color_eyre::eyre::Result;
 use reqwest::Client;
-use serde_json::json;
+use tracing::instrument;
 
 use crate::config::TelegramConfig;
 
@@ -15,23 +15,24 @@ impl TelegramNotifier {
 	}
 
 	pub async fn send_ping_notification(&self, username: &str, platform: &str) -> Result<()> {
-		let text = format!("/Ping from: @{}, {}", username, platform);
+		let text = format!("/Ping from: @{username}, {platform}");
 		self.send_message(&text).await
 	}
 
+	#[instrument(skip_all)]
 	async fn send_message(&self, text: &str) -> Result<()> {
 		let url = format!("https://api.telegram.org/bot{}/sendMessage", self.config.bot_token);
 
-		let payload = json!({
-			"chat_id": self.config.chat_id,
-			"text": text,
-		});
+		let mut params = vec![("text", text.to_string())];
+		params.extend(self.config.alerts_channel.destination_params());
+		tracing::debug!(?params);
 
-		let response = self.client.post(&url).json(&payload).send().await?;
+		let response = self.client.post(&url).form(&params).send().await?;
+		tracing::debug!(?response);
 
 		if !response.status().is_success() {
 			let error_text = response.text().await?;
-			return Err(color_eyre::eyre::eyre!("Failed to send Telegram message: {}", error_text));
+			return Err(color_eyre::eyre::eyre!("Failed to send Telegram message: {error_text}"));
 		}
 
 		Ok(())

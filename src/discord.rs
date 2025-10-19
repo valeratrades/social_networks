@@ -34,13 +34,13 @@ pub fn main(config: AppConfig, _args: DiscordArgs) -> Result<()> {
 	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
 	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).init();
+	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
 		loop {
 			if let Err(e) = run_discord_monitor(&config).await {
-				error!("Discord monitor error: {}", e);
+				error!("Discord monitor error: {e}");
 				error!("Reconnecting in 5 minutes...");
 				time::sleep(Duration::from_secs(5 * 60)).await;
 			}
@@ -190,6 +190,7 @@ async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: 
 
 		if should_notify {
 			telegram.send_ping_notification(author, "Discord").await?;
+			info!("Successfully sent notification for user: {}", author);
 		}
 	}
 

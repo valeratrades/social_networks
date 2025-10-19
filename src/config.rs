@@ -1,7 +1,8 @@
 use color_eyre::eyre::Result;
+use tg::chat::TelegramDestination;
 use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 
-#[derive(Debug, Default, derive_new::new, Clone, MyConfigPrimitives)]
+#[derive(Debug, Default, derive_new::new, Clone, serde::Deserialize)]
 pub struct AppConfig {
 	pub discord: DiscordConfig,
 	pub telegram: TelegramConfig,
@@ -17,7 +18,8 @@ pub struct DiscordConfig {
 #[derive(Debug, Default, Clone, derive_new::new, MyConfigPrimitives)]
 pub struct TelegramConfig {
 	pub bot_token: String,
-	pub chat_id: i64,
+	#[private_value]
+	pub alerts_channel: TelegramDestination,
 }
 
 impl AppConfig {
