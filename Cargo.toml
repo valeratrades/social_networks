@@ -25,5 +25,5 @@ color-eyre = "^0.6.3"
 config = "^0"
 derive-new = "^0"
 serde = { version = "^1", features = ["derive"] }
-v_utils = { version = "^2.7.5" }
+v_utils = { version = "^2.7.6" }
 xdg = { version = "3.0.0", features = ["serde"] }

@@ -6,7 +6,7 @@ mod youtube;
 
 use clap::{Args, Parser, Subcommand};
 use config::AppConfig;
-use v_utils::clientside;
+use v_utils::{clientside, utils::exit_on_error};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,14 +36,7 @@ fn main() {
 	clientside!();
 	let cli = Cli::parse();
 
-	let config = match AppConfig::read(cli.config) {
-		Ok(cfg) => cfg,
-		Err(e) => {
-			eprintln!("Error: {}", e);
-			std::process::exit(1);
-		}
-	};
-
+	let config = exit_on_error(AppConfig::read(cli.config));
 	let success = match cli.command {
 		Commands::Discord(args) => discord::main(config, args),
 		Commands::Telegram(args) => telegram::main(config, args),

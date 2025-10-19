@@ -1,5 +1,4 @@
 use color_eyre::eyre::Result;
-use serde::Deserialize;
 use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 
 #[derive(Debug, Default, derive_new::new, Clone, MyConfigPrimitives)]
