@@ -4,6 +4,7 @@ use tracing::instrument;
 
 use crate::config::TelegramConfig;
 
+#[derive(Clone)]
 pub struct TelegramNotifier {
 	config: TelegramConfig,
 	client: Client,
