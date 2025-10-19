@@ -46,18 +46,30 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	// Load or create session file (using username like Python code does)
 	let session_filename = format!("{}.session", config.telegram.username);
 	let session_file = v_utils::xdg_state_file!(&session_filename);
-	let session = if session_file.exists() { Session::load_file(&session_file)? } else { Session::new() };
+	info!("Using session file: {}", session_file.display());
+
+	let session = if session_file.exists() {
+		info!("Loading existing session");
+		Session::load_file(&session_file)?
+	} else {
+		info!("Creating new session");
+		Session::new()
+	};
 
 	// Load status drop
 	let status_file = v_utils::xdg_state_file!("telegram_status.json");
 	let status_drop: StatusDrop = if status_file.exists() {
 		let content = std::fs::read_to_string(&status_file)?;
-		serde_json::from_str(&content)?
+		let status: StatusDrop = serde_json::from_str(&content)?;
+		info!("Loaded status from file: {}", status.status);
+		status
 	} else {
+		info!("No status file found, using empty status");
 		StatusDrop::default()
 	};
 
 	// Create client
+	info!("Connecting to Telegram with api_id: {}", config.telegram.api_id);
 	let client = Client::connect(Config {
 		session,
 		api_id: config.telegram.api_id,
@@ -65,40 +77,53 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		params: Default::default(),
 	})
 	.await?;
+	info!("Connected to Telegram");
 
 	// Sign in if not already
 	if !client.is_authorized().await? {
+		info!("Not authorized, requesting login code for {}", config.telegram.phone);
 		let token = client.request_login_code(&config.telegram.phone).await?;
+		info!("Login code requested successfully, check your Telegram app");
 		eprintln!("Enter the code you received: ");
 		let mut code = String::new();
 		std::io::stdin().read_line(&mut code)?;
 		let code = code.trim();
 
+		info!("Attempting to sign in with code");
 		match client.sign_in(&token, code).await {
-			Ok(_) => {}
+			Ok(_) => {
+				info!("Sign in successful");
+			}
 			Err(SignInError::PasswordRequired(password_token)) => {
+				info!("2FA password required");
 				eprintln!("Enter your 2FA password: ");
 				let mut password = String::new();
 				std::io::stdin().read_line(&mut password)?;
 				let password = password.trim();
 				client.check_password(password_token, password).await?;
+				info!("2FA authentication successful");
 			}
-			Err(e) => return Err(e.into()),
+			Err(e) => {
+				error!("Sign in error: {}", e);
+				return Err(e.into());
+			}
 		}
 
 		// Save session
 		client.session().save_to_file(&session_file)?;
+		info!("Session saved to {}", session_file.display());
 	}
 
 	info!("--Telegram-- connected and authorized");
 
 	// Resolve channel peer IDs
+	info!("Resolving {} poll channels", config.telegram.poll_channels.len());
 	let mut poll_peer_ids = Vec::new();
 	for channel in &config.telegram.poll_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(chat) => {
 				poll_peer_ids.push(chat.id());
-				debug!("Resolved poll channel: {} -> {}", channel, chat.id());
+				info!("Resolved poll channel: {} -> {}", channel, chat.id());
 			}
 			None => {
 				error!("Could not resolve poll channel: {}", channel);
@@ -106,12 +131,13 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 	}
 
+	info!("Resolving {} info channels", config.telegram.info_channels.len());
 	let mut info_peer_ids = Vec::new();
 	for channel in &config.telegram.info_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(chat) => {
 				info_peer_ids.push(chat.id());
-				debug!("Resolved info channel: {} -> {}", channel, chat.id());
+				info!("Resolved info channel: {} -> {}", channel, chat.id());
 			}
 			None => {
 				error!("Could not resolve info channel: {}", channel);
@@ -120,9 +146,14 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	}
 
 	// Resolve watch channel
+	info!("Resolving watch channel: {}", config.telegram.watch_channel_username);
 	let watch_chat = match client.resolve_username(&config.telegram.watch_channel_username.trim_start_matches('@')).await? {
-		Some(chat) => chat.pack(),
+		Some(chat) => {
+			info!("Watch channel resolved: {}", chat.id());
+			chat.pack()
+		}
 		None => {
+			error!("Could not resolve watch channel: {}", config.telegram.watch_channel_username);
 			return Err(color_eyre::eyre::eyre!("Could not resolve watch channel: {}", config.telegram.watch_channel_username));
 		}
 	};
@@ -131,6 +162,8 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut last_heartbeat = 0i64;
 	let mut last_status_update = 0i64;
 	let mut message_counter = 0u64;
+
+	info!("Starting main event loop");
 
 	// Main event loop
 	loop {
@@ -201,7 +234,8 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		if now.minute() % 60 == 0 {
 			let current_time = now.timestamp();
 			if current_time - last_heartbeat > 4 * 60 {
-				info!("Heartbeat. Time: {}. Messages processed since last heartbeat: {}", now.format("%H:%M"), message_counter);
+				let formatted_time = now.format("%m/%d/%y-%H");
+				info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", formatted_time, message_counter);
 				message_counter = 0;
 				last_heartbeat = current_time;
 			}
