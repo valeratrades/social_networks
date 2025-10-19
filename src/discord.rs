@@ -190,7 +190,7 @@ async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: 
 
 		if should_notify {
 			telegram.send_ping_notification(author, "Discord").await?;
-			info!("Successfully sent notification for user: {}", author);
+			info!("Successfully sent notification for user: {author}");
 		}
 	}
 
