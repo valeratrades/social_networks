@@ -19,7 +19,11 @@ tabs_in_doc_comments = "allow"
 get_first = "allow"
 get_last_with_len = "allow"
 
-
 [dependencies]
-derive-new = "^0"
+clap = { version = "^4", features = ["derive"] }
 color-eyre = "^0.6.3"
+config = "^0"
+derive-new = "^0"
+serde = { version = "^1", features = ["derive"] }
+v_utils = { version = "^2.7.5" }
+xdg = { version = "3.0.0", features = ["serde"] }

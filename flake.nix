@@ -84,7 +84,6 @@
                 cp -f ${(v-utils.files.rust.clippy { inherit pkgs; })} ./.cargo/.clippy.toml
                 cp -f ${ (v-utils.files.rust.toolchain { inherit pkgs; }) } ./.cargo/rust-toolchain.toml
                 cp -f ${(v-utils.files.rust.rustfmt { inherit pkgs; })} ./.rustfmt.toml
-                cp -f ${(v-utils.files.rust.deny { inherit pkgs; })} ./deny.toml
                 cp -f ${ (v-utils.files.gitignore { inherit pkgs; langs = [ "rs" ]; }) } ./.gitignore
 
                 cp -f ${readme} ./README.md
@@ -99,8 +98,8 @@
               rust
             ] ++ pre-commit-check.enabledPackages;
 
-						env.RUST_BACKTRACE = 1;
-						env.RUST_LIB_BACKTRACE = 0;
+            env.RUST_BACKTRACE = 1;
+            env.RUST_LIB_BACKTRACE = 0;
           };
       }
     );
