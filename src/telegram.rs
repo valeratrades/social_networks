@@ -11,15 +11,9 @@ use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 #[derive(Args)]
 pub struct TelegramArgs {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct StatusDrop {
 	status: String,
-}
-
-impl Default for StatusDrop {
-	fn default() -> Self {
-		Self { status: String::new() }
-	}
 }
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
@@ -87,39 +81,67 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		info!("Not authorized, requesting login code for {}", config.telegram.phone);
 		let token = client.request_login_code(&config.telegram.phone).await?;
 		info!("Login code requested successfully, check your Telegram app");
-		eprintln!("Enter the code you received: ");
+
+		eprint!("Enter the code you received: ");
+		std::io::Write::flush(&mut std::io::stderr())?;
 		let mut code = String::new();
 		std::io::stdin().read_line(&mut code)?;
 		let code = code.trim();
+		eprintln!("Code received, authenticating...");
+		info!("Received code from user (length: {})", code.len());
+		debug!("Code value: '{}'", code);
 
-		info!("Attempting to sign in with code");
 		match client.sign_in(&token, code).await {
 			Ok(_) => {
+				eprintln!("Sign in successful! Saving session...");
 				info!("Sign in successful");
 			}
 			Err(SignInError::PasswordRequired(password_token)) => {
 				info!("2FA password required");
-				eprintln!("Enter your 2FA password: ");
+				eprint!("Enter your 2FA password: ");
+				std::io::Write::flush(&mut std::io::stderr())?;
 				let mut password = String::new();
 				std::io::stdin().read_line(&mut password)?;
 				let password = password.trim();
+				eprintln!("Password received, checking 2FA...");
+				info!("Received 2FA password from user");
+				debug!("Password length: {}", password.len());
+
 				client.check_password(password_token, password).await?;
+				eprintln!("2FA authentication successful! Saving session...");
 				info!("2FA authentication successful");
 			}
 			Err(e) => {
-				error!("Sign in error: {}", e);
+				eprintln!("Sign in failed: {}", e);
+				error!("Sign in failed with error: {}", e);
 				return Err(e.into());
 			}
 		}
 
 		// Save session
-		if let Some(parent) = session_file.parent() {
-			std::fs::create_dir_all(parent)?;
+		info!("Saving session to {}", session_file.display());
+		let session_to_save = client.session();
+		debug!("Session object retrieved from client");
+
+		// Try to save as bytes directly to debug
+		let session_data = session_to_save.save();
+		info!("Session serialized to {} bytes", session_data.len());
+
+		match std::fs::write(&session_file, &session_data) {
+			Ok(_) => {
+				eprintln!("Session saved successfully");
+				info!("Session saved successfully to {}", session_file.display());
+			}
+			Err(e) => {
+				eprintln!("Failed to save session: {}", e);
+				error!("Failed to save session file: {} (error: {})", session_file.display(), e);
+				error!("Session file parent exists: {}", session_file.parent().map(|p| p.exists()).unwrap_or(false));
+				return Err(e.into());
+			}
 		}
-		client.session().save_to_file(&session_file)?;
-		info!("Session saved to {}", session_file.display());
 	}
 
+	eprintln!("Connected and authorized, starting event loop...");
 	info!("--Telegram-- connected and authorized");
 
 	// Resolve channel peer IDs
@@ -153,7 +175,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 	// Resolve watch channel
 	info!("Resolving watch channel: {}", config.telegram.watch_channel_username);
-	let watch_chat = match client.resolve_username(&config.telegram.watch_channel_username.trim_start_matches('@')).await? {
+	let watch_chat = match client.resolve_username(config.telegram.watch_channel_username.trim_start_matches('@')).await? {
 		Some(chat) => {
 			info!("Watch channel resolved: {}", chat.id());
 			chat.pack()
@@ -169,6 +191,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut last_status_update = 0i64;
 	let mut message_counter = 0u64;
 
+	eprintln!("Listening for messages...");
 	info!("Starting main event loop");
 
 	// Main event loop
@@ -192,17 +215,15 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				let text = message.text();
 				if text.contains("/ping") {
 					// Check if it's from a user (not a channel/group)
-					match chat {
-						grammers_client::types::Chat::User(_) =>
-							if let Some(sender) = message.sender() {
-								let username = sender.username().unwrap_or("unknown");
-								if let Err(e) = telegram_notifier.send_ping_notification(username, "Telegram").await {
-									error!("Error sending notification: {}", e);
-								} else {
-									info!("Successfully sent notification for user: {}", username);
-								}
-							},
-						_ => {}
+					if let grammers_client::types::Chat::User(_) = chat
+						&& let Some(sender) = message.sender()
+					{
+						let username = sender.username().unwrap_or("unknown");
+						if let Err(e) = telegram_notifier.send_ping_notification(username, "Telegram").await {
+							error!("Error sending notification: {}", e);
+						} else {
+							info!("Successfully sent notification for user: {}", username);
+						}
 					}
 				}
 
@@ -211,10 +232,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 					if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
 						error!("Error handling poll message: {}", e);
 					}
-				} else if info_peer_ids.contains(&chat_id) {
-					if let Err(e) = handle_info_message(&client, &message, watch_chat).await {
-						error!("Error handling info message: {}", e);
-					}
+				} else if info_peer_ids.contains(&chat_id)
+					&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
+				{
+					error!("Error handling info message: {}", e);
 				}
 			}
 			_ => {}
@@ -222,7 +243,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 		// Status update every 5 minutes
 		let now = Local::now();
-		if now.minute() % 5 == 0 {
+		if now.minute().is_multiple_of(5) {
 			let current_time = now.timestamp();
 			if current_time - last_status_update > 4 * 60 {
 				if !status_drop.status.is_empty() {
@@ -237,7 +258,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 
 		// Heartbeat every hour
-		if now.minute() % 60 == 0 {
+		if now.minute().is_multiple_of(60) {
 			let current_time = now.timestamp();
 			if current_time - last_heartbeat > 4 * 60 {
 				let formatted_time = now.format("%m/%d/%y-%H");

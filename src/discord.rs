@@ -122,28 +122,28 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 	// Main event loop
 	while let Some(msg) = read.next().await {
 		let msg = msg?;
-		if let Message::Text(text) = msg {
-			if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
-				*message_counter_clone.lock().await += 1;
+		if let Message::Text(text) = msg
+			&& let Ok(event) = serde_json::from_str::<DiscordMessage>(&text)
+		{
+			*message_counter_clone.lock().await += 1;
 
-				match event.op {
-					11 => {
-						// Heartbeat ACK
-						let count = *message_counter.lock().await;
-						let now = Local::now().format("%m/%d/%y-%H");
-						info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", now, count);
-						*message_counter.lock().await = 0;
-					}
-					0 => {
-						// Dispatch event
-						if let Some(d) = &event.d {
-							if let Err(e) = handle_message(d, &config, &telegram).await {
-								error!("Error handling message: {}", e);
-							}
-						}
-					}
-					_ => {}
+			match event.op {
+				11 => {
+					// Heartbeat ACK
+					let count = *message_counter.lock().await;
+					let now = Local::now().format("%m/%d/%y-%H");
+					info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", now, count);
+					*message_counter.lock().await = 0;
 				}
+				0 => {
+					// Dispatch event
+					if let Some(d) = &event.d
+						&& let Err(e) = handle_message(d, config, &telegram).await
+					{
+						error!("Error handling message: {}", e);
+					}
+				}
+				_ => {}
 			}
 		}
 	}
