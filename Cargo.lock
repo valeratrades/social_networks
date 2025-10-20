@@ -154,11 +154,11 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bitflags"
-version = "2.9.4"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
+checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 dependencies = [
- "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -229,9 +229,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.49"
+version = "4.5.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4512b90fa68d3a9932cea5184017c5d200f5921df706d45e853537dea51508f"
+checksum = "0c2cfd7bf8a6017ddaa4e32ffe7403d547790db06bd171c1c53926faab501623"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.49"
+version = "4.5.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0025e98baa12e766c67ba13ff4695a887a1eba19569aad00a472546795bd6730"
+checksum = "0a4c05b9e80c5ccd3a7ef080ad7b6ba7d6fc00a985b8b157197075677c82c7a0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2346,7 +2346,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "v_utils 2.7.7",
+ "v_utils",
  "xdg",
 ]
 
@@ -2467,10 +2467,11 @@ dependencies = [
 [[package]]
 name = "tg"
 version = "0.1.0"
-source = "git+https://github.com/valeratrades/tg?branch=master#560154cdedc52315d251432260e5545fcbbf504c"
+source = "git+https://github.com/valeratrades/tg?branch=master#165f84a11a9e1f1b97ac75b729fd5bb6e53a9e7d"
 dependencies = [
  "chrono",
  "clap",
+ "color-eyre",
  "config",
  "derive-new",
  "eyre",
@@ -2479,7 +2480,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
- "v_utils 2.7.6",
+ "tracing",
+ "v_utils",
  "xattr",
 ]
 
@@ -2957,10 +2959,11 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "v_utils"
-version = "2.7.6"
+version = "2.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a9190dd21203e6a50fb81dd78054dec51a5a9ae856c434317d276ded2aa3b8c"
+checksum = "a3ab96c848e8b1d89325332d5bed79acf14fd6b46ce97bafa267c0a84e6c3d2f"
 dependencies = [
+ "config",
  "const_format",
  "derive-new",
  "derive_more",
@@ -2981,53 +2984,15 @@ dependencies = [
  "tracing-error",
  "tracing-log",
  "tracing-subscriber",
- "v_utils_macros 2.4.0",
- "xdg",
-]
-
-[[package]]
-name = "v_utils"
-version = "2.7.7"
-dependencies = [
- "const_format",
- "derive-new",
- "derive_more",
- "dirs",
- "eyre",
- "function_name",
- "futures",
- "jiff",
- "macro-attr",
- "serde",
- "serde_json",
- "strum",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "tracing-error",
- "tracing-log",
- "tracing-subscriber",
- "v_utils_macros 2.3.7",
+ "v_utils_macros",
  "xdg",
 ]
 
 [[package]]
 name = "v_utils_macros"
-version = "2.3.7"
-dependencies = [
- "eyre",
- "heck",
- "proc-macro2",
- "quote",
- "serde",
- "syn",
-]
-
-[[package]]
-name = "v_utils_macros"
-version = "2.4.0"
+version = "2.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f448418f7550f88c21737132389de81267fc59ed18c1ecb9a95514b43bc466c5"
+checksum = "578f7dfa64382db5db4dfe02f2f67a2ba6ae083a6f8da096bc92ccd483c9044a"
 dependencies = [
  "eyre",
  "heck",

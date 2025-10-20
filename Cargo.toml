@@ -3,6 +3,10 @@ cargo-features = ["codegen-backend"]
 name = "social_networks"
 version = "0.1.0"
 edition = "2024"
+authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+readme = "README.md"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/social_networks"
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
@@ -41,5 +45,6 @@ xdg = { version = "3.0.0", features = ["serde"] }
 
 # my crates {{{
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
-v_utils = { version = "^2.7.6", path = "../../v_utils/v_utils" } #ga: rm path
+#v_utils = { version = "^2.7", path = "../../v_utils/v_utils" } #ga: rm path
+v_utils = { version = "^2.7", features = ["macros", "cli"] } #ga: rm path
 #,}}}
