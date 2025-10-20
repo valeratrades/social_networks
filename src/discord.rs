@@ -29,8 +29,11 @@ struct DiscordMessage {
 }
 
 pub fn main(config: AppConfig, _args: DiscordArgs) -> Result<()> {
-	// Set up tracing with file logging
+	// Set up tracing with file logging (truncate old logs)
 	let log_file = v_utils::xdg_state_file!("discord.log");
+	if log_file.exists() {
+		std::fs::remove_file(&log_file)?;
+	}
 	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
 	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
@@ -119,28 +122,28 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 	// Main event loop
 	while let Some(msg) = read.next().await {
 		let msg = msg?;
-		if let Message::Text(text) = msg {
-			if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
-				*message_counter_clone.lock().await += 1;
+		if let Message::Text(text) = msg
+			&& let Ok(event) = serde_json::from_str::<DiscordMessage>(&text)
+		{
+			*message_counter_clone.lock().await += 1;
 
-				match event.op {
-					11 => {
-						// Heartbeat ACK
-						let count = *message_counter.lock().await;
-						let now = Local::now().format("%m/%d/%y-%H");
-						info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", now, count);
-						*message_counter.lock().await = 0;
-					}
-					0 => {
-						// Dispatch event
-						if let Some(d) = &event.d {
-							if let Err(e) = handle_message(d, &config, &telegram).await {
-								error!("Error handling message: {}", e);
-							}
-						}
-					}
-					_ => {}
+			match event.op {
+				11 => {
+					// Heartbeat ACK
+					let count = *message_counter.lock().await;
+					let now = Local::now().format("%m/%d/%y-%H");
+					info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", now, count);
+					*message_counter.lock().await = 0;
 				}
+				0 => {
+					// Dispatch event
+					if let Some(d) = &event.d
+						&& let Err(e) = handle_message(d, config, &telegram).await
+					{
+						error!("Error handling message: {}", e);
+					}
+				}
+				_ => {}
 			}
 		}
 	}
