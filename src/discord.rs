@@ -39,6 +39,8 @@ pub fn main(config: AppConfig, _args: DiscordArgs) -> Result<()> {
 
 	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
 
+	println!("Discord: Listening...");
+
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
 		loop {
@@ -132,7 +134,7 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 					// Heartbeat ACK
 					let count = *message_counter.lock().await;
 					let now = Local::now().format("%m/%d/%y-%H");
-					info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", now, count);
+					info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {count} messages");
 					*message_counter.lock().await = 0;
 				}
 				0 => {
@@ -140,7 +142,7 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 					if let Some(d) = &event.d
 						&& let Err(e) = handle_message(d, config, &telegram).await
 					{
-						error!("Error handling message: {}", e);
+						error!("Error handling message: {e}");
 					}
 				}
 				_ => {}
@@ -192,6 +194,7 @@ async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: 
 		}
 
 		if should_notify {
+			println!("Discord ping from {author}: {content}");
 			telegram.send_ping_notification(author, "Discord").await?;
 			info!("Successfully sent notification for user: {author}");
 		}
