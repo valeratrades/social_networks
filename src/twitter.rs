@@ -111,14 +111,14 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 		// Process exclusive poll lists
 		for (list_idx, list_id) in config.twitter.poll_channels_exclusive.iter().enumerate() {
 			if let Err(e) = process_list(&client, config, list_id, &telegram, &mut user_last_tweets, &mut parsed_state.poll_tweets, list_idx, false).await {
-				error!("Error processing exclusive poll list {:?}: {}", list_id, e);
+				error!("Error processing exclusive poll list {list_id:?}: {e}");
 			}
 		}
 
 		// Process potential poll lists
 		for (list_idx, list_id) in config.twitter.poll_channels_potential.iter().enumerate() {
 			if let Err(e) = process_list(&client, config, list_id, &telegram, &mut user_last_tweets, &mut parsed_state.maybe_poll_tweets, list_idx, true).await {
-				error!("Error processing potential poll list {:?}: {}", list_id, e);
+				error!("Error processing potential poll list {list_id:?}: {e}");
 			}
 		}
 
@@ -149,12 +149,12 @@ async fn process_list(
 	let list_id_str = match list_id {
 		TwitterUser::UserId(id) => id.to_string(),
 		TwitterUser::Username(username) => {
-			return Err(color_eyre::eyre::eyre!("List ID must be numeric, got username: {}", username));
+			return Err(color_eyre::eyre::eyre!("List ID must be numeric, got username: {username}"));
 		}
 	};
 
 	// Get list members
-	let url = format!("https://api.twitter.com/2/lists/{}/members", list_id_str);
+	let url = format!("https://api.twitter.com/2/lists/{list_id_str}/members");
 	let response = client
 		.get(&url)
 		.header("Authorization", format!("Bearer {}", config.twitter.bearer_token))
@@ -218,7 +218,7 @@ async fn check_for_updates(
 	}
 
 	// Get tweet details with poll expansion
-	let url = format!("https://api.twitter.com/2/tweets/{}", latest_tweet_id);
+	let url = format!("https://api.twitter.com/2/tweets/{latest_tweet_id}");
 	let response = client
 		.get(&url)
 		.query(&[("expansions", "attachments.poll_ids")])
