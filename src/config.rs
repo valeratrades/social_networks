@@ -38,6 +38,7 @@ pub struct TwitterConfig {
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
 	pub oauth: Option<TwitterOauthConfig>,
+	pub poll: Option<TwitterPollConfig>,
 }
 
 #[derive(Clone, Debug, MyConfigPrimitives)]
@@ -47,6 +48,12 @@ pub struct TwitterOauthConfig {
 	pub api_key_secret: String,
 	pub access_token: String,
 	pub access_token_secret: String,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct TwitterPollConfig {
+	pub text: String,
+	pub duration_hours: u32,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]

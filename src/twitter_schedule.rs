@@ -16,20 +16,28 @@ type HmacSha1 = Hmac<Sha1>;
 
 pub fn main(config: AppConfig, _args: TwitterScheduleArgs) -> Result<()> {
 	let runtime = tokio::runtime::Runtime::new()?;
-	runtime.block_on(async { post_hello_world(&config).await })
+	runtime.block_on(async { post_poll(&config).await })
 }
 
-async fn post_hello_world(config: &AppConfig) -> Result<()> {
+async fn post_poll(config: &AppConfig) -> Result<()> {
 	let oauth = config.twitter.oauth.as_ref().ok_or_else(|| eyre!("twitter.oauth config not found"))?;
+	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
 
-	println!("Posting 'hello world' from account: {}", oauth.acc_username);
+	println!("Posting poll from account: {}", oauth.acc_username);
 
-	let tweet_text = "hello world";
-	let request = CreateTweetRequest { text: tweet_text.to_string() };
+	let duration_minutes = poll_config.duration_hours * 60;
+
+	let request = CreateTweetRequest {
+		text: poll_config.text.clone(),
+		poll: Some(PollOptions {
+			duration_minutes,
+			options: vec!["yes".to_string(), "definitely".to_string()],
+		}),
+	};
 
 	let response = post_tweet(&oauth.api_key, &oauth.api_key_secret, &oauth.access_token, &oauth.access_token_secret, &request).await?;
 
-	println!("Successfully posted tweet!");
+	println!("Successfully posted poll!");
 	println!("Tweet ID: {}", response.data.id);
 	println!("Tweet text: {}", response.data.text);
 
@@ -117,6 +125,14 @@ pub struct TwitterScheduleArgs {}
 #[derive(Debug, Serialize)]
 struct CreateTweetRequest {
 	text: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	poll: Option<PollOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct PollOptions {
+	duration_minutes: u32,
+	options: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,9 +152,25 @@ mod tests {
 
 	#[test]
 	fn test_serialize_tweet_request() {
-		let request = CreateTweetRequest { text: "hello world".to_string() };
+		let request = CreateTweetRequest {
+			text: "hello world".to_string(),
+			poll: None,
+		};
 		let json = serde_json::to_string(&request).unwrap();
 		insta::assert_snapshot!(json, @r#"{"text":"hello world"}"#);
+	}
+
+	#[test]
+	fn test_serialize_tweet_with_poll() {
+		let request = CreateTweetRequest {
+			text: "rust go brrr?".to_string(),
+			poll: Some(PollOptions {
+				duration_minutes: 1440,
+				options: vec!["yes".to_string(), "yes".to_string()],
+			}),
+		};
+		let json = serde_json::to_string(&request).unwrap();
+		insta::assert_snapshot!(json, @r#"{"text":"rust go brrr?","poll":{"duration_minutes":1440,"options":["yes","yes"]}}"#);
 	}
 
 	#[test]
