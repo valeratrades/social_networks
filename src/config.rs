@@ -2,8 +2,6 @@ use color_eyre::eyre::Result;
 use tg::chat::TelegramDestination;
 use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 
-use crate::twitter_user::TwitterUser;
-
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct AppConfig {
 	pub discord: DiscordConfig,
@@ -36,8 +34,8 @@ pub struct TelegramConfig {
 #[derive(Debug, Default, Clone, MyConfigPrimitives)]
 pub struct TwitterConfig {
 	pub bearer_token: String,
-	pub poll_channels_exclusive: Vec<TwitterUser>,
-	pub poll_channels_potential: Vec<TwitterUser>,
+	pub everytime_polls_list: String,
+	pub sometimes_polls_list: String,
 }
 
 impl AppConfig {

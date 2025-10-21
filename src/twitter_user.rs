@@ -3,27 +3,13 @@ use std::str::FromStr;
 use color_eyre::eyre::{Result, eyre};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+#[deprecated(note = "Not currently used, but kept for potential future use")]
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Hash)]
 #[serde(untagged)]
 pub enum TwitterUser {
 	UserId(u64),
 	Username(String),
-}
-
-impl TwitterUser {
-	pub fn as_username(&self) -> Option<&str> {
-		match self {
-			Self::Username(username) => Some(username),
-			Self::UserId(_) => None,
-		}
-	}
-
-	pub fn as_user_id(&self) -> Option<u64> {
-		match self {
-			Self::UserId(id) => Some(*id),
-			Self::Username(_) => None,
-		}
-	}
 }
 
 impl Default for TwitterUser {
@@ -32,6 +18,7 @@ impl Default for TwitterUser {
 	}
 }
 
+#[allow(deprecated)]
 impl<'de> Deserialize<'de> for TwitterUser {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
@@ -58,6 +45,7 @@ impl<'de> Deserialize<'de> for TwitterUser {
 	}
 }
 
+#[allow(deprecated)]
 impl FromStr for TwitterUser {
 	type Err = color_eyre::eyre::Report;
 
@@ -66,6 +54,7 @@ impl FromStr for TwitterUser {
 	}
 }
 
+#[allow(dead_code)]
 fn parse_twitter_user_str(s: &str) -> Result<TwitterUser, color_eyre::eyre::Report> {
 	let trimmed = s.trim();
 
@@ -94,7 +83,7 @@ fn parse_twitter_user_str(s: &str) -> Result<TwitterUser, color_eyre::eyre::Repo
 	if trimmed.chars().all(|c| c.is_alphanumeric() || c == '_') {
 		Ok(TwitterUser::Username(trimmed.to_string()))
 	} else {
-		Err(eyre!("Invalid Twitter user format: {}", trimmed))
+		Err(eyre!("Invalid Twitter user format: {trimmed}"))
 	}
 }
 
@@ -104,6 +93,7 @@ mod tests {
 
 	use super::*;
 
+	#[allow(deprecated)]
 	#[test]
 	fn test_deserialize_user_id() {
 		let json = r#"1507244316154023968"#;

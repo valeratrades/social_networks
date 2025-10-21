@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration};
 use tracing::{error, info};
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, twitter_user::TwitterUser};
+use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 
 #[derive(Args)]
 pub struct TwitterArgs {}
@@ -108,18 +108,32 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 	let mut user_last_tweets: HashMap<String, String> = HashMap::new();
 
 	loop {
-		// Process exclusive poll lists
-		for (list_idx, list_id) in config.twitter.poll_channels_exclusive.iter().enumerate() {
-			if let Err(e) = process_list(&client, config, list_id, &telegram, &mut user_last_tweets, &mut parsed_state.poll_tweets, list_idx, false).await {
-				error!("Error processing exclusive poll list {list_id:?}: {e}");
-			}
+		// Process everytime polls list
+		if let Err(e) = process_list(
+			&client,
+			config,
+			&config.twitter.everytime_polls_list,
+			&telegram,
+			&mut user_last_tweets,
+			&mut parsed_state.poll_tweets,
+		)
+		.await
+		{
+			error!("Error processing everytime polls list: {e}");
 		}
 
-		// Process potential poll lists
-		for (list_idx, list_id) in config.twitter.poll_channels_potential.iter().enumerate() {
-			if let Err(e) = process_list(&client, config, list_id, &telegram, &mut user_last_tweets, &mut parsed_state.maybe_poll_tweets, list_idx, true).await {
-				error!("Error processing potential poll list {list_id:?}: {e}");
-			}
+		// Process sometimes polls list
+		if let Err(e) = process_list(
+			&client,
+			config,
+			&config.twitter.sometimes_polls_list,
+			&telegram,
+			&mut user_last_tweets,
+			&mut parsed_state.maybe_poll_tweets,
+		)
+		.await
+		{
+			error!("Error processing sometimes polls list: {e}");
 		}
 
 		// Save state
@@ -134,27 +148,16 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn process_list(
 	client: &reqwest::Client,
 	config: &AppConfig,
-	list_id: &TwitterUser,
+	list_id: &str,
 	telegram: &TelegramNotifier,
 	user_last_tweets: &mut HashMap<String, String>,
 	parsed_tweets: &mut Vec<String>,
-	_list_idx: usize,
-	is_maybe_poll: bool,
 ) -> Result<()> {
-	// Get list ID as string
-	let list_id_str = match list_id {
-		TwitterUser::UserId(id) => id.to_string(),
-		TwitterUser::Username(username) => {
-			return Err(color_eyre::eyre::eyre!("List ID must be numeric, got username: {username}"));
-		}
-	};
-
 	// Get list members
-	let url = format!("https://api.twitter.com/2/lists/{list_id_str}/members");
+	let url = format!("https://api.twitter.com/2/lists/{list_id}/members");
 	let response = client
 		.get(&url)
 		.header("Authorization", format!("Bearer {}", config.twitter.bearer_token))
@@ -174,7 +177,7 @@ async fn process_list(
 
 		let parsed_id = parsed_tweets[user_idx].clone();
 
-		if let Err(e) = check_for_updates(client, config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx, is_maybe_poll).await {
+		if let Err(e) = check_for_updates(client, config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx).await {
 			error!("Error checking updates for user {}: {}", member.name, e);
 		}
 	}
@@ -192,7 +195,6 @@ async fn check_for_updates(
 	_user_last_tweets: &mut HashMap<String, String>,
 	parsed_tweets: &mut [String],
 	user_idx: usize,
-	_is_maybe_poll: bool,
 ) -> Result<()> {
 	// Get user's latest tweets
 	let url = format!("https://api.twitter.com/2/users/{}/tweets", member.id);
