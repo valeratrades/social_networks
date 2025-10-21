@@ -45,7 +45,7 @@ xdg = { version = "3.0.0", features = ["serde"] }
 
 # my crates {{{
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
-v_utils = { version = "^2.7", path = "../../v_utils/v_utils" } #ga: rm path
+v_utils = { version = "^2.7" } #ga: rm path
 
 [dev-dependencies]
 insta = "1.43.2"
