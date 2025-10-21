@@ -9,61 +9,6 @@ use tracing::{error, info};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 
-#[derive(Args)]
-pub struct TwitterArgs {}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TwitterApiUser {
-	id: String,
-	name: String,
-	username: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TwitterListResponse {
-	data: Vec<TwitterApiUser>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Tweet {
-	id: String,
-	text: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TweetResponse {
-	data: Tweet,
-	includes: Option<TweetIncludes>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TweetIncludes {
-	polls: Option<Vec<Poll>>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Poll {
-	id: String,
-	options: Vec<PollOption>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PollOption {
-	label: String,
-	votes: u32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct UserTweetsResponse {
-	data: Vec<Tweet>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct ParsedTweets {
-	poll_tweets: Vec<String>,
-	maybe_poll_tweets: Vec<String>,
-}
-
 pub fn main(config: AppConfig, _args: TwitterArgs) -> Result<()> {
 	// Set up tracing with file logging (truncate old logs)
 	let log_file = v_utils::xdg_state_file!("twitter.log");
@@ -257,6 +202,61 @@ async fn check_for_updates(
 	parsed_tweets[user_idx] = latest_tweet_id.clone();
 
 	Ok(())
+}
+
+#[derive(Args)]
+pub struct TwitterArgs {}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TwitterApiUser {
+	id: String,
+	name: String,
+	username: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TwitterListResponse {
+	data: Vec<TwitterApiUser>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Tweet {
+	id: String,
+	text: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TweetResponse {
+	data: Tweet,
+	includes: Option<TweetIncludes>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TweetIncludes {
+	polls: Option<Vec<Poll>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Poll {
+	id: String,
+	options: Vec<PollOption>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PollOption {
+	label: String,
+	votes: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct UserTweetsResponse {
+	data: Vec<Tweet>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct ParsedTweets {
+	poll_tweets: Vec<String>,
+	maybe_poll_tweets: Vec<String>,
 }
 
 #[cfg(test)]
