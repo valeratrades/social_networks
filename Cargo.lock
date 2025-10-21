@@ -103,6 +103,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "ask_llm"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "133a70ac96013ff098450730e7bc89c6680071961b8928acdd3b9c29cbdbb4bb"
+dependencies = [
+ "bytes",
+ "clap",
+ "color-eyre",
+ "derive-new",
+ "derive_more",
+ "eyre",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "v_utils",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2032,7 +2053,9 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -2057,12 +2080,14 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -2363,7 +2388,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 name = "social_networks"
 version = "0.1.0"
 dependencies = [
- "chrono",
+ "ask_llm",
  "clap",
  "color-eyre",
  "config",
@@ -2373,6 +2398,8 @@ dependencies = [
  "grammers-session",
  "grammers-tl-types",
  "insta",
+ "jiff",
+ "quick-xml",
  "reqwest",
  "serde",
  "serde_json",
@@ -2995,9 +3022,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "v_utils"
-version = "2.7.9"
+version = "2.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3ab96c848e8b1d89325332d5bed79acf14fd6b46ce97bafa267c0a84e6c3d2f"
+checksum = "43fe016b10355876dd8a3d1df369f80ffdfa00bd7075b63c903d4580dbd24741"
 dependencies = [
  "const_format",
  "derive-new",
@@ -3025,9 +3052,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.3.8"
+version = "2.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "578f7dfa64382db5db4dfe02f2f67a2ba6ae083a6f8da096bc92ccd483c9044a"
+checksum = "bedaceb31da4a3c589c2c0ac8b1bcae1d364e3ebefcc69d06740b0ca872b3758"
 dependencies = [
  "eyre",
  "heck",
@@ -3149,6 +3176,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bad67dc8b2a1a6e5448428adec4c3e84c43e561d8c9ee8a9e5aabeb193ec41d1"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

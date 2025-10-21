@@ -7,6 +7,7 @@ pub struct AppConfig {
 	pub discord: DiscordConfig,
 	pub telegram: TelegramConfig,
 	pub twitter: TwitterConfig,
+	pub youtube: YoutubeConfig,
 }
 
 #[derive(Debug, Default, Clone, MyConfigPrimitives)]
@@ -36,6 +37,11 @@ pub struct TwitterConfig {
 	pub bearer_token: String,
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
+}
+
+#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+pub struct YoutubeConfig {
+	pub channels: std::collections::HashMap<String, String>,
 }
 
 impl AppConfig {

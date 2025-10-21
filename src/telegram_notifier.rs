@@ -5,7 +5,7 @@ use tracing::instrument;
 
 use crate::config::TelegramConfig;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TelegramNotifier {
 	config: TelegramConfig,
 	client: Client,
@@ -23,6 +23,14 @@ impl TelegramNotifier {
 
 	pub async fn send_twitter_poll(&self, author: &str, text: &str, tweet_id: &str) -> Result<()> {
 		let message = format!("Twitter poll from {}:\n{}\n\nhttps://twitter.com/twitter/statuses/{}", author, text, tweet_id);
+		self.send_message_to_output(&message).await
+	}
+
+	pub async fn send_youtube_notification(&self, channel_name: &str, title: &str, sentiment: &str, video_id: &str) -> Result<()> {
+		let message = format!(
+			"[{}] uploaded a new video: [{}]\nPerception: {}\n\nhttps://youtube.com/watch?v={}",
+			channel_name, title, sentiment, video_id
+		);
 		self.send_message_to_output(&message).await
 	}
 

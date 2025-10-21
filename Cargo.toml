@@ -12,15 +12,16 @@ repository = "https://github.com/valeratrades/social_networks"
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
-chrono = "^0"
+ask_llm = "^0.1.4"
 clap = { version = "^4", features = ["derive"] }
-color-eyre = "^0.6.3"
+color-eyre = "^0.6.5"
 config = "^0"
 derive-new = "^0"
 futures-util = "^0"
 grammers-client = "^0.7"
 grammers-session = "^0.7"
 grammers-tl-types = "^0.7"
+quick-xml = "0.38.3"
 reqwest = { version = "^0", features = ["json"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
@@ -32,6 +33,7 @@ tracing-subscriber = "^0"
 xdg = { version = "3.0.0", features = ["serde"] }
 
 # my crates {{{
+jiff = { version = "0.2.15", features = ["serde"] }
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
 v_utils = { version = "^2.7" } #ga: rm path
 

@@ -2,11 +2,24 @@
 ![Minimum Supported Rust Version](https://img.shields.io/badge/nightly-1.92+-ab6000.svg)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/social_networks.svg?color=fc8d62&logo=rust" height="20" style=flat-square>](https://crates.io/crates/social_networks)
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs&style=flat-square" height="20">](https://docs.rs/social_networks)
-![Lines Of Code](https://img.shields.io/badge/LoC-1289-lightblue)
+![Lines Of Code](https://img.shields.io/badge/LoC-1436-lightblue)
 <br>
 [<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/social_networks/errors.yml?branch=master&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/social_networks/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/social_networks/warnings.yml?branch=master&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/social_networks/actions?query=branch%3Amaster) <!--NB: Won't find it if repo is private-->
 
+scripts to automate scraping from or certain parts of interactions with social networks.
+
+has aggregators of sentiment polls from Twitter and Telegram, interpretation of Hamaha's video titles, discord /ping notifier, etc
+
+## Usage
+on the server, fill in the [~/.config/social_networks.toml], following, [../examples/config.toml]
+Then startup needed services:
+```sh
+social_networks discord
+social_networks telegram
+social_networks twitter
+social_networks youtube
+```
 
 
 

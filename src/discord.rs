@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use chrono::Local;
 use clap::Args;
 use color_eyre::eyre::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
@@ -133,7 +133,8 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 				11 => {
 					// Heartbeat ACK
 					let count = *message_counter.lock().await;
-					let now = Local::now().format("%m/%d/%y-%H");
+					let now_zoned = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+					let now = strtime::format("%m/%d/%y-%H", &now_zoned).unwrap();
 					info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {count} messages");
 					*message_counter.lock().await = 0;
 				}
