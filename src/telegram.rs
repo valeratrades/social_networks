@@ -1,8 +1,8 @@
-use chrono::{Local, Timelike};
 use clap::Args;
 use color_eyre::eyre::Result;
 use grammers_client::{Client, Config, SignInError, Update};
 use grammers_session::Session;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
@@ -193,15 +193,13 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 	};
 
-	let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
-	let mut last_heartbeat = 0i64;
-	let mut last_status_update = 0i64;
-	let mut message_counter = 0u64;
-
 	eprintln!("Listening for messages...");
 	info!("Starting main event loop");
 
 	// Main event loop
+	let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
+	let mut message_counter = 0u64;
+	let mut last_status_update = Timestamp::default();
 	loop {
 		let update = match client.next_update().await {
 			Ok(u) => u,
@@ -249,30 +247,17 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 
 		// Status update every 5 minutes
-		let now = Local::now();
-		if now.minute().is_multiple_of(5) {
-			let current_time = now.timestamp();
-			if current_time - last_status_update > 4 * 60 {
-				if !status_drop.status.is_empty() {
-					if let Err(e) = update_profile(&client, &status_drop.status).await {
-						error!("Error updating profile: {}", e);
-					} else {
-						debug!("Profile status updated");
-					}
-				}
-				last_status_update = current_time;
-			}
-		}
 
-		// Heartbeat every hour
-		if now.minute().is_multiple_of(60) {
-			let current_time = now.timestamp();
-			if current_time - last_heartbeat > 4 * 60 {
-				let formatted_time = now.format("%m/%d/%y-%H");
-				info!("Heartbeat received. Time: {}. Since last heartbeat processed: {} messages", formatted_time, message_counter);
-				message_counter = 0;
-				last_heartbeat = current_time;
+		let now = Timestamp::now();
+		if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
+			if !status_drop.status.is_empty() {
+				if let Err(e) = update_profile(&client, &status_drop.status).await {
+					error!("Error updating profile: {}", e);
+				} else {
+					debug!("Profile status updated; message counter: {message_counter}");
+				}
 			}
+			last_status_update = now;
 		}
 	}
 }

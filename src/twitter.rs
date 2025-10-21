@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use chrono::Local;
 use clap::Args;
 use color_eyre::eyre::{Context, Result};
+use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration};
 use tracing::{error, info};
@@ -140,8 +140,8 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 		let state_json = serde_json::to_string(&parsed_state)?;
 		std::fs::write(&state_file, state_json)?;
 
-		let now = Local::now();
-		info!("Heartbeat. Time: {}", now.format("%m/%d/%y-%H:%M"));
+		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+		info!("Heartbeat. Time: {}", strtime::format("%m/%d/%y-%H:%M", &now).unwrap());
 
 		// Sleep for 60 seconds
 		time::sleep(Duration::from_secs(60)).await;
