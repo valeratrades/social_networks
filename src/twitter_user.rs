@@ -12,6 +12,7 @@ pub enum TwitterUser {
 	Username(String),
 }
 
+#[allow(deprecated)]
 impl Default for TwitterUser {
 	fn default() -> Self {
 		Self::UserId(0)
@@ -54,7 +55,7 @@ impl FromStr for TwitterUser {
 	}
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, deprecated)]
 fn parse_twitter_user_str(s: &str) -> Result<TwitterUser, color_eyre::eyre::Report> {
 	let trimmed = s.trim();
 
@@ -88,12 +89,12 @@ fn parse_twitter_user_str(s: &str) -> Result<TwitterUser, color_eyre::eyre::Repo
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
 	use serde_json::from_str;
 
 	use super::*;
 
-	#[allow(deprecated)]
 	#[test]
 	fn test_deserialize_user_id() {
 		let json = r#"1507244316154023968"#;
