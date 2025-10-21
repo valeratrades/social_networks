@@ -1,11 +1,12 @@
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, HashMap},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result, eyre};
 use hmac::{Hmac, Mac};
+use jiff::Timestamp;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -25,13 +26,16 @@ async fn post_poll(config: &AppConfig) -> Result<()> {
 
 	println!("Posting poll from account: {}", oauth.acc_username);
 
+	// Parse poll text and extract options with lazy variable resolution
+	let (tweet_text, poll_options) = parse_poll_text_async(&poll_config.text).await?;
+
 	let duration_minutes = poll_config.duration_hours * 60;
 
 	let request = CreateTweetRequest {
-		text: poll_config.text.clone(),
+		text: tweet_text,
 		poll: Some(PollOptions {
 			duration_minutes,
-			options: vec!["yes".to_string(), "definitely".to_string()],
+			options: poll_options,
 		}),
 	};
 
@@ -108,6 +112,112 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 	let tweet_response: CreateTweetResponse = serde_json::from_str(&response_text).context("Failed to parse tweet response")?;
 
 	Ok(tweet_response)
+}
+
+/// Variables provider with lazy async evaluation
+struct VariableProvider;
+
+impl VariableProvider {
+	async fn get_btc_price() -> Result<String> {
+		// Placeholder for actual BTC price fetching
+		Ok("1234".to_string())
+	}
+
+	async fn get_date() -> Result<String> {
+		let now = Timestamp::now();
+		let zoned = now.to_zoned(jiff::tz::TimeZone::UTC);
+		Ok(zoned.to_string())
+	}
+
+	async fn resolve(&self, variable_name: &str) -> Result<String> {
+		match variable_name {
+			"btc_price" => Self::get_btc_price().await,
+			"date" => Self::get_date().await,
+			_ => Err(eyre!("Unknown variable: {}", variable_name)),
+		}
+	}
+}
+
+/// Extract variable names from text (finds all ${var_name} patterns)
+fn extract_variable_names(text: &str) -> Vec<String> {
+	let mut variables = Vec::new();
+	let mut chars = text.chars().peekable();
+
+	while let Some(ch) = chars.next() {
+		if ch == '$' {
+			if chars.peek() == Some(&'{') {
+				chars.next(); // consume '{'
+				let mut var_name = String::new();
+				while let Some(&c) = chars.peek() {
+					if c == '}' {
+						chars.next(); // consume '}'
+						variables.push(var_name);
+						break;
+					} else {
+						var_name.push(c);
+						chars.next();
+					}
+				}
+			}
+		}
+	}
+
+	variables
+}
+
+async fn parse_poll_text_async(text: &str) -> Result<(String, Vec<String>)> {
+	// First, extract variable names needed
+	let variable_names = extract_variable_names(text);
+
+	// Resolve only the variables we need
+	let provider = VariableProvider;
+	let mut variables = HashMap::new();
+
+	for var_name in variable_names {
+		let value = provider.resolve(&var_name).await?;
+		variables.insert(var_name, value);
+	}
+
+	// Now parse the poll text
+	parse_poll_text(text, &variables)
+}
+
+fn parse_poll_text(text: &str, variables: &HashMap<String, String>) -> Result<(String, Vec<String>)> {
+	let mut tweet_lines = Vec::new();
+	let mut poll_options = Vec::new();
+
+	for line in text.lines() {
+		let trimmed = line.trim();
+		if let Some(option_text) = trimmed.strip_prefix("- [ ] ") {
+			// This is a poll option
+			poll_options.push(option_text.to_string());
+		} else {
+			// This is part of the tweet text (including empty lines)
+			tweet_lines.push(line);
+		}
+	}
+
+	// Join tweet lines and perform variable substitution
+	let mut tweet_text = tweet_lines.join("\n");
+
+	// Trim trailing/leading whitespace from the entire tweet text
+	tweet_text = tweet_text.trim().to_string();
+
+	// Substitute variables
+	for (key, value) in variables {
+		let placeholder = format!("${{{}}}", key);
+		tweet_text = tweet_text.replace(&placeholder, value);
+	}
+
+	if poll_options.is_empty() {
+		return Err(eyre!("No poll options found in text. Use '- [ ] option' format"));
+	}
+
+	if poll_options.len() > 4 {
+		return Err(eyre!("Twitter polls support maximum 4 options, found {}", poll_options.len()));
+	}
+
+	Ok((tweet_text, poll_options))
 }
 
 fn percent_encode(s: &str) -> String {
@@ -187,5 +297,113 @@ mod tests {
 		let signature = "tnnArxj06cWHq44gCs1OSKk/jLY=";
 		let encoded = percent_encode(signature);
 		assert_eq!(encoded, "tnnArxj06cWHq44gCs1OSKk%2FjLY%3D");
+	}
+
+	#[test]
+	fn test_extract_variable_names() {
+		let text = "Price: ${btc_price}, Date: ${date}";
+		let vars = extract_variable_names(text);
+		assert_eq!(vars, vec!["btc_price", "date"]);
+	}
+
+	#[test]
+	fn test_extract_variable_names_empty() {
+		let text = "No variables here";
+		let vars = extract_variable_names(text);
+		assert!(vars.is_empty());
+	}
+
+	#[test]
+	fn test_parse_poll_text_basic() {
+		let text = r#"btc up or down?
+- [ ] up
+- [ ] down"#;
+		let variables = HashMap::new();
+		let (tweet_text, options) = parse_poll_text(text, &variables).unwrap();
+		assert_eq!(tweet_text, "btc up or down?");
+		assert_eq!(options, vec!["up", "down"]);
+	}
+
+	#[test]
+	fn test_parse_poll_text_with_variable() {
+		let text = r#"btc up or down?
+
+for ref, current price: ${btc_price}
+- [ ] up
+- [ ] down
+- [ ] crab
+- [ ] see results"#;
+		let mut variables = HashMap::new();
+		variables.insert("btc_price".to_string(), "1234".to_string());
+		let (tweet_text, options) = parse_poll_text(text, &variables).unwrap();
+		assert_eq!(tweet_text, "btc up or down?\n\nfor ref, current price: 1234");
+		assert_eq!(options, vec!["up", "down", "crab", "see results"]);
+	}
+
+	#[test]
+	fn test_parse_poll_text_multiple_variables() {
+		let text = r#"${coin} price: ${price}
+- [ ] buy
+- [ ] sell"#;
+		let mut variables = HashMap::new();
+		variables.insert("coin".to_string(), "BTC".to_string());
+		variables.insert("price".to_string(), "$50000".to_string());
+		let (tweet_text, options) = parse_poll_text(text, &variables).unwrap();
+		assert_eq!(tweet_text, "BTC price: $50000");
+		assert_eq!(options, vec!["buy", "sell"]);
+	}
+
+	#[test]
+	fn test_parse_poll_text_no_options() {
+		let text = "just text, no options";
+		let variables = HashMap::new();
+		let result = parse_poll_text(text, &variables);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().to_string().contains("No poll options found"));
+	}
+
+	#[test]
+	fn test_parse_poll_text_too_many_options() {
+		let text = r#"pick one
+- [ ] option1
+- [ ] option2
+- [ ] option3
+- [ ] option4
+- [ ] option5"#;
+		let variables = HashMap::new();
+		let result = parse_poll_text(text, &variables);
+		assert!(result.is_err());
+		assert!(result.unwrap_err().to_string().contains("maximum 4 options"));
+	}
+
+	#[tokio::test]
+	async fn test_parse_poll_text_async_with_btc_price() {
+		let text = r#"BTC: ${btc_price}
+- [ ] up
+- [ ] down"#;
+		let (tweet_text, options) = parse_poll_text_async(text).await.unwrap();
+		assert_eq!(tweet_text, "BTC: 1234");
+		assert_eq!(options, vec!["up", "down"]);
+	}
+
+	#[tokio::test]
+	async fn test_parse_poll_text_async_with_date() {
+		let text = r#"Today: ${date}
+- [ ] yes
+- [ ] no"#;
+		let (tweet_text, options) = parse_poll_text_async(text).await.unwrap();
+		assert!(tweet_text.starts_with("Today: "));
+		assert!(tweet_text.contains("UTC"));
+		assert_eq!(options, vec!["yes", "no"]);
+	}
+
+	#[tokio::test]
+	async fn test_parse_poll_text_async_no_variables() {
+		let text = r#"Simple poll
+- [ ] option1
+- [ ] option2"#;
+		let (tweet_text, options) = parse_poll_text_async(text).await.unwrap();
+		assert_eq!(tweet_text, "Simple poll");
+		assert_eq!(options, vec!["option1", "option2"]);
 	}
 }

@@ -40,6 +40,7 @@ xdg = { version = "3.0.0", features = ["serde"] }
 # my crates {{{
 jiff = { version = "0.2.15", features = ["serde"] }
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
+v_exchanges = { version = "0.13.0", default-features = false, features = ["binance"] }
 v_utils = { version = "^2.7" } #ga: rm path
 
 [dev-dependencies]
