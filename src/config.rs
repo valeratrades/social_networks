@@ -6,6 +6,7 @@ use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 pub struct AppConfig {
 	pub discord: DiscordConfig,
 	pub telegram: TelegramConfig,
+	pub twitter: TwitterConfig,
 }
 
 #[derive(Debug, Default, Clone, MyConfigPrimitives)]
@@ -19,14 +20,22 @@ pub struct DiscordConfig {
 pub struct TelegramConfig {
 	pub bot_token: String,
 	#[private_value]
-	pub alerts_channel: TelegramDestination,
+	pub channel_alerts: TelegramDestination,
+	#[private_value]
+	pub channel_output: TelegramDestination,
 	pub api_id: i32,
 	pub api_hash: String,
 	pub phone: String,
 	pub username: String,
-	pub watch_channel_username: String,
 	pub poll_channels: Vec<String>,
 	pub info_channels: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+pub struct TwitterConfig {
+	pub bearer_token: String,
+	pub ids_exclusive_polls: Vec<String>,
+	pub ids_potential_polls: Vec<String>,
 }
 
 impl AppConfig {

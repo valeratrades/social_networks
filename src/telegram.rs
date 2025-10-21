@@ -173,16 +173,23 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 	}
 
-	// Resolve watch channel
-	info!("Resolving watch channel: {}", config.telegram.watch_channel_username);
-	let watch_chat = match client.resolve_username(config.telegram.watch_channel_username.trim_start_matches('@')).await? {
+	// Resolve output channel - extract username from TelegramDestination
+	let output_username = match &config.telegram.channel_output {
+		tg::chat::TelegramDestination::ChannelUsername(username) => username.trim_start_matches('@'),
+		tg::chat::TelegramDestination::ChannelExactUid(_) | tg::chat::TelegramDestination::Group { .. } => {
+			return Err(color_eyre::eyre::eyre!("channel_output must be a username for grammers client forwarding"));
+		}
+	};
+
+	info!("Resolving output channel: {}", output_username);
+	let watch_chat = match client.resolve_username(output_username).await? {
 		Some(chat) => {
-			info!("Watch channel resolved: {}", chat.id());
+			info!("Output channel resolved: {}", chat.id());
 			chat.pack()
 		}
 		None => {
-			error!("Could not resolve watch channel: {}", config.telegram.watch_channel_username);
-			return Err(color_eyre::eyre::eyre!("Could not resolve watch channel: {}", config.telegram.watch_channel_username));
+			error!("Could not resolve output channel: {}", output_username);
+			return Err(color_eyre::eyre::eyre!("Could not resolve output channel: {}", output_username));
 		}
 	};
 

@@ -3,6 +3,7 @@ mod discord;
 mod telegram;
 mod telegram_notifier;
 mod twitter;
+mod twitter_user;
 mod youtube;
 
 use clap::{Args, Parser, Subcommand};
