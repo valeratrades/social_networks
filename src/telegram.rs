@@ -181,15 +181,15 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 	};
 
-	info!("Resolving output channel: {}", output_username);
+	info!("Resolving output channel: {output_username}");
 	let watch_chat = match client.resolve_username(output_username).await? {
 		Some(chat) => {
 			info!("Output channel resolved: {}", chat.id());
 			chat.pack()
 		}
 		None => {
-			error!("Could not resolve output channel: {}", output_username);
-			return Err(color_eyre::eyre::eyre!("Could not resolve output channel: {}", output_username));
+			error!("Could not resolve output channel: {output_username}");
+			return Err(color_eyre::eyre::eyre!("Could not resolve output channel: {output_username}"));
 		}
 	};
 
@@ -204,11 +204,11 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		let update = match client.next_update().await {
 			Ok(u) => u,
 			Err(e) => {
-				error!("Error getting next update: {}", e);
+				error!("Error getting next update: {e}");
 				continue;
 			}
 		};
-		debug!("Received update: {:?}", update);
+		debug!("Received update: {update:?}");
 		message_counter += 1;
 
 		match update {
@@ -225,9 +225,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 					{
 						let username = sender.username().unwrap_or("unknown");
 						if let Err(e) = telegram_notifier.send_ping_notification(username, "Telegram").await {
-							error!("Error sending notification: {}", e);
+							error!("Error sending notification: {e}");
 						} else {
-							info!("Successfully sent notification for user: {}", username);
+							info!("Successfully sent notification for user: {username}");
 						}
 					}
 				}
@@ -235,12 +235,12 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				// Check if it's from a monitored channel
 				if poll_peer_ids.contains(&chat_id) {
 					if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
-						error!("Error handling poll message: {}", e);
+						error!("Error handling poll message: {e}");
 					}
 				} else if info_peer_ids.contains(&chat_id)
 					&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
 				{
-					error!("Error handling info message: {}", e);
+					error!("Error handling info message: {e}");
 				}
 			}
 			_ => {}
@@ -252,7 +252,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
 			if !status_drop.status.is_empty() {
 				if let Err(e) = update_profile(&client, &status_drop.status).await {
-					error!("Error updating profile: {}", e);
+					error!("Error updating profile: {e}");
 				} else {
 					debug!("Profile status updated; message counter: {message_counter}");
 				}

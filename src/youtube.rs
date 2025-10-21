@@ -44,6 +44,7 @@ pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 	})
 }
 
+#[instrument]
 async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(config.telegram.clone());
@@ -99,7 +100,7 @@ async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name:
 		}
 
 		println!("YouTube: [{channel_name}] uploaded: {title}");
-		info!("New video from {}: {:?}", channel_name, title);
+		info!("New video from {channel_name}: {title:?}");
 
 		// Get sentiment analysis
 		let sentiment = analyze_sentiment(&title).await.unwrap_or_else(|e| {
@@ -151,9 +152,14 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 			}
 			Ok(Event::End(e)) => {
 				let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-				if tag_name == "entry" && video_id.is_some() && title.is_some() && published.is_some() {
-					let published_dt: Zoned = published.unwrap().parse()?;
+				if tag_name == "entry"
+					&& video_id.is_some()
+					&& title.is_some()
+					&& let Some(dt_str) = published
+				{
+					let published_dt: Zoned = dt_str.parse()?;
 
+					#[allow(clippy::unnecessary_unwrap)] // actually leads to borrowship issues
 					return Ok((video_id.unwrap(), title.unwrap(), published_dt.into()));
 				}
 			}
