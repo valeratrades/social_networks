@@ -3,6 +3,7 @@ mod discord;
 mod telegram;
 mod telegram_notifier;
 mod twitter;
+mod twitter_schedule;
 mod twitter_user;
 mod youtube;
 
@@ -27,6 +28,8 @@ enum Commands {
 	Telegram(telegram::TelegramArgs),
 	/// Twitter operations
 	Twitter(twitter::TwitterArgs),
+	/// Twitter scheduled posting
+	TwitterSchedule(twitter_schedule::TwitterScheduleArgs),
 	/// YouTube operations
 	Youtube(youtube::YoutubeArgs),
 }
@@ -43,6 +46,7 @@ fn main() {
 		Commands::Discord(args) => discord::main(config, args),
 		Commands::Telegram(args) => telegram::main(config, args),
 		Commands::Twitter(args) => twitter::main(config, args),
+		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),
 		Commands::Youtube(args) => youtube::main(config, args),
 	};
 	exit_on_error(success);

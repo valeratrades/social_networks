@@ -37,6 +37,16 @@ pub struct TwitterConfig {
 	pub bearer_token: String,
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
+	pub oauth: Option<TwitterOauthConfig>,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct TwitterOauthConfig {
+	pub acc_username: String,
+	pub api_key: String,
+	pub api_key_secret: String,
+	pub access_token: String,
+	pub access_token_secret: String,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]

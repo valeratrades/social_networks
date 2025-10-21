@@ -13,6 +13,7 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
 ask_llm = "^0.1.4"
+base64 = "^0.22"
 clap = { version = "^4", features = ["derive"] }
 color-eyre = "^0.6.5"
 config = "^0"
@@ -21,10 +22,14 @@ futures-util = "^0"
 grammers-client = "^0.7"
 grammers-session = "^0.7"
 grammers-tl-types = "^0.7"
+hmac = "^0.12"
+oauth1-request = "^0.6"
 quick-xml = "0.38.3"
+rand = "^0.8"
 reqwest = { version = "^0", features = ["json"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
+sha1 = "^0.10"
 tokio = { version = "^1", features = ["full"] }
 tokio-tungstenite = { version = "^0", features = ["native-tls"] }
 tracing = "^0"
