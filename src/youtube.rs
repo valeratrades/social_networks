@@ -13,7 +13,7 @@ use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 #[derive(Args)]
 pub struct YoutubeArgs {}
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct LastUploadedTitles {
 	channels: HashMap<String, String>,
 }

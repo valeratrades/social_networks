@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 #[deprecated(note = "Not currently used, but kept for potential future use")]
 #[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Hash)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum TwitterUser {
 	UserId(u64),

@@ -18,7 +18,7 @@ use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 #[derive(Args)]
 pub struct DiscordArgs {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct DiscordMessage {
 	op: u8,
 	d: Option<serde_json::Value>,

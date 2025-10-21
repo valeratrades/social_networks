@@ -11,7 +11,7 @@ use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 #[derive(Args)]
 pub struct TelegramArgs {}
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct StatusDrop {
 	status: String,
 }

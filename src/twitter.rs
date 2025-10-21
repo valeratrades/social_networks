@@ -12,53 +12,53 @@ use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 #[derive(Args)]
 pub struct TwitterArgs {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TwitterApiUser {
 	id: String,
 	name: String,
 	username: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TwitterListResponse {
 	data: Vec<TwitterApiUser>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Tweet {
 	id: String,
 	text: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TweetResponse {
 	data: Tweet,
 	includes: Option<TweetIncludes>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TweetIncludes {
 	polls: Option<Vec<Poll>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Poll {
 	id: String,
 	options: Vec<PollOption>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct PollOption {
 	label: String,
 	votes: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct UserTweetsResponse {
 	data: Vec<Tweet>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct ParsedTweets {
 	poll_tweets: Vec<String>,
 	maybe_poll_tweets: Vec<String>,

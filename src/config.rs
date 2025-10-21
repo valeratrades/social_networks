@@ -2,7 +2,7 @@ use color_eyre::eyre::Result;
 use tg::chat::TelegramDestination;
 use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
 
-#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct AppConfig {
 	pub discord: DiscordConfig,
 	pub telegram: TelegramConfig,
@@ -10,14 +10,14 @@ pub struct AppConfig {
 	pub youtube: YoutubeConfig,
 }
 
-#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct DiscordConfig {
 	pub user_token: String,
 	pub monitored_users: Vec<String>,
 	pub my_username: String,
 }
 
-#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TelegramConfig {
 	pub bot_token: String,
 	#[private_value]
@@ -32,14 +32,14 @@ pub struct TelegramConfig {
 	pub info_channels: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TwitterConfig {
 	pub bearer_token: String,
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
 }
 
-#[derive(Debug, Default, Clone, MyConfigPrimitives)]
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct YoutubeConfig {
 	pub channels: std::collections::HashMap<String, String>,
 }
