@@ -137,7 +137,7 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 
 	// Generate OAuth parameters
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
-	let nonce: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
+	let nonce: String = rand::rng().sample_iter(rand::distr::Alphanumeric).take(32).map(char::from).collect();
 
 	let mut oauth_params = BTreeMap::new();
 	oauth_params.insert("oauth_consumer_key", api_key);
