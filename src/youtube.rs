@@ -175,7 +175,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 
 async fn analyze_sentiment(title: &str) -> Result<String> {
 	// Get current BTC price for context
-	let btc_price = btc_price().await.unwrap_or(0);
+	let btc_price = btc_price(3).await.unwrap_or(0);
 
 	let prompt = format!(
 		"You receive a title of a youtube video from a crypto channel and current BTC price in case they reference it. \

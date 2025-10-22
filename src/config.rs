@@ -50,11 +50,16 @@ pub struct TwitterOauthConfig {
 	pub access_token_secret: String,
 }
 
-#[derive(Clone, Debug, MyConfigPrimitives)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct TwitterPollConfig {
 	pub text: String,
 	pub duration_hours: u32,
 	pub schedule_every: Timeframe,
+	#[serde(default = "__default_num_of_retries")]
+	pub num_of_retries: u8,
+}
+fn __default_num_of_retries() -> u8 {
+	3
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
