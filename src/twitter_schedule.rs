@@ -20,7 +20,7 @@ use crate::{
 
 type HmacSha1 = Hmac<Sha1>;
 
-pub fn main(config: AppConfig, _args: TwitterScheduleArgs) -> Result<()> {
+pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 	// Set up tracing with file logging (truncate old logs)
 	let log_file = v_utils::xdg_state_file!("twitter_schedule.log");
 	if log_file.exists() {
@@ -34,20 +34,33 @@ pub fn main(config: AppConfig, _args: TwitterScheduleArgs) -> Result<()> {
 	println!("Twitter Schedule: Starting scheduled poll posting...");
 
 	let runtime = tokio::runtime::Runtime::new()?;
-	runtime.block_on(async { schedule_sentiment_poll(&config).await })
+	runtime.block_on(async { schedule_sentiment_poll(&config, args.skip_first).await })
 }
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals
 #[instrument]
-async fn schedule_sentiment_poll(config: &AppConfig) -> Result<()> {
+async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result<()> {
 	println!("Twitter Schedule: Scheduler initialized");
 
 	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
 
 	// Get the schedule interval
 	let schedule_duration = poll_config.schedule_every.duration();
-	info!("schedule_interval={:?} retries={}", schedule_duration, poll_config.num_of_retries);
+	info!("schedule_interval={:?} retries={} skip_first={}", schedule_duration, poll_config.num_of_retries, skip_first);
 	println!("Schedule interval: {:?}", schedule_duration);
+
+	if skip_first {
+		let next_time = Timestamp::now()
+			.to_zoned(jiff::tz::TimeZone::UTC)
+			.checked_add(jiff::Span::try_from(schedule_duration).unwrap())
+			.unwrap();
+		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
+
+		info!("skip_first=true next={}", next_time_str);
+		println!("Skipping first post, next poll: {}", next_time_str);
+
+		time::sleep(schedule_duration).await;
+	}
 
 	loop {
 		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
@@ -308,7 +321,11 @@ fn percent_encode(s: &str) -> String {
 }
 
 #[derive(Args)]
-pub struct TwitterScheduleArgs {}
+pub struct TwitterScheduleArgs {
+	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
+	#[arg(long)]
+	pub skip_first: bool,
+}
 
 #[derive(Debug, Serialize)]
 struct CreateTweetRequest {
