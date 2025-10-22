@@ -1,6 +1,6 @@
 use color_eyre::eyre::Result;
 use tg::chat::TelegramDestination;
-use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
+use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives, trades::Timeframe};
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct AppConfig {
@@ -37,6 +37,29 @@ pub struct TwitterConfig {
 	pub bearer_token: String,
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
+	pub oauth: Option<TwitterOauthConfig>,
+	pub poll: Option<TwitterPollConfig>,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct TwitterOauthConfig {
+	pub acc_username: String,
+	pub api_key: String,
+	pub api_key_secret: String,
+	pub access_token: String,
+	pub access_token_secret: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct TwitterPollConfig {
+	pub text: String,
+	pub duration_hours: u32,
+	pub schedule_every: Timeframe,
+	#[serde(default = "__default_num_of_retries")]
+	pub num_of_retries: u8,
+}
+fn __default_num_of_retries() -> u8 {
+	3
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]

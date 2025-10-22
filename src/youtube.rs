@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
+use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
 
 #[derive(Args)]
 pub struct YoutubeArgs {}
@@ -175,7 +175,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 
 async fn analyze_sentiment(title: &str) -> Result<String> {
 	// Get current BTC price for context
-	let btc_price = get_btc_price().await.unwrap_or(0);
+	let btc_price = btc_price(3).await.unwrap_or(0);
 
 	let prompt = format!(
 		"You receive a title of a youtube video from a crypto channel and current BTC price in case they reference it. \
@@ -191,12 +191,4 @@ async fn analyze_sentiment(title: &str) -> Result<String> {
 	let sentiment = response.text.split_whitespace().next().unwrap_or("unclear").to_lowercase();
 
 	Ok(sentiment)
-}
-
-async fn get_btc_price() -> Result<u64> {
-	let response = reqwest::get("https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT").await?;
-	let json: serde_json::Value = response.json().await?;
-	let price = json["price"].as_str().ok_or_else(|| color_eyre::eyre::eyre!("Price not found in response"))?;
-	let price_f64: f64 = price.parse()?;
-	Ok(price_f64.round() as u64)
 }
