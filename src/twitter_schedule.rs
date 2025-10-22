@@ -4,12 +4,14 @@ use std::{
 };
 
 use clap::Args;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use hmac::{Hmac, Mac};
-use jiff::Timestamp;
+use jiff::{Timestamp, fmt::strtime};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
+use tokio::time;
+use tracing::{error, info, instrument};
 
 use crate::{
 	config::AppConfig,
@@ -19,31 +21,99 @@ use crate::{
 type HmacSha1 = Hmac<Sha1>;
 
 pub fn main(config: AppConfig, _args: TwitterScheduleArgs) -> Result<()> {
+	// Set up tracing with file logging (truncate old logs)
+	let log_file = v_utils::xdg_state_file!("twitter_schedule.log");
+	if log_file.exists() {
+		std::fs::remove_file(&log_file)?;
+	}
+	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
+	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
+
+	println!("Twitter Schedule: Starting scheduled poll posting...");
+
 	let runtime = tokio::runtime::Runtime::new()?;
-	runtime.block_on(async { post_poll(&config).await })
+	runtime.block_on(async { schedule_sentiment_poll(&config).await })
 }
 
+/// Runs a scheduling loop that posts sentiment polls at regular intervals
+#[instrument]
+async fn schedule_sentiment_poll(config: &AppConfig) -> Result<()> {
+	println!("Twitter Schedule: Scheduler initialized");
+
+	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
+
+	// Get the schedule interval
+	let schedule_duration = poll_config.schedule_every.duration();
+	info!("Schedule interval: {:?}", schedule_duration);
+	println!("Schedule interval: {:?}", schedule_duration);
+
+	loop {
+		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+		let time_str = strtime::format("%Y-%m-%d %H:%M:%S", &now).unwrap();
+
+		info!("Starting poll posting cycle at {}", time_str);
+		println!("\n[{}] Starting poll posting cycle", time_str);
+
+		// Post the poll
+		match post_poll(config).await {
+			Ok(()) => {
+				info!("Poll posted successfully");
+				println!("✓ Poll posted successfully");
+			}
+			Err(e) => {
+				error!("Failed to post poll: {:?}", e);
+				println!("✗ Failed to post poll: {e}.\nWill retry the next posting cycle");
+			}
+		}
+
+		let next_time = Timestamp::now()
+			.to_zoned(jiff::tz::TimeZone::UTC)
+			.checked_add(jiff::Span::try_from(schedule_duration).unwrap())
+			.unwrap();
+		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
+
+		info!("Next poll scheduled for: {}", next_time_str);
+		println!("Next poll scheduled for: {}", next_time_str);
+		println!("Sleeping for {:?}...", schedule_duration);
+
+		// Sleep until next cycle
+		time::sleep(schedule_duration).await;
+	}
+}
+
+#[instrument]
 async fn post_poll(config: &AppConfig) -> Result<()> {
+	info!("post_poll: Starting");
+
 	let oauth = config.twitter.oauth.as_ref().ok_or_else(|| eyre!("twitter.oauth config not found"))?;
 	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
 
+	info!("post_poll: Using account {}", oauth.acc_username);
 	println!("Posting poll from account: {}", oauth.acc_username);
 
 	// Parse poll text and extract options with lazy variable resolution
+	info!("post_poll: Parsing poll text and resolving variables");
 	let (tweet_text, poll_options) = parse_poll_text_async(&poll_config.text).await?;
+	info!("post_poll: Parsed tweet text: {}", tweet_text);
+	info!("post_poll: Poll options: {:?}", poll_options);
 
 	let duration_minutes = poll_config.duration_hours * 60;
+	info!("post_poll: Poll duration: {} minutes", duration_minutes);
 
 	let request = CreateTweetRequest {
-		text: tweet_text,
+		text: tweet_text.clone(),
 		poll: Some(PollOptions {
 			duration_minutes,
-			options: poll_options,
+			options: poll_options.clone(),
 		}),
 	};
 
+	info!("post_poll: Sending request to Twitter API");
 	let response = post_tweet(&oauth.api_key, &oauth.api_key_secret, &oauth.access_token, &oauth.access_token_secret, &request).await?;
 
+	info!("post_poll: Successfully posted poll with ID {}", response.data.id);
 	println!("Successfully posted poll!");
 	println!("Tweet ID: {}", response.data.id);
 	println!("Tweet text: {}", response.data.text);
@@ -51,13 +121,16 @@ async fn post_poll(config: &AppConfig) -> Result<()> {
 	Ok(())
 }
 
+#[instrument]
 async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, access_token_secret: &str, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse> {
+	info!("post_tweet: Preparing OAuth request");
 	let url = "https://api.twitter.com/2/tweets";
 	let method = "POST";
 
 	// Generate OAuth parameters
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
 	let nonce: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
+	info!("post_tweet: Generated OAuth nonce and timestamp");
 
 	let mut oauth_params = BTreeMap::new();
 	oauth_params.insert("oauth_consumer_key", api_key);
@@ -95,6 +168,7 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 	);
 
 	// Make the request
+	info!("post_tweet: Making HTTP request to Twitter API");
 	let client = reqwest::Client::new();
 	let response = client
 		.post(url)
@@ -106,26 +180,28 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 		.context("Failed to send tweet request")?;
 
 	let status = response.status();
+	info!("post_tweet: Received response with status {}", status);
 	let response_text = response.text().await.context("Failed to read response body")?;
 
 	if !status.is_success() {
+		error!("post_tweet: Twitter API error (status {}): {}", status, response_text);
 		return Err(eyre!("Twitter API error (status {}): {}", status, response_text));
 	}
 
+	info!("post_tweet: Parsing response JSON");
 	let tweet_response: CreateTweetResponse = serde_json::from_str(&response_text).context("Failed to parse tweet response")?;
 
 	Ok(tweet_response)
 }
 
 /// Variables provider with lazy async evaluation
+#[derive(Debug)]
 struct VariableProvider;
-
 impl VariableProvider {
 	async fn btc_price() -> Result<String> {
-		// Placeholder for actual BTC price fetching
 		let price = btc_price().await?;
 		let rounded_to_100 = ((price + 50) / 100) * 100;
-		let s = format_num_with_thousands(rounded_to_100, &",");
+		let s = format_num_with_thousands(rounded_to_100, ",");
 
 		Ok(s)
 	}
@@ -133,9 +209,11 @@ impl VariableProvider {
 	async fn date() -> Result<String> {
 		let now = Timestamp::now();
 		let zoned = now.to_zoned(jiff::tz::TimeZone::UTC);
-		Ok(zoned.to_string())
+		let date_str = zoned.to_string();
+		Ok(date_str)
 	}
 
+	#[instrument]
 	async fn resolve(&self, variable_name: &str) -> Result<String> {
 		match variable_name {
 			"btc_price" => Self::btc_price().await,
@@ -151,19 +229,17 @@ fn extract_variable_names(text: &str) -> Vec<String> {
 	let mut chars = text.chars().peekable();
 
 	while let Some(ch) = chars.next() {
-		if ch == '$' {
-			if chars.peek() == Some(&'{') {
-				chars.next(); // consume '{'
-				let mut var_name = String::new();
-				while let Some(&c) = chars.peek() {
-					if c == '}' {
-						chars.next(); // consume '}'
-						variables.push(var_name);
-						break;
-					} else {
-						var_name.push(c);
-						chars.next();
-					}
+		if ch == '$' && chars.peek() == Some(&'{') {
+			chars.next(); // consume '{'
+			let mut var_name = String::new();
+			while let Some(&c) = chars.peek() {
+				if c == '}' {
+					chars.next(); // consume '}'
+					variables.push(var_name);
+					break;
+				} else {
+					var_name.push(c);
+					chars.next();
 				}
 			}
 		}
@@ -172,9 +248,11 @@ fn extract_variable_names(text: &str) -> Vec<String> {
 	variables
 }
 
+#[instrument]
 async fn parse_poll_text_async(text: &str) -> Result<(String, Vec<String>)> {
 	// First, extract variable names needed
 	let variable_names = extract_variable_names(text);
+	info!(?variable_names);
 
 	// Resolve only the variables we need
 	let provider = VariableProvider;
@@ -186,7 +264,8 @@ async fn parse_poll_text_async(text: &str) -> Result<(String, Vec<String>)> {
 	}
 
 	// Now parse the poll text
-	parse_poll_text(text, &variables)
+	let result = parse_poll_text(text, &variables)?;
+	Ok(result)
 }
 
 fn parse_poll_text(text: &str, variables: &HashMap<String, String>) -> Result<(String, Vec<String>)> {
@@ -217,11 +296,11 @@ fn parse_poll_text(text: &str, variables: &HashMap<String, String>) -> Result<(S
 	}
 
 	if poll_options.is_empty() {
-		return Err(eyre!("No poll options found in text. Use '- [ ] option' format"));
+		bail!("No poll options found in text. Use '- [ ] option' format");
 	}
 
 	if poll_options.len() > 4 {
-		return Err(eyre!("Twitter polls support maximum 4 options, found {}", poll_options.len()));
+		bail!("Twitter polls support maximum 4 options, found {}", poll_options.len());
 	}
 
 	Ok((tweet_text, poll_options))

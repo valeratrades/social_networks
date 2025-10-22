@@ -1,6 +1,6 @@
 use color_eyre::eyre::Result;
 use tg::chat::TelegramDestination;
-use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives};
+use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives, trades::Timeframe};
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct AppConfig {
@@ -54,6 +54,7 @@ pub struct TwitterOauthConfig {
 pub struct TwitterPollConfig {
 	pub text: String,
 	pub duration_hours: u32,
+	pub schedule_every: Timeframe,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
