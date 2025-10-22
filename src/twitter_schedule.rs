@@ -11,7 +11,10 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
-use crate::config::AppConfig;
+use crate::{
+	config::AppConfig,
+	utils::{btc_price, format_num_with_thousands},
+};
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -118,12 +121,16 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 struct VariableProvider;
 
 impl VariableProvider {
-	async fn get_btc_price() -> Result<String> {
+	async fn btc_price() -> Result<String> {
 		// Placeholder for actual BTC price fetching
-		Ok("1234".to_string())
+		let price = btc_price().await?;
+		let rounded_to_100 = ((price + 50) / 100) * 100;
+		let s = format_num_with_thousands(rounded_to_100, &",");
+
+		Ok(s)
 	}
 
-	async fn get_date() -> Result<String> {
+	async fn date() -> Result<String> {
 		let now = Timestamp::now();
 		let zoned = now.to_zoned(jiff::tz::TimeZone::UTC);
 		Ok(zoned.to_string())
@@ -131,9 +138,9 @@ impl VariableProvider {
 
 	async fn resolve(&self, variable_name: &str) -> Result<String> {
 		match variable_name {
-			"btc_price" => Self::get_btc_price().await,
-			"date" => Self::get_date().await,
-			_ => Err(eyre!("Unknown variable: {}", variable_name)),
+			"btc_price" => Self::btc_price().await,
+			"date" => Self::date().await,
+			_ => Err(eyre!("Unknown variable: {variable_name}")),
 		}
 	}
 }
