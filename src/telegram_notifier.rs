@@ -21,6 +21,11 @@ impl TelegramNotifier {
 		self.send_message_to_alerts(&text).await
 	}
 
+	pub async fn send_monitored_user_message(&self, username: &str, platform: &str) -> Result<()> {
+		let text = format!("New message from @{username}, {platform}");
+		self.send_message_to_alerts(&text).await
+	}
+
 	pub async fn send_twitter_poll(&self, author: &str, text: &str, tweet_id: &str) -> Result<()> {
 		let message = format!("Twitter poll from {}:\n{}\n\nhttps://twitter.com/twitter/statuses/{}", author, text, tweet_id);
 		self.send_message_to_output(&message).await

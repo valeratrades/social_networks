@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result};
@@ -120,6 +120,8 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 	info!("--Discord-- connected to WebSocket");
 
 	let telegram = TelegramNotifier::new(config.telegram.clone());
+	// Track last message timestamp per channel for cooldown (channel_id -> timestamp)
+	let last_message_times: Arc<Mutex<HashMap<String, Timestamp>>> = Arc::new(Mutex::new(HashMap::new()));
 
 	// Main event loop
 	while let Some(msg) = read.next().await {
@@ -141,7 +143,7 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 				0 => {
 					// Dispatch event
 					if let Some(d) = &event.d
-						&& let Err(e) = handle_message(d, config, &telegram).await
+						&& let Err(e) = handle_message(d, config, &telegram, &last_message_times).await
 					{
 						error!("Error handling message: {e}");
 					}
@@ -154,26 +156,26 @@ async fn run_discord_monitor(config: &AppConfig) -> Result<()> {
 	Ok(())
 }
 
-async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: &TelegramNotifier) -> Result<()> {
+async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: &TelegramNotifier, last_message_times: &Arc<Mutex<HashMap<String, Timestamp>>>) -> Result<()> {
 	let author = data.get("author").and_then(|a| a.get("username")).and_then(|u| u.as_str());
-
 	let content = data.get("content").and_then(|c| c.as_str());
+	let channel_id = data.get("channel_id").and_then(|c| c.as_str());
 
-	if let (Some(author), Some(content)) = (author, content) {
-		let mut should_notify = false;
+	if let (Some(author), Some(content), Some(channel_id)) = (author, content, channel_id) {
+		let is_dm = data.get("guild_id").is_none();
+		let now = Timestamp::now();
 
-		// Check if author is a monitored user
-		if config.discord.monitored_users.contains(&author.to_string()) {
-			should_notify = true;
-		}
+		let has_ping = content.contains("/ping");
+		let is_monitored_user = config.discord.monitored_users.contains(&author.to_string());
+		let is_my_message = author == config.discord.my_username;
 
-		// Check for ping mentions
-		if content.contains("/ping") && author != config.discord.my_username {
-			let is_dm = data.get("guild_id").is_none();
+		// Determine if we should notify for /ping
+		if has_ping && !is_my_message {
+			let mut should_notify_ping = false;
 
 			if is_dm {
 				// In DMs, just /ping is sufficient
-				should_notify = true;
+				should_notify_ping = true;
 			} else {
 				// In chats/guilds, need either @mention or reply to my message
 				let event_str = serde_json::to_string(data)?;
@@ -189,15 +191,45 @@ async fn handle_message(data: &serde_json::Value, config: &AppConfig, telegram: 
 					.unwrap_or(false);
 
 				if has_mention || is_reply_to_me {
-					should_notify = true;
+					should_notify_ping = true;
 				}
 			}
-		}
 
-		if should_notify {
-			println!("Discord ping from {author}: {content}");
-			telegram.send_ping_notification(author, "Discord").await?;
-			info!("Successfully sent notification for user: {author}");
+			if should_notify_ping {
+				println!("Discord ping from {author}: {content}");
+				telegram.send_ping_notification(author, "Discord").await?;
+				info!("Successfully sent ping notification for user: {author}");
+			}
+		}
+		// Check for monitored user messages (without /ping)
+		else if is_monitored_user && is_dm && !has_ping {
+			// Check cooldown: only notify if 15+ minutes have passed since last message
+			let mut last_times = last_message_times.lock().await;
+			let last_message_time = last_times.get(channel_id).copied();
+
+			let should_notify = if let Some(last_time) = last_message_time {
+				let duration_since_last = now.duration_since(last_time);
+				// Check if more than 15 minutes have passed
+				duration_since_last.as_secs() >= 15 * 60
+			} else {
+				// No previous message recorded, notify
+				true
+			};
+
+			if should_notify {
+				println!("Discord message from monitored user {author}: {content}");
+				telegram.send_monitored_user_message(author, "Discord").await?;
+				info!("Successfully sent monitored user notification for: {author}");
+			}
+
+			// Update the last message time after checking (for next message)
+			last_times.insert(channel_id.to_string(), now);
+			drop(last_times);
+		} else {
+			// For all other messages (including my own), just update the timestamp
+			let mut last_times = last_message_times.lock().await;
+			last_times.insert(channel_id.to_string(), now);
+			drop(last_times);
 		}
 	}
 
