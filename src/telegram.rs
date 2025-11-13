@@ -17,22 +17,13 @@ struct StatusDrop {
 }
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
-	// Set up tracing with file logging (truncate old logs)
-	let log_file = v_utils::xdg_state_file!("telegram.log");
-	if log_file.exists() {
-		std::fs::remove_file(&log_file)?;
-	}
-	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
-	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
+	v_utils::clientside!("telegram");
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
 		loop {
 			if let Err(e) = run_telegram_monitor(&config).await {
-				error!("Telegram monitor error: {e}");
-				error!("Reconnecting in 10 minutes...");
+				error!("Telegram monitor error: {e}\nReconnecting in 10 minutes...");
 				tokio::time::sleep(tokio::time::Duration::from_secs(10 * 60)).await;
 			}
 		}
@@ -82,7 +73,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		let token = client.request_login_code(&config.telegram.phone).await?;
 		info!("Login code requested successfully, check your Telegram app");
 
-		eprint!("Enter the code you received: ");
+		print!("Enter the code you received: ");
 		std::io::Write::flush(&mut std::io::stderr())?;
 		let mut code = String::new();
 		std::io::stdin().read_line(&mut code)?;
@@ -98,7 +89,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 			}
 			Err(SignInError::PasswordRequired(password_token)) => {
 				info!("2FA password required");
-				eprint!("Enter your 2FA password: ");
+				print!("Enter your 2FA password: ");
 				std::io::Write::flush(&mut std::io::stderr())?;
 				let mut password = String::new();
 				std::io::stdin().read_line(&mut password)?;
@@ -112,8 +103,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				info!("2FA authentication successful");
 			}
 			Err(e) => {
-				eprintln!("Sign in failed: {}", e);
-				error!("Sign in failed with error: {}", e);
+				error!("Sign in failed with error: {e}");
 				return Err(e.into());
 			}
 		}
