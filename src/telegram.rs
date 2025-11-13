@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use clap::Args;
 use color_eyre::eyre::Result;
-use grammers_client::{Client, Config, SignInError, Update};
-use grammers_session::Session;
+use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
+use grammers_mtsender::SenderPool;
+use grammers_session::{defs::PeerRef, storages::SqliteSession};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
@@ -36,13 +39,8 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let session_file = v_utils::xdg_state_file!(&session_filename);
 	info!("Using session file: {}", session_file.display());
 
-	let session = if session_file.exists() {
-		info!("Loading existing session");
-		Session::load_file(&session_file)?
-	} else {
-		info!("Creating new session");
-		Session::new()
-	};
+	info!("Opening session database");
+	let session = Arc::new(SqliteSession::open(&session_file)?);
 
 	// Load status drop
 	let status_file = v_utils::xdg_state_file!("telegram_status.json");
@@ -58,19 +56,16 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 	// Create client
 	info!("Connecting to Telegram with api_id: {}", config.telegram.api_id);
-	let client = Client::connect(Config {
-		session,
-		api_id: config.telegram.api_id,
-		api_hash: config.telegram.api_hash.clone(),
-		params: Default::default(),
-	})
-	.await?;
+	let pool = SenderPool::new(Arc::clone(&session), config.telegram.api_id);
+	let client = Client::new(&pool);
+	let SenderPool { runner, updates, .. } = pool;
+	let _pool_task = tokio::spawn(runner.run());
 	info!("Connected to Telegram");
 
 	// Sign in if not already
 	if !client.is_authorized().await? {
 		info!("Not authorized, requesting login code for {}", config.telegram.phone);
-		let token = client.request_login_code(&config.telegram.phone).await?;
+		let token = client.request_login_code(&config.telegram.phone, &config.telegram.api_hash).await?;
 		info!("Login code requested successfully, check your Telegram app");
 
 		print!("Enter the code you received: ");
@@ -108,27 +103,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 			}
 		}
 
-		// Save session
-		info!("Saving session to {}", session_file.display());
-		let session_to_save = client.session();
-		debug!("Session object retrieved from client");
-
-		// Try to save as bytes directly to debug
-		let session_data = session_to_save.save();
-		info!("Session serialized to {} bytes", session_data.len());
-
-		match std::fs::write(&session_file, &session_data) {
-			Ok(_) => {
-				eprintln!("Session saved successfully");
-				info!("Session saved successfully to {}", session_file.display());
-			}
-			Err(e) => {
-				eprintln!("Failed to save session: {}", e);
-				error!("Failed to save session file: {} (error: {})", session_file.display(), e);
-				error!("Session file parent exists: {}", session_file.parent().map(|p| p.exists()).unwrap_or(false));
-				return Err(e.into());
-			}
-		}
+		// SqliteSession saves automatically, no need to manually save
+		eprintln!("Session saved successfully");
+		info!("Session saved successfully to {}", session_file.display());
 	}
 
 	eprintln!("Connected and authorized, starting event loop...");
@@ -139,9 +116,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut poll_peer_ids = Vec::new();
 	for channel in &config.telegram.poll_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
-			Some(chat) => {
-				poll_peer_ids.push(chat.id());
-				info!("Resolved poll channel: {} -> {}", channel, chat.id());
+			Some(peer) => {
+				poll_peer_ids.push(peer.id());
+				info!("Resolved poll channel: {} -> {}", channel, peer.id().bot_api_dialog_id());
 			}
 			None => {
 				error!("Could not resolve poll channel: {}", channel);
@@ -153,9 +130,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut info_peer_ids = Vec::new();
 	for channel in &config.telegram.info_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
-			Some(chat) => {
-				info_peer_ids.push(chat.id());
-				info!("Resolved info channel: {} -> {}", channel, chat.id());
+			Some(peer) => {
+				info_peer_ids.push(peer.id());
+				info!("Resolved info channel: {} -> {}", channel, peer.id().bot_api_dialog_id());
 			}
 			None => {
 				error!("Could not resolve info channel: {}", channel);
@@ -173,9 +150,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 	info!("Resolving output channel: {output_username}");
 	let watch_chat = match client.resolve_username(output_username).await? {
-		Some(chat) => {
-			info!("Output channel resolved: {}", chat.id());
-			chat.pack()
+		Some(peer) => {
+			info!("Output channel resolved: {}", peer.id().bot_api_dialog_id());
+			PeerRef::from(peer)
 		}
 		None => {
 			error!("Could not resolve output channel: {output_username}");
@@ -190,8 +167,15 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
 	let mut message_counter = 0u64;
 	let mut last_status_update = Timestamp::default();
+	let mut updates = client.stream_updates(
+		updates,
+		UpdatesConfiguration {
+			catch_up: true,
+			..Default::default()
+		},
+	);
 	loop {
-		let update = match client.next_update().await {
+		let update = match updates.next().await {
 			Ok(u) => u,
 			Err(e) => {
 				error!("Error getting next update: {e}");
@@ -203,15 +187,15 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
-				let chat = message.chat();
-				let chat_id = chat.id();
+				let peer = message.peer().unwrap();
+				let peer_id = peer.id();
 
 				// Check if it's a DM with /ping
 				let text = message.text();
 				if text.contains("/ping") {
 					// Check if it's from a user (not a channel/group)
-					if let grammers_client::types::Chat::User(_) = chat
-						&& let Some(sender) = message.sender()
+					if let Some(sender) = message.sender()
+						&& matches!(peer, grammers_client::types::Peer::User(_))
 					{
 						let username = sender.username().unwrap_or("unknown");
 						if let Err(e) = telegram_notifier.send_ping_notification(username, "Telegram").await {
@@ -223,11 +207,11 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				}
 
 				// Check if it's from a monitored channel
-				if poll_peer_ids.contains(&chat_id) {
+				if poll_peer_ids.contains(&peer_id) {
 					if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
 						error!("Error handling poll message: {e}");
 					}
-				} else if info_peer_ids.contains(&chat_id)
+				} else if info_peer_ids.contains(&peer_id)
 					&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
 				{
 					error!("Error handling info message: {e}");
@@ -252,18 +236,18 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	}
 }
 
-async fn handle_poll_message(client: &Client, message: &grammers_client::types::Message, watch_chat: grammers_client::types::PackedChat) -> Result<()> {
+async fn handle_poll_message(client: &Client, message: &grammers_client::types::Message, watch_chat: PeerRef) -> Result<()> {
 	// Check if message contains a poll or media
 	if message.media().is_some() {
 		// Forward poll messages to watch channel
-		let source = message.chat().pack();
-		client.forward_messages(watch_chat, &[message.id()], source).await?;
-		info!("Forwarded poll/media message from {}", message.chat().name());
+		let source = message.peer().unwrap();
+		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source)).await?;
+		info!("Forwarded poll/media message from {}", source.name().unwrap_or("unknown"));
 	}
 	Ok(())
 }
 
-async fn handle_info_message(client: &Client, message: &grammers_client::types::Message, watch_chat: grammers_client::types::PackedChat) -> Result<()> {
+async fn handle_info_message(client: &Client, message: &grammers_client::types::Message, watch_chat: PeerRef) -> Result<()> {
 	let key_words = [
 		"самые торгуемые акции",
 		"отслеживание настроений",
@@ -283,9 +267,9 @@ async fn handle_info_message(client: &Client, message: &grammers_client::types::
 	let text_lower = text.to_lowercase();
 	if key_words.iter().any(|word| text_lower.contains(word)) {
 		// Forward message to watch channel
-		let source = message.chat().pack();
-		client.forward_messages(watch_chat, &[message.id()], source).await?;
-		info!("Forwarded info message from {}", message.chat().name());
+		let source = message.peer().unwrap();
+		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source)).await?;
+		info!("Forwarded info message from {}", source.name().unwrap_or("unknown"));
 	}
 	Ok(())
 }
