@@ -30,6 +30,7 @@
           lastSupportedVersion = "nightly-2025-10-10";
           jobsErrors = [ "rust-tests" ];
           jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
+          jobsOther = [ "loc-badge" ];
         };
         readme = v-utils.readme-fw {
           inherit pkgs pname;
@@ -68,12 +69,9 @@
           mkShell {
             inherit stdenv;
             shellHook =
-              pre-commit-check.shellHook
-              + ''
-                mkdir -p ./.github/workflows
-                rm -f ./.github/workflows/errors.yml; cp ${workflowContents.errors} ./.github/workflows/errors.yml
-                rm -f ./.github/workflows/warnings.yml; cp ${workflowContents.warnings} ./.github/workflows/warnings.yml
-
+              pre-commit-check.shellHook +
+              workflowContents.shellHook +
+              ''
                 cp -f ${v-utils.files.licenses.blue_oak} ./LICENSE
 
                 cargo -Zscript -q ${v-utils.hooks.appendCustom} ./.git/hooks/pre-commit
