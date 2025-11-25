@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
     processed_at DateTime DEFAULT now(),
     from_email String,
     subject String,
-    is_human Bool
+    is_human UInt8
 ) ENGINE = MergeTree()
 ORDER BY (processed_at, message_id)
 PRIMARY KEY (processed_at, message_id)
@@ -21,6 +21,7 @@ PRIMARY KEY (processed_at, message_id)
 
 pub struct Database {
 	client: Client,
+	url: String,
 }
 
 impl std::fmt::Debug for Database {
@@ -31,7 +32,10 @@ impl std::fmt::Debug for Database {
 
 impl Clone for Database {
 	fn clone(&self) -> Self {
-		Self { client: self.client.clone() }
+		Self {
+			client: self.client.clone(),
+			url: self.url.clone(),
+		}
 	}
 }
 
@@ -51,7 +55,7 @@ impl Database {
 			.with_user(&config.user)
 			.with_password(&config.password);
 
-		Self { client }
+		Self { client, url: config.url.clone() }
 	}
 
 	/// Run all pending migrations
@@ -94,7 +98,26 @@ impl Database {
 		// Use a client without database set to create the database
 		let client = self.client.clone().with_database("");
 		let query = "CREATE DATABASE IF NOT EXISTS social_networks";
-		client.query(query).execute().await?;
+
+		client.query(query).execute().await.map_err(|e| {
+			color_eyre::eyre::eyre!(
+				"Failed to connect to ClickHouse server.\n\
+				\n\
+				Possible issues:\n\
+				  1. ClickHouse server is not running\n\
+				  2. Wrong URL configured (currently: {})\n\
+				  3. Network/firewall blocking connection\n\
+				\n\
+				To fix:\n\
+				  - Start ClickHouse: sudo systemctl start clickhouse-server\n\
+				  - Check status: sudo systemctl status clickhouse-server\n\
+				  - Verify URL in config file under [clickhouse] section\n\
+				\n\
+				Original error: {:#}",
+				self.url,
+				e
+			)
+		})?;
 		Ok(())
 	}
 
