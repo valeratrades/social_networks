@@ -17,6 +17,19 @@ CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
 ORDER BY (processed_at, message_id)
 PRIMARY KEY (processed_at, message_id)
 "#,
+	// Migration 1: Fix Bool -> UInt8 by recreating table
+	r#"
+DROP TABLE IF EXISTS social_networks.processed_emails;
+CREATE TABLE social_networks.processed_emails (
+    message_id String,
+    processed_at DateTime DEFAULT now(),
+    from_email String,
+    subject String,
+    is_human UInt8
+) ENGINE = MergeTree()
+ORDER BY (processed_at, message_id)
+PRIMARY KEY (processed_at, message_id)
+"#,
 ];
 
 pub struct Database {
