@@ -37,6 +37,14 @@ impl Clone for Database {
 
 impl Database {
 	pub fn new(config: &ClickHouseConfig) -> Self {
+		tracing::debug!(
+			"ClickHouse config: url='{}', database='{}', user='{}', password='{}'",
+			config.url,
+			config.database,
+			config.user,
+			if config.password.is_empty() { "<empty>" } else { "<set>" }
+		);
+
 		let client = Client::default()
 			.with_url(&config.url)
 			.with_database(&config.database)

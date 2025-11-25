@@ -88,8 +88,23 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
+		// Create the EmailMonitor once
+		let monitor = EmailMonitor::new(email_config.clone(), notifier.clone(), db.clone())?;
+
+		// Create Gmail hub once and reuse it
+		let hub = match monitor.create_gmail_hub().await {
+			Ok(hub) => {
+				log!("Successfully authenticated with Gmail API");
+				hub
+			}
+			Err(e) => {
+				error!("Failed to create Gmail hub: {e}");
+				return Err(e);
+			}
+		};
+
 		loop {
-			if let Err(e) = run_email_monitor(&email_config, &notifier, &db).await {
+			if let Err(e) = monitor.run_with_hub(&hub).await {
 				error!("Email monitor error: {e}");
 				error!("Retrying in 5 minutes...");
 				time::sleep(Duration::from_secs(5 * 60)).await;
@@ -99,12 +114,6 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 			}
 		}
 	})
-}
-
-#[instrument(skip_all)]
-async fn run_email_monitor(config: &EmailConfig, notifier: &TelegramNotifier, db: &Database) -> Result<()> {
-	let monitor = EmailMonitor::new(config.clone(), notifier.clone(), db.clone())?;
-	monitor.run().await
 }
 
 #[derive(Clone)]
@@ -141,22 +150,21 @@ impl EmailMonitor {
 		})
 	}
 
-	/// Main entry point to start monitoring emails
+	/// Main entry point to start monitoring emails with a pre-created hub
 	#[instrument(skip_all)]
-	pub async fn run(&self) -> Result<()> {
+	pub async fn run_with_hub(&self, hub: &Gmail<HttpsConnector<HttpConnector>>) -> Result<()> {
 		info!("Starting email monitor");
 
-		let hub = self.create_gmail_hub().await?;
+		// Fetch unread messages
+		let messages = self.fetch_unread_messages(hub).await?;
 
-		// Fetch unread messages (this triggers the OAuth flow if needed)
-		let messages = self.fetch_unread_messages(&hub).await?;
-
-		log!("Successfully authenticated with Gmail API");
 		info!("Found {} unread messages", messages.len());
 
 		for message in messages {
-			if let Err(e) = self.process_message(&hub, &message).await {
-				tracing::error!("Failed to process message: {}", e);
+			if let Err(e) = self.process_message(hub, &message).await {
+				let message_id = message.id.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+				let from = self.extract_header(&message, "From").unwrap_or_else(|| "Unknown".to_string());
+				tracing::error!("Failed to process message {} from {}: {:#}", message_id, from, e);
 			}
 		}
 
@@ -167,7 +175,7 @@ impl EmailMonitor {
 	/// On first run, this will open a browser for OAuth2 authentication
 	/// Subsequent runs will use the saved token
 	#[instrument(skip_all)]
-	async fn create_gmail_hub(&self) -> Result<Gmail<HttpsConnector<HttpConnector>>> {
+	pub async fn create_gmail_hub(&self) -> Result<Gmail<HttpsConnector<HttpConnector>>> {
 		info!("Authenticating with Gmail API...");
 
 		// Create OAuth2 application secret
@@ -237,20 +245,30 @@ impl EmailMonitor {
 	async fn process_message(&self, hub: &Gmail<HttpsConnector<HttpConnector>>, message: &Message) -> Result<()> {
 		let message_id = message.id.as_ref().wrap_err("Message has no ID")?;
 
+		debug!("[STEP 1] Checking if message {} is already processed", message_id);
 		// Check if already processed
-		if self.db.is_email_processed(message_id).await? {
-			debug!("Message {} already processed, skipping", message_id);
-			return Ok(());
+		match self.db.is_email_processed(message_id).await {
+			Ok(true) => {
+				debug!("Message {} already processed, skipping", message_id);
+				return Ok(());
+			}
+			Ok(false) => {
+				debug!("[STEP 1] Message {} not processed yet", message_id);
+			}
+			Err(e) => {
+				error!("[STEP 1] Error checking if message {} is processed: {:#}", message_id, e);
+				return Err(e);
+			}
 		}
 
-		debug!("Processing message: {}", message_id);
+		debug!("[STEP 2] Processing message: {}", message_id);
 
 		// Extract message details
 		let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
 		let subject = self.extract_header(message, "Subject").unwrap_or_else(|| "No Subject".to_string());
 		let snippet = message.snippet.as_deref().unwrap_or("");
 
-		debug!("From: {}, Subject: {}", from, subject);
+		debug!("[STEP 3] From: {}, Subject: {}", from, subject);
 
 		// Check if sender matches ignore patterns
 		if self.should_ignore(&from) {
@@ -258,8 +276,18 @@ impl EmailMonitor {
 			return Ok(());
 		}
 
+		debug!("[STEP 4] Calling eval_is_human for {}", from);
 		// Check if email is from a human using AI
-		let is_from_human = self.eval_is_human(message).await?;
+		let is_from_human = match self.eval_is_human(message).await {
+			Ok(result) => {
+				debug!("[STEP 4] eval_is_human returned: {}", result);
+				result
+			}
+			Err(e) => {
+				error!("[STEP 4] Error in eval_is_human for {}: {:#}", from, e);
+				return Err(e);
+			}
+		};
 
 		if is_from_human {
 			self.forward_to_telegram(&from, &subject, snippet).await?;
@@ -318,6 +346,12 @@ impl EmailMonitor {
 
 	/// Evaluate if email is from a human using AI
 	async fn eval_is_human(&self, message: &Message) -> Result<bool> {
+		// Set CLAUDE_TOKEN from config if provided
+		if let Some(ref token) = self.config.claude_token {
+			unsafe {
+				std::env::set_var("CLAUDE_TOKEN", token);
+			}
+		}
 		// Extract email information
 		let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
 		let subject = self.extract_header(message, "Subject").unwrap_or_else(|| "No Subject".to_string());
@@ -389,7 +423,14 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		// Call LLM using ask_llm crate
-		let response = ask_llm::oneshot(&prompt, ask_llm::Model::Fast).await.context("Failed to call LLM for email evaluation")?;
+		debug!("Calling LLM for email from: {}", from);
+		let response = match ask_llm::oneshot(&prompt, ask_llm::Model::Fast).await {
+			Ok(r) => r,
+			Err(e) => {
+				error!("LLM call failed for email from {}: {:#}", from, e);
+				return Err(e).context("Failed to call LLM for email evaluation. Make sure CLAUDE_TOKEN environment variable is set");
+			}
+		};
 
 		// Parse response
 		let is_human = response.text.trim().to_lowercase().starts_with("yes");

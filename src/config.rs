@@ -85,6 +85,9 @@ pub struct EmailConfig {
 	/// Regex patterns to match against sender email to ignore (skip processing entirely)
 	#[serde(default)]
 	pub ignore_patterns: Vec<String>,
+	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
+	#[serde(default)]
+	pub claude_token: Option<String>,
 }
 
 fn __default_email_token_path() -> String {
@@ -93,7 +96,7 @@ fn __default_email_token_path() -> String {
 	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct ClickHouseConfig {
 	#[serde(default = "__default_clickhouse_url")]
 	pub url: String,
@@ -103,6 +106,17 @@ pub struct ClickHouseConfig {
 	pub user: String,
 	#[serde(default)]
 	pub password: String,
+}
+
+impl Default for ClickHouseConfig {
+	fn default() -> Self {
+		Self {
+			url: __default_clickhouse_url(),
+			database: __default_clickhouse_database(),
+			user: __default_clickhouse_user(),
+			password: String::new(),
+		}
+	}
 }
 fn __default_clickhouse_url() -> String {
 	"http://localhost:8123".to_string()
@@ -116,7 +130,9 @@ fn __default_clickhouse_user() -> String {
 
 impl AppConfig {
 	pub fn read(path: Option<ExpandedPath>) -> Result<Self, config::ConfigError> {
-		let mut builder = config::Config::builder().add_source(config::Environment::default());
+		// Don't use Environment source at all to avoid conflicts
+		// Environment variables should be read explicitly via {env = "VAR"} in TOML
+		let mut builder = config::Config::builder();
 		let settings: Self = match path {
 			Some(path) => {
 				let builder = builder.add_source(config::File::with_name(&path.to_string()).required(true));
