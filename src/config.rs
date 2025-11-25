@@ -8,6 +8,7 @@ pub struct AppConfig {
 	pub telegram: TelegramConfig,
 	pub twitter: TwitterConfig,
 	pub youtube: YoutubeConfig,
+	pub email: Option<EmailConfig>,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
@@ -50,7 +51,7 @@ pub struct TwitterOauthConfig {
 	pub access_token_secret: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct TwitterPollConfig {
 	pub text: String,
 	pub duration_hours: u32,
@@ -65,6 +66,26 @@ fn __default_num_of_retries() -> u8 {
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct YoutubeConfig {
 	pub channels: std::collections::HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct EmailConfig {
+	/// Gmail email address to monitor
+	pub email: String,
+	/// Google OAuth2 Client ID (from Google Cloud Console)
+	pub client_id: String,
+	/// Google OAuth2 Client Secret (from Google Cloud Console)
+	pub client_secret: String,
+	/// Path to store auth tokens (default: ~/.local/state/social_networks/gmail_tokens.json)
+	#[serde(default = "__default_email_token_path")]
+	#[primitives(skip)]
+	pub token_path: String,
+}
+
+fn __default_email_token_path() -> String {
+	let app_name = env!("CARGO_PKG_NAME");
+	let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
+	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
 impl AppConfig {

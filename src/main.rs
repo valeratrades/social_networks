@@ -1,5 +1,6 @@
 mod config;
 mod discord;
+mod email;
 mod telegram;
 mod telegram_notifier;
 mod twitter;
@@ -25,6 +26,8 @@ struct Cli {
 enum Commands {
 	/// Discord operations
 	Discord(discord::DiscordArgs),
+	/// Email operations
+	Email(email::EmailArgs),
 	/// Telegram operations
 	Telegram(telegram::TelegramArgs),
 	/// Twitter operations
@@ -45,6 +48,7 @@ fn main() {
 	let config = exit_on_error(AppConfig::read(cli.config));
 	let success = match cli.command {
 		Commands::Discord(args) => discord::main(config, args),
+		Commands::Email(args) => email::main(config, args),
 		Commands::Telegram(args) => telegram::main(config, args),
 		Commands::Twitter(args) => twitter::main(config, args),
 		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),

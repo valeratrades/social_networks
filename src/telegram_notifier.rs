@@ -40,7 +40,7 @@ impl TelegramNotifier {
 	}
 
 	#[instrument(skip_all)]
-	async fn send_message_to_alerts(&self, text: &str) -> Result<()> {
+	pub async fn send_message_to_alerts(&self, text: &str) -> Result<()> {
 		self.send_message(text, &self.config.channel_alerts).await
 	}
 

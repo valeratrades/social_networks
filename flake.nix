@@ -16,10 +16,10 @@
           allowUnfree = true;
         };
         ##NB: can't load rust-bin from nightly.latest, as there are week guarantees of which components will be available on each day.
-        #rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-        #  extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
-        #});
-        rust = pkgs.rust-bin.nightly."2025-10-10".default;
+        rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+          extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
+        });
+        #rust = pkgs.rust-bin.nightly."2025-10-10".default;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         pname = manifest.name;
