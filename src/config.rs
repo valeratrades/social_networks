@@ -93,7 +93,7 @@ fn __default_email_token_path() -> String {
 	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct ClickHouseConfig {
 	#[serde(default = "__default_clickhouse_url")]
 	pub url: String,
@@ -104,26 +104,12 @@ pub struct ClickHouseConfig {
 	#[serde(default)]
 	pub password: String,
 }
-
-impl Default for ClickHouseConfig {
-	fn default() -> Self {
-		Self {
-			url: __default_clickhouse_url(),
-			database: __default_clickhouse_database(),
-			user: __default_clickhouse_user(),
-			password: String::new(),
-		}
-	}
-}
-
 fn __default_clickhouse_url() -> String {
 	"http://localhost:8123".to_string()
 }
-
 fn __default_clickhouse_database() -> String {
 	"social_networks".to_string()
 }
-
 fn __default_clickhouse_user() -> String {
 	"default".to_string()
 }

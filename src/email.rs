@@ -6,7 +6,6 @@ use google_gmail1::{Gmail, api::Message};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use regex::Regex;
-use rustls;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
 use v_utils::{elog, log};
@@ -318,17 +317,90 @@ impl EmailMonitor {
 	}
 
 	/// Evaluate if email is from a human using AI
-	/// This will be similar to perf-eval in ~/s/todo
-	async fn eval_is_human(&self, _message: &Message) -> Result<bool> {
-		// TODO: Implement AI-based detection using ask_llm crate
-		// Similar pattern to perf-eval in ~/s/todo
-		// Analyze:
-		// - Email formatting and structure
-		// - Sender patterns and metadata
-		// - Content personalization
-		// - Header analysis
+	async fn eval_is_human(&self, message: &Message) -> Result<bool> {
+		// Extract email information
+		let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
+		let subject = self.extract_header(message, "Subject").unwrap_or_else(|| "No Subject".to_string());
+		let date = self.extract_header(message, "Date").unwrap_or_else(|| "Unknown".to_string());
+		let reply_to = self.extract_header(message, "Reply-To");
+		let list_unsubscribe = self.extract_header(message, "List-Unsubscribe");
 
-		// For now, return true for all messages (forward everything)
-		Ok(true)
+		// Get email body (snippet or full body if available)
+		let body = message.snippet.as_deref().unwrap_or("");
+
+		// Get some headers to analyze
+		let headers_info = if let Some(payload) = &message.payload {
+			if let Some(headers) = &payload.headers {
+				headers
+					.iter()
+					.filter(|h| {
+						// Include relevant headers for analysis
+						matches!(
+							h.name.as_deref(),
+							Some("X-Mailer") | Some("User-Agent") | Some("X-Auto-Response-Suppress") | Some("Auto-Submitted") | Some("Precedence")
+						)
+					})
+					.filter_map(|h| {
+						let name = h.name.as_deref()?;
+						let value = h.value.as_deref()?;
+						Some(format!("{}: {}", name, value))
+					})
+					.collect::<Vec<_>>()
+					.join("\n")
+			} else {
+				String::new()
+			}
+		} else {
+			String::new()
+		};
+
+		// Build prompt for LLM
+		let prompt = format!(
+			r#"Analyze this email and determine if it's from a human or an automated system.
+
+From: {}
+Subject: {}
+Date: {}
+Reply-To: {}
+List-Unsubscribe: {}
+
+Additional Headers:
+{}
+
+Body Preview:
+{}
+
+Consider these factors:
+1. Marketing emails, newsletters, automated notifications should be marked as NOT human
+2. Personal emails with conversational tone should be marked as human
+3. Presence of unsubscribe links typically indicates automated email
+4. Generic greetings like "Dear valued customer" indicate automation
+5. Personal salutations and informal language indicate human
+6. Auto-Submitted or X-Auto-Response-Suppress headers indicate automation
+
+Respond with ONLY "yes" if from a human or "no" if automated/marketing. No explanation."#,
+			from,
+			subject,
+			date,
+			reply_to.as_deref().unwrap_or("N/A"),
+			list_unsubscribe.as_deref().unwrap_or("N/A"),
+			if headers_info.is_empty() { "None" } else { &headers_info },
+			body
+		);
+
+		// Call LLM using ask_llm crate
+		let response = ask_llm::oneshot(&prompt, ask_llm::Model::Fast).await.context("Failed to call LLM for email evaluation")?;
+
+		// Parse response
+		let is_human = response.text.trim().to_lowercase().starts_with("yes");
+
+		debug!(
+			"LLM evaluation for email from {}: {} (cost: {:.4} cents)",
+			from,
+			if is_human { "HUMAN" } else { "AUTOMATED" },
+			response.cost_cents
+		);
+
+		Ok(is_human)
 	}
 }

@@ -59,3 +59,6 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 email = "valeratrades@gmail.com"
 client_id = { env = "GMAIL_PROJECT_MAILREADER_ID" } 
 client_secret = { env = "GMAIL_PROJECT_MAILREADER_SECRET" }
+ignore_patterns = [
+  "Alex Hormozi",
+]
