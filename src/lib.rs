@@ -1,4 +1,5 @@
 pub mod config;
+pub mod db;
 pub mod discord;
 pub mod email;
 pub mod telegram;

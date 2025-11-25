@@ -15,6 +15,7 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 ask_llm = "^0.2.0"
 base64 = "^0.22"
 clap = { version = "^4", features = ["derive"] }
+clickhouse = { version = "^0.13", features = ["time"] }
 color-eyre = "^0.6.5"
 config = "^0"
 derive-new = "^0"
@@ -31,6 +32,7 @@ hyper-util = { version = "^0.1", features = ["client", "client-legacy", "http1"]
 oauth1-request = "^0.6"
 quick-xml = "0.38.4"
 rand = "^0.9"
+regex = "^1"
 reqwest = { version = "^0", features = ["json"] }
 rustls = { version = "^0.23", features = ["aws-lc-rs"] }
 serde = { version = "^1", features = ["derive"] }

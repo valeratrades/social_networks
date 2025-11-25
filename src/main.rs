@@ -1,4 +1,5 @@
 mod config;
+mod db;
 mod discord;
 mod email;
 mod telegram;
@@ -28,6 +29,8 @@ enum Commands {
 	Discord(discord::DiscordArgs),
 	/// Email operations
 	Email(email::EmailArgs),
+	/// Run database migrations
+	MigrateDb,
 	/// Telegram operations
 	Telegram(telegram::TelegramArgs),
 	/// Twitter operations
@@ -49,6 +52,11 @@ fn main() {
 	let success = match cli.command {
 		Commands::Discord(args) => discord::main(config, args),
 		Commands::Email(args) => email::main(config, args),
+		Commands::MigrateDb => {
+			let db = db::Database::new(&config.clickhouse);
+			let runtime = tokio::runtime::Runtime::new().unwrap();
+			runtime.block_on(async { db.migrate().await })
+		}
 		Commands::Telegram(args) => telegram::main(config, args),
 		Commands::Twitter(args) => twitter::main(config, args),
 		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),

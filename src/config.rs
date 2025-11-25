@@ -9,6 +9,8 @@ pub struct AppConfig {
 	pub twitter: TwitterConfig,
 	pub youtube: YoutubeConfig,
 	pub email: Option<EmailConfig>,
+	#[serde(default)]
+	pub clickhouse: ClickHouseConfig,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
@@ -80,12 +82,50 @@ pub struct EmailConfig {
 	#[serde(default = "__default_email_token_path")]
 	#[primitives(skip)]
 	pub token_path: String,
+	/// Regex patterns to match against sender email to ignore (skip processing entirely)
+	#[serde(default)]
+	pub ignore_patterns: Vec<String>,
 }
 
 fn __default_email_token_path() -> String {
 	let app_name = env!("CARGO_PKG_NAME");
 	let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
 	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct ClickHouseConfig {
+	#[serde(default = "__default_clickhouse_url")]
+	pub url: String,
+	#[serde(default = "__default_clickhouse_database")]
+	pub database: String,
+	#[serde(default = "__default_clickhouse_user")]
+	pub user: String,
+	#[serde(default)]
+	pub password: String,
+}
+
+impl Default for ClickHouseConfig {
+	fn default() -> Self {
+		Self {
+			url: __default_clickhouse_url(),
+			database: __default_clickhouse_database(),
+			user: __default_clickhouse_user(),
+			password: String::new(),
+		}
+	}
+}
+
+fn __default_clickhouse_url() -> String {
+	"http://localhost:8123".to_string()
+}
+
+fn __default_clickhouse_database() -> String {
+	"social_networks".to_string()
+}
+
+fn __default_clickhouse_user() -> String {
+	"default".to_string()
 }
 
 impl AppConfig {

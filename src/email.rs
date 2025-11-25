@@ -5,6 +5,7 @@ use color_eyre::eyre::{Context, ContextCompat, Result};
 use google_gmail1::{Gmail, api::Message};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use regex::Regex;
 use rustls;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
@@ -34,6 +35,7 @@ impl google_apis_common::GetToken for AuthWrapper {
 
 use crate::{
 	config::{AppConfig, EmailConfig},
+	db::Database,
 	telegram_notifier::TelegramNotifier,
 };
 
@@ -79,7 +81,8 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
 
 	let email_config = config.email.context("Email config not found in config file")?;
-	let notifier = TelegramNotifier::new(config.telegram);
+	let notifier = TelegramNotifier::new(config.telegram.clone());
+	let db = Database::new(&config.clickhouse);
 
 	println!("Email: Listening...");
 	info!("Monitoring email: {}", email_config.email);
@@ -87,7 +90,7 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
 		loop {
-			if let Err(e) = run_email_monitor(&email_config, &notifier).await {
+			if let Err(e) = run_email_monitor(&email_config, &notifier, &db).await {
 				error!("Email monitor error: {e}");
 				error!("Retrying in 5 minutes...");
 				time::sleep(Duration::from_secs(5 * 60)).await;
@@ -100,20 +103,43 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 }
 
 #[instrument(skip_all)]
-async fn run_email_monitor(config: &EmailConfig, notifier: &TelegramNotifier) -> Result<()> {
-	let monitor = EmailMonitor::new(config.clone(), notifier.clone());
+async fn run_email_monitor(config: &EmailConfig, notifier: &TelegramNotifier, db: &Database) -> Result<()> {
+	let monitor = EmailMonitor::new(config.clone(), notifier.clone(), db.clone())?;
 	monitor.run().await
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
 	notifier: TelegramNotifier,
+	db: Database,
+	ignore_regexes: Vec<Regex>,
+}
+
+impl std::fmt::Debug for EmailMonitor {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("EmailMonitor")
+			.field("config", &self.config)
+			.field("notifier", &self.notifier)
+			.field("db", &self.db)
+			.finish()
+	}
 }
 
 impl EmailMonitor {
-	pub fn new(config: EmailConfig, notifier: TelegramNotifier) -> Self {
-		Self { config, notifier }
+	pub fn new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
+		let ignore_regexes = config
+			.ignore_patterns
+			.iter()
+			.map(|pattern| Regex::new(pattern).context(format!("Invalid ignore pattern: {}", pattern)))
+			.collect::<Result<Vec<_>>>()?;
+
+		Ok(Self {
+			config,
+			notifier,
+			db,
+			ignore_regexes,
+		})
 	}
 
 	/// Main entry point to start monitoring emails
@@ -211,6 +237,13 @@ impl EmailMonitor {
 	#[instrument(skip(self, hub, message))]
 	async fn process_message(&self, hub: &Gmail<HttpsConnector<HttpConnector>>, message: &Message) -> Result<()> {
 		let message_id = message.id.as_ref().wrap_err("Message has no ID")?;
+
+		// Check if already processed
+		if self.db.is_email_processed(message_id).await? {
+			debug!("Message {} already processed, skipping", message_id);
+			return Ok(());
+		}
+
 		debug!("Processing message: {}", message_id);
 
 		// Extract message details
@@ -219,6 +252,12 @@ impl EmailMonitor {
 		let snippet = message.snippet.as_deref().unwrap_or("");
 
 		debug!("From: {}, Subject: {}", from, subject);
+
+		// Check if sender matches ignore patterns
+		if self.should_ignore(&from) {
+			debug!("Ignoring email from: {} (matches ignore pattern)", from);
+			return Ok(());
+		}
 
 		// Check if email is from a human using AI
 		let is_from_human = self.eval_is_human(message).await?;
@@ -232,12 +271,20 @@ impl EmailMonitor {
 			elog!("Marked non-human email as read: {}", from);
 		}
 
+		// Mark as processed in database
+		self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
+
 		Ok(())
 	}
 
 	/// Extract header value from message
 	fn extract_header(&self, message: &Message, header_name: &str) -> Option<String> {
 		message.payload.as_ref()?.headers.as_ref()?.iter().find(|h| h.name.as_deref() == Some(header_name))?.value.clone()
+	}
+
+	/// Check if sender should be ignored based on configured patterns
+	fn should_ignore(&self, from: &str) -> bool {
+		self.ignore_regexes.iter().any(|regex| regex.is_match(from))
 	}
 
 	/// Forward email to Telegram Alerts channel
