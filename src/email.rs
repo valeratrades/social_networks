@@ -235,15 +235,30 @@ impl EmailMonitor {
 			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {:#?}", e))?;
 
 			if let Some(msg_list) = result.1.messages {
-				for msg in msg_list {
-					if let Some(ref id) = msg.id {
-						let (_, full_message) = hub
-							.users()
-							.messages_get(&self.config.email, id)
-							.format("full")
-							.doit()
-							.await
-							.context("Failed to fetch message details")?;
+				// Fetch all message details concurrently
+				use futures::stream::{self, StreamExt};
+
+				let messages: Vec<_> = stream::iter(msg_list.iter())
+					.map(|msg| async {
+						if let Some(ref id) = msg.id {
+							let result = hub
+								.users()
+								.messages_get(&self.config.email, id)
+								.format("full")
+								.doit()
+								.await;
+							Some(result)
+						} else {
+							None
+						}
+					})
+					.buffer_unordered(50) // Fetch up to 50 messages concurrently
+					.collect()
+					.await;
+
+				for msg_result in messages {
+					if let Some(result) = msg_result {
+						let (_, full_message) = result.context("Failed to fetch message details")?;
 						all_messages.push(full_message);
 					}
 				}
@@ -401,40 +416,46 @@ impl EmailMonitor {
 				CONCURRENT_REQUESTS
 			);
 
-			// Process messages concurrently in chunks
+			// Process messages concurrently and print results as they complete
+			use std::sync::{
+				Arc,
+				atomic::{AtomicUsize, Ordering},
+			};
+
 			use futures::stream::{self, StreamExt};
 
-			let results: Vec<_> = stream::iter(batch.iter().enumerate())
-				.map(|(idx, message)| async move {
-					let message_id = message.id.clone().unwrap_or_default();
-					let result = if !message_id.is_empty() {
-						self.mark_as_read(hub, &message_id).await
-					} else {
-						Err(color_eyre::eyre::eyre!("Message has no ID"))
-					};
-					let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
-					(idx, message_id, from, result)
+			let batch_marked = Arc::new(AtomicUsize::new(0));
+			let batch_marked_clone = batch_marked.clone();
+			let base_count = total_marked;
+
+			stream::iter(batch.iter())
+				.for_each_concurrent(CONCURRENT_REQUESTS, |message| {
+					let batch_marked = batch_marked_clone.clone();
+					async move {
+						let message_id = message.id.clone().unwrap_or_default();
+						let result = if !message_id.is_empty() {
+							self.mark_as_read(hub, &message_id).await
+						} else {
+							Err(color_eyre::eyre::eyre!("Message has no ID"))
+						};
+						let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
+
+						// Print immediately as each request completes
+						match &result {
+							Ok(_) => {
+								let current = batch_marked.fetch_add(1, Ordering::SeqCst) + 1;
+								println!("[{}/{}] Marked as read: {}", base_count + current, base_count + batch_to_process, from);
+							}
+							Err(e) => {
+								error!("Failed to mark message {} as read: {:#}", message_id, e);
+								eprintln!("Error marking message {} as read: {}", message_id, e);
+							}
+						}
+					}
 				})
-				.buffer_unordered(CONCURRENT_REQUESTS)
-				.collect()
 				.await;
 
-			// Print results and count successes
-			let mut batch_marked = 0;
-			for (idx, message_id, from, result) in results {
-				match result {
-					Ok(_) => {
-						batch_marked += 1;
-						println!("[{}/{}] Marked as read: {}", total_marked + idx + 1, total_marked + batch_to_process, from);
-					}
-					Err(e) => {
-						error!("Failed to mark message {} as read: {:#}", message_id, e);
-						eprintln!("Error marking message {} as read: {}", message_id, e);
-					}
-				}
-			}
-
-			total_marked += batch_marked;
+			total_marked += batch_marked.load(Ordering::SeqCst);
 
 			// If we processed fewer than BATCH_SIZE messages, we're done
 			if count < BATCH_SIZE {
