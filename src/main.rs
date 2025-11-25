@@ -45,7 +45,6 @@ enum Commands {
 struct NoArgs {}
 
 fn main() {
-	color_eyre::install().unwrap();
 	let cli = Cli::parse();
 
 	let config = exit_on_error(AppConfig::read(cli.config));

@@ -3121,6 +3121,7 @@ dependencies = [
  "color-eyre",
  "config",
  "derive-new",
+ "futures",
  "futures-util",
  "google-apis-common",
  "google-gmail1",

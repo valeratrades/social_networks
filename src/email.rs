@@ -63,30 +63,36 @@ impl InstalledFlowDelegate for CustomFlowDelegate {
 }
 
 #[derive(Args)]
-pub struct EmailArgs {}
+pub struct EmailArgs {
+	/// Mark all unread emails as read without processing
+	#[arg(long)]
+	mark_all_read: bool,
+}
 
-pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
+pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
+	v_utils::clientside!("email");
+
 	// Install default crypto provider for rustls
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
-	// Set up tracing with file logging (truncate old logs)
-	let log_file = v_utils::xdg_state_file!("email.log");
-	if log_file.exists() {
-		std::fs::remove_file(&log_file)?;
-	}
-	let file_appender = tracing_appender::rolling::never(log_file.parent().unwrap(), log_file.file_name().unwrap());
-	let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-	tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).with_max_level(tracing::Level::DEBUG).init();
 
 	let email_config = config.email.context("Email config not found in config file")?;
 	let notifier = TelegramNotifier::new(config.telegram.clone());
 	let db = Database::new(&config.clickhouse);
 
+	let runtime = tokio::runtime::Runtime::new()?;
+
+	// Handle mark-all-read mode
+	if args.mark_all_read {
+		return runtime.block_on(async {
+			let monitor = EmailMonitor::new(email_config.clone(), notifier.clone(), db.clone())?;
+			let hub = monitor.create_gmail_hub().await?;
+			monitor.mark_all_as_read(&hub).await
+		});
+	}
+
 	println!("Email: Listening...");
 	info!("Monitoring email: {}", email_config.email);
 
-	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
 		// Run database migrations to ensure schema exists
 		db.migrate().await.context("Failed to run database migrations")?;
@@ -213,34 +219,44 @@ impl EmailMonitor {
 		Ok(Gmail::new(client, auth_wrapper))
 	}
 
-	/// Fetch unread messages from Gmail
+	/// Fetch unread messages from Gmail with pagination
 	#[instrument(skip(self, hub))]
 	async fn fetch_unread_messages(&self, hub: &Gmail<HttpsConnector<HttpConnector>>) -> Result<Vec<Message>> {
-		let result = hub
-			.users()
-			.messages_list(&self.config.email)
-			.q("is:unread")
-			.doit()
-			.await
-			.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {:#?}", e))?;
+		let mut all_messages = Vec::new();
+		let mut page_token: Option<String> = None;
 
-		let mut messages = Vec::new();
-		if let Some(msg_list) = result.1.messages {
-			for msg in msg_list {
-				if let Some(ref id) = msg.id {
-					let (_, full_message) = hub
-						.users()
-						.messages_get(&self.config.email, id)
-						.format("full")
-						.doit()
-						.await
-						.context("Failed to fetch message details")?;
-					messages.push(full_message);
+		loop {
+			let mut request = hub.users().messages_list(&self.config.email).q("is:unread").max_results(500); // Fetch up to 500 message IDs at a time
+
+			if let Some(ref token) = page_token {
+				request = request.page_token(token);
+			}
+
+			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {:#?}", e))?;
+
+			if let Some(msg_list) = result.1.messages {
+				for msg in msg_list {
+					if let Some(ref id) = msg.id {
+						let (_, full_message) = hub
+							.users()
+							.messages_get(&self.config.email, id)
+							.format("full")
+							.doit()
+							.await
+							.context("Failed to fetch message details")?;
+						all_messages.push(full_message);
+					}
 				}
+			}
+
+			// Check if there are more pages
+			page_token = result.1.next_page_token;
+			if page_token.is_none() {
+				break;
 			}
 		}
 
-		Ok(messages)
+		Ok(all_messages)
 	}
 
 	/// Process a single message
@@ -350,6 +366,82 @@ impl EmailMonitor {
 			.context("Failed to mark message as read")?;
 
 		Ok(())
+	}
+
+	/// Mark all unread messages as read (processes in batches with concurrency)
+	#[instrument(skip(self, hub))]
+	pub async fn mark_all_as_read(&self, hub: &Gmail<HttpsConnector<HttpConnector>>) -> Result<()> {
+		const BATCH_SIZE: usize = 100;
+		const CONCURRENT_REQUESTS: usize = 20;
+
+		let mut total_marked = 0;
+
+		loop {
+			println!("Fetching next batch of unread messages...");
+			let messages = self.fetch_unread_messages(hub).await?;
+
+			let count = messages.len();
+			if count == 0 {
+				if total_marked == 0 {
+					println!("No unread messages found.");
+				} else {
+					println!("\nAll done! Marked {} total messages as read.", total_marked);
+				}
+				return Ok(());
+			}
+
+			// Process only up to BATCH_SIZE messages at a time
+			let batch_to_process = std::cmp::min(count, BATCH_SIZE);
+			let batch = &messages[..batch_to_process];
+
+			println!(
+				"Marking {} unread messages as read (batch {} with concurrency {})...",
+				batch_to_process,
+				total_marked / BATCH_SIZE + 1,
+				CONCURRENT_REQUESTS
+			);
+
+			// Process messages concurrently in chunks
+			use futures::stream::{self, StreamExt};
+
+			let results: Vec<_> = stream::iter(batch.iter().enumerate())
+				.map(|(idx, message)| async move {
+					let message_id = message.id.clone().unwrap_or_default();
+					let result = if !message_id.is_empty() {
+						self.mark_as_read(hub, &message_id).await
+					} else {
+						Err(color_eyre::eyre::eyre!("Message has no ID"))
+					};
+					let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
+					(idx, message_id, from, result)
+				})
+				.buffer_unordered(CONCURRENT_REQUESTS)
+				.collect()
+				.await;
+
+			// Print results and count successes
+			let mut batch_marked = 0;
+			for (idx, message_id, from, result) in results {
+				match result {
+					Ok(_) => {
+						batch_marked += 1;
+						println!("[{}/{}] Marked as read: {}", total_marked + idx + 1, total_marked + batch_to_process, from);
+					}
+					Err(e) => {
+						error!("Failed to mark message {} as read: {:#}", message_id, e);
+						eprintln!("Error marking message {} as read: {}", message_id, e);
+					}
+				}
+			}
+
+			total_marked += batch_marked;
+
+			// If we processed fewer than BATCH_SIZE messages, we're done
+			if count < BATCH_SIZE {
+				println!("\nAll done! Marked {} total messages as read.", total_marked);
+				return Ok(());
+			}
+		}
 	}
 
 	/// Evaluate if email is from a human using AI

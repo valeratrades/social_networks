@@ -47,6 +47,7 @@ xdg = { version = "3.0.0", features = ["serde"] }
 yup-oauth2 = "11"
 
 # my crates {{{
+futures = "0.3.31"
 grammers-mtsender = "^0.8"
 jiff = { version = "0.2.16", features = ["serde"] }
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
