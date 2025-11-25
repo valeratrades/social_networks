@@ -113,15 +113,18 @@ PRIMARY KEY version
 
 	async fn get_migration_version(&self) -> Result<i32> {
 		// Check if there are any migrations recorded
-		let count_query = "SELECT count() as cnt FROM social_networks.migrations";
-		let count: u64 = self.client.query(count_query).fetch_one::<u64>().await?;
+		let count_query = "SELECT count() FROM social_networks.migrations";
+		let count: u64 = match self.client.query(count_query).fetch_one::<u64>().await {
+			Ok(c) => c,
+			Err(_) => 0, // Table might not exist yet or no rows
+		};
 
 		if count == 0 {
 			return Ok(-1);
 		}
 
 		// Get the latest migration version
-		let version_query = "SELECT max(version) as version FROM social_networks.migrations";
+		let version_query = "SELECT max(version) FROM social_networks.migrations";
 		let version: u32 = self.client.query(version_query).fetch_one::<u32>().await?;
 
 		Ok(version as i32)
