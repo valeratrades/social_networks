@@ -17,9 +17,10 @@ CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
 ORDER BY (processed_at, message_id)
 PRIMARY KEY (processed_at, message_id)
 "#,
-	// Migration 1: Fix Bool -> UInt8 by recreating table
+	// Migration 1: Drop old table (to fix Bool -> UInt8 issue)
+	"DROP TABLE IF EXISTS social_networks.processed_emails",
+	// Migration 2: Recreate table with correct schema
 	r#"
-DROP TABLE IF EXISTS social_networks.processed_emails;
 CREATE TABLE social_networks.processed_emails (
     message_id String,
     processed_at DateTime DEFAULT now(),
