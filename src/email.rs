@@ -19,8 +19,8 @@ impl google_apis_common::GetToken for AuthWrapper {
 	fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> Pin<Box<dyn Future<Output = Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
 		let auth = self.0.clone();
 		Box::pin(async move {
-			// Always use gmail.readonly scope regardless of what the API requests
-			let scopes = &["https://www.googleapis.com/auth/gmail.readonly"];
+			// Use gmail.modify scope to allow marking messages as read
+			let scopes = &["https://www.googleapis.com/auth/gmail.modify"];
 			match auth.token(scopes).await {
 				Ok(token) => {
 					let access_token = token.token().map(|t| t.to_string());
@@ -88,6 +88,9 @@ pub fn main(config: AppConfig, _args: EmailArgs) -> Result<()> {
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
+		// Run database migrations to ensure schema exists
+		db.migrate().await.context("Failed to run database migrations")?;
+
 		// Create the EmailMonitor once
 		let monitor = EmailMonitor::new(email_config.clone(), notifier.clone(), db.clone())?;
 
@@ -290,16 +293,21 @@ impl EmailMonitor {
 		};
 
 		if is_from_human {
+			// Forward to Telegram first
 			self.forward_to_telegram(&from, &subject, snippet).await?;
 			log!("Forwarded human email from: {}", from);
+
+			// Only mark as read and add to DB after successful Telegram forwarding
+			self.mark_as_read(hub, message_id).await?;
+			self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
 		} else {
 			// Mark as read if not from human (automated emails, etc.)
 			self.mark_as_read(hub, message_id).await?;
 			elog!("Marked non-human email as read: {}", from);
-		}
 
-		// Mark as processed in database
-		self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
+			// Only add to DB after successfully marking as read
+			self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
+		}
 
 		Ok(())
 	}
