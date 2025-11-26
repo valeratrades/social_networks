@@ -62,6 +62,7 @@ client_secret = { env = "GMAIL_PROJECT_MAILREADER_SECRET" }
 ignore_patterns = [
   "Alex Hormozi",
 ]
+claude_token = { env = "CLAUDE_TOKEN" }
 
 [clickhouse]
 url = "http://localhost:8123"

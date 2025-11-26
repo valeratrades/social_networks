@@ -324,19 +324,19 @@ impl EmailMonitor {
 		};
 
 		if is_from_human {
-			// Forward to Telegram first
+			// Forward to Telegram and mark as processed internally
+			// Do NOT mark as read in Gmail - keep visible in inbox
 			self.forward_to_telegram(&from, &subject, snippet).await?;
 			log!("Forwarded human email from: {}", from);
 
-			// Only mark as read and add to DB after successful Telegram forwarding
-			self.mark_as_read(hub, message_id).await?;
+			// Mark as processed in DB so we don't reprocess it
 			self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
 		} else {
 			// Mark as read if not from human (automated emails, etc.)
 			self.mark_as_read(hub, message_id).await?;
 			elog!("Marked non-human email as read: {}", from);
 
-			// Only add to DB after successfully marking as read
+			// Mark as processed in DB
 			self.db.mark_email_processed(message_id, &from, &subject, is_from_human).await?;
 		}
 
