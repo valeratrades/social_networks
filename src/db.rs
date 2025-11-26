@@ -5,36 +5,9 @@ use tracing::info;
 use crate::config::ClickHouseConfig;
 
 const MIGRATIONS: &[&str] = &[
-	// Migration 0: Create processed_emails table
+	// Migration 0: Create processed_emails table with message_id as primary key
 	r#"
 CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
-    message_id String,
-    processed_at DateTime DEFAULT now(),
-    from_email String,
-    subject String,
-    is_human UInt8
-) ENGINE = MergeTree()
-ORDER BY (processed_at, message_id)
-PRIMARY KEY (processed_at, message_id)
-"#,
-	// Migration 1: Drop old table (to fix Bool -> UInt8 issue)
-	"DROP TABLE IF EXISTS social_networks.processed_emails",
-	// Migration 2: Recreate table with correct schema
-	r#"
-CREATE TABLE social_networks.processed_emails (
-    message_id String,
-    processed_at DateTime DEFAULT now(),
-    from_email String,
-    subject String,
-    is_human UInt8
-) ENGINE = MergeTree()
-ORDER BY (processed_at, message_id)
-PRIMARY KEY (processed_at, message_id)
-"#,
-	// Migration 3: Drop and recreate with message_id as primary key for fast lookups
-	"DROP TABLE IF EXISTS social_networks.processed_emails",
-	r#"
-CREATE TABLE social_networks.processed_emails (
     message_id String,
     processed_at DateTime DEFAULT now(),
     from_email String,
