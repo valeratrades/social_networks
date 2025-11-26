@@ -175,8 +175,11 @@ PRIMARY KEY version
 
 	/// Check if an email message has been processed
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
-		let query = format!("SELECT count() as cnt FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
-		let count: u64 = self.client.query(&query).fetch_one::<u64>().await?;
+		let query = format!("SELECT count() FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
+		let count: u64 = match self.client.query(&query).fetch_one::<u64>().await {
+			Ok(c) => c,
+			Err(_) => 0, // Table might be empty or query failed
+		};
 		Ok(count > 0)
 	}
 
