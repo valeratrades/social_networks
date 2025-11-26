@@ -31,6 +31,19 @@ CREATE TABLE social_networks.processed_emails (
 ORDER BY (processed_at, message_id)
 PRIMARY KEY (processed_at, message_id)
 "#,
+	// Migration 3: Drop and recreate with message_id as primary key for fast lookups
+	"DROP TABLE IF EXISTS social_networks.processed_emails",
+	r#"
+CREATE TABLE social_networks.processed_emails (
+    message_id String,
+    processed_at DateTime DEFAULT now(),
+    from_email String,
+    subject String,
+    is_human UInt8
+) ENGINE = MergeTree()
+ORDER BY message_id
+PRIMARY KEY message_id
+"#,
 ];
 
 pub struct Database {
@@ -176,10 +189,7 @@ PRIMARY KEY version
 	/// Check if an email message has been processed
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
 		let query = format!("SELECT count() FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
-		let count: u64 = match self.client.query(&query).fetch_one::<u64>().await {
-			Ok(c) => c,
-			Err(_) => 0, // Table might be empty or query failed
-		};
+		let count: u64 = self.client.query(&query).fetch_one::<u64>().await?;
 		Ok(count > 0)
 	}
 

@@ -307,6 +307,9 @@ impl EmailMonitor {
 		// Check if sender matches ignore patterns
 		if self.should_ignore(&from) {
 			debug!("Ignoring email from: {} (matches ignore pattern)", from);
+			// Mark as read and processed so we don't keep reprocessing it
+			self.mark_as_read(hub, message_id).await?;
+			self.db.mark_email_processed(message_id, &from, &subject, false).await?;
 			return Ok(());
 		}
 
