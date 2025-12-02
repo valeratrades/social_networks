@@ -20,6 +20,7 @@ struct StatusDrop {
 }
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
+	println!("Starting Telegram...");
 	v_utils::clientside!("telegram");
 
 	let runtime = tokio::runtime::Runtime::new()?;
@@ -82,12 +83,11 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		let token = client.request_login_code(&config.telegram.phone, &config.telegram.api_hash).await?;
 		info!("Login code requested successfully, check your Telegram app");
 
-		print!("Enter the code you received: ");
-		std::io::Write::flush(&mut std::io::stderr())?;
+		println!("Enter the code you received: ");
 		let mut code = String::new();
 		std::io::stdin().read_line(&mut code)?;
 		let code = code.trim();
-		eprintln!("Code received, authenticating...");
+		println!("Code received, authenticating...");
 		info!("Received code from user (length: {})", code.len());
 		debug!("Code value: '{}'", code);
 
