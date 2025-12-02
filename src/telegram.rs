@@ -40,7 +40,21 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	info!("Using session file: {}", session_file.display());
 
 	info!("Opening session database");
-	let session = Arc::new(SqliteSession::open(&session_file)?);
+	let session = match SqliteSession::open(&session_file) {
+		Ok(s) => Arc::new(s),
+		Err(e) => {
+			// Check if it's a database corruption error (SQLite error code 26: SQLITE_NOTADB)
+			let err_str = e.to_string();
+			if err_str.contains("not a database") || err_str.contains("code 26") {
+				error!("Session database is corrupted: {e}");
+				info!("Deleting corrupted session file and creating a new one");
+				std::fs::remove_file(&session_file)?;
+				Arc::new(SqliteSession::open(&session_file)?)
+			} else {
+				return Err(e.into());
+			}
+		}
+	};
 
 	// Load status drop
 	let status_file = v_utils::xdg_state_file!("telegram_status.json");
@@ -108,7 +122,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		info!("Session saved successfully to {}", session_file.display());
 	}
 
-	eprintln!("Connected and authorized, starting event loop...");
+	println!("Telegram started");
 	info!("--Telegram-- connected and authorized");
 
 	// Resolve channel peer IDs
