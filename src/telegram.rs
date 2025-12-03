@@ -201,7 +201,13 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
-				let peer = message.peer().unwrap();
+				let peer = match message.peer() {
+					Ok(p) => p,
+					Err(e) => {
+						error!("Skipping message with unresolved peer: {e:?}");
+						continue;
+					}
+				};
 				let peer_id = peer.id();
 
 				// Check if it's a DM with /ping
@@ -254,8 +260,14 @@ async fn handle_poll_message(client: &Client, message: &grammers_client::types::
 	// Check if message contains a poll or media
 	if message.media().is_some() {
 		// Forward poll messages to watch channel
-		let source = message.peer().unwrap();
-		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source)).await?;
+		let source = match message.peer() {
+			Ok(p) => p,
+			Err(e) => {
+				error!("Cannot forward poll message - unresolved peer: {e:?}");
+				return Ok(());
+			}
+		};
+		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source.clone())).await?;
 		info!("Forwarded poll/media message from {}", source.name().unwrap_or("unknown"));
 	}
 	Ok(())
@@ -281,8 +293,14 @@ async fn handle_info_message(client: &Client, message: &grammers_client::types::
 	let text_lower = text.to_lowercase();
 	if key_words.iter().any(|word| text_lower.contains(word)) {
 		// Forward message to watch channel
-		let source = message.peer().unwrap();
-		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source)).await?;
+		let source = match message.peer() {
+			Ok(p) => p,
+			Err(e) => {
+				error!("Cannot forward info message - unresolved peer: {e:?}");
+				return Ok(());
+			}
+		};
+		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source.clone())).await?;
 		info!("Forwarded info message from {}", source.name().unwrap_or("unknown"));
 	}
 	Ok(())
