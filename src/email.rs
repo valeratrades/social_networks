@@ -22,7 +22,7 @@ use crate::{
 #[derive(Clone)]
 struct AuthWrapper(std::sync::Arc<yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>>);
 
-impl google_apis_common::GetToken for AuthWrapper {
+impl google_gmail1::common::GetToken for AuthWrapper {
 	fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> Pin<Box<dyn Future<Output = Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
 		let auth = self.0.clone();
 		Box::pin(async move {
@@ -614,7 +614,7 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
-		let response = match ask_llm::oneshot(&prompt, ask_llm::Model::Fast).await {
+		let response = match ask_llm::Client::new().model(ask_llm::Model::Fast).ask(&prompt).await {
 			Ok(r) => r,
 			Err(e) => {
 				error!("LLM call failed for email from {}: {:#}", message.from, e);

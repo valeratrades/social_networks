@@ -177,7 +177,7 @@ async fn analyze_sentiment(title: &str) -> Result<String> {
 		btc_price, title
 	);
 
-	let response = ask_llm::oneshot(&prompt, ask_llm::Model::Medium).await?;
+	let response = ask_llm::oneshot(&prompt).await?;
 
 	// Extract first word (bullish/bearish/unclear)
 	let sentiment = response.text.split_whitespace().next().unwrap_or("unclear").to_lowercase();

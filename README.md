@@ -12,14 +12,15 @@ scripts to automate scraping from or certain parts of interactions with social n
 has aggregators of sentiment polls from Twitter and Telegram, interpretation of Hamaha's video titles, discord /ping notifier, etc
 <!-- markdownlint-disable -->
 <details>
-  <summary>
-    <h3>Installation</h3>
-  </summary>
-<div class="markdown-content">```sh
+<summary>
+<h3>Installation</h3>
+</summary>
+
+```sh
 cargo install --git https://github.com/valeratrades/social_networks --branch master # semantically `release` is preferrable, but I forget to push there sometimes
 ```
 
-### Email Setup (Remote Server)
+#### Email Setup (Remote Server)
 For the email service on a remote server, you need to authenticate locally first, then copy the token file:
 
 1. Run `social_networks email` on your **local machine** (where you can open a browser)
@@ -27,7 +28,8 @@ For the email service on a remote server, you need to authenticate locally first
 3. Copy the token file to the remote server:
    ```sh
    scp ~/.local/state/social_networks/gmail_tokens.json <remote-server>:~/.local/state/social_networks/
-   ```</div>
+   ```
+
 </details>
 <!-- markdownlint-restore -->
 
