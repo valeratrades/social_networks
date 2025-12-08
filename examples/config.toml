@@ -57,12 +57,15 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 
 [email]
 email = "valeratrades@gmail.com"
-client_id = { env = "GMAIL_PROJECT_MAILREADER_ID" } 
-client_secret = { env = "GMAIL_PROJECT_MAILREADER_SECRET" }
 ignore_patterns = [
   "Alex Hormozi",
 ]
 claude_token = { env = "CLAUDE_TOKEN" }
+
+[email.auth.imap]
+pass = { env = "GOOGLE_MAIN_MAIL_PASS" }
+#client_id = { env = "GMAIL_PROJECT_MAILREADER_ID" } 
+#client_secret = { env = "GMAIL_PROJECT_MAILREADER_SECRET" }
 
 [clickhouse]
 url = "http://localhost:8123"

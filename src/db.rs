@@ -1,8 +1,19 @@
-use clickhouse::Client;
+use clickhouse::{Client, Row};
 use color_eyre::eyre::Result;
+use serde::Deserialize;
 use tracing::info;
 
 use crate::config::ClickHouseConfig;
+
+#[derive(Deserialize, Row)]
+struct CountRow {
+	count: u64,
+}
+
+#[derive(Deserialize, Row)]
+struct MaxVersionRow {
+	max_version: u32,
+}
 
 const MIGRATIONS: &[&str] = &[
 	// Migration 0: Create processed_emails table with message_id as primary key
@@ -136,9 +147,9 @@ PRIMARY KEY version
 
 	async fn get_migration_version(&self) -> Result<i32> {
 		// Check if there are any migrations recorded
-		let count_query = "SELECT count() FROM social_networks.migrations";
-		let count: u64 = match self.client.query(count_query).fetch_one::<u64>().await {
-			Ok(c) => c,
+		let count_query = "SELECT count() as count FROM social_networks.migrations";
+		let count: u64 = match self.client.query(count_query).fetch_one::<CountRow>().await {
+			Ok(row) => row.count,
 			Err(_) => 0, // Table might not exist yet or no rows
 		};
 
@@ -147,10 +158,10 @@ PRIMARY KEY version
 		}
 
 		// Get the latest migration version
-		let version_query = "SELECT max(version) FROM social_networks.migrations";
-		let version: u32 = self.client.query(version_query).fetch_one::<u32>().await?;
+		let version_query = "SELECT max(version) as max_version FROM social_networks.migrations";
+		let row = self.client.query(version_query).fetch_one::<MaxVersionRow>().await?;
 
-		Ok(version as i32)
+		Ok(row.max_version as i32)
 	}
 
 	async fn record_migration(&self, version: u32) -> Result<()> {
@@ -161,9 +172,9 @@ PRIMARY KEY version
 
 	/// Check if an email message has been processed
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
-		let query = format!("SELECT count() FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
-		let count: u64 = self.client.query(&query).fetch_one::<u64>().await?;
-		Ok(count > 0)
+		let query = format!("SELECT count() as count FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
+		let row = self.client.query(&query).fetch_one::<CountRow>().await?;
+		Ok(row.count > 0)
 	}
 
 	/// Mark an email as processed

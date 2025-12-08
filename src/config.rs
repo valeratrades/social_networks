@@ -74,20 +74,38 @@ pub struct YoutubeConfig {
 pub struct EmailConfig {
 	/// Gmail email address to monitor
 	pub email: String,
-	/// Google OAuth2 Client ID (from Google Cloud Console)
+	/// Authentication method (IMAP or OAuth)
+	#[primitives(skip)]
+	pub auth: EmailAuth,
+	/// Regex patterns to match against sender email to ignore (skip processing entirely)
+	#[serde(default)]
+	#[primitives(skip)]
+	pub ignore_patterns: Vec<String>,
+	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
+	#[serde(default)]
+	pub claude_token: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailAuth {
+	Imap(ImapAuth),
+	Oauth(OAuthAuth),
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct ImapAuth {
+	pub pass: String,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct OAuthAuth {
 	pub client_id: String,
-	/// Google OAuth2 Client Secret (from Google Cloud Console)
 	pub client_secret: String,
 	/// Path to store auth tokens (default: ~/.local/state/social_networks/gmail_tokens.json)
 	#[serde(default = "__default_email_token_path")]
 	#[primitives(skip)]
 	pub token_path: String,
-	/// Regex patterns to match against sender email to ignore (skip processing entirely)
-	#[serde(default)]
-	pub ignore_patterns: Vec<String>,
-	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
-	#[serde(default)]
-	pub claude_token: Option<String>,
 }
 
 fn __default_email_token_path() -> String {
