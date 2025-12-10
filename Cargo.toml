@@ -19,9 +19,11 @@ clickhouse = { version = "^0.14", features = ["time"] }
 color-eyre = "^0.6.5"
 config = "^0"
 derive-new = "^0"
+futures = "0.3.31"
 futures-util = "^0"
 google-gmail1 = "^6"
 grammers-client = "^0.8"
+grammers-mtsender = "^0.8"
 grammers-session = "^0.8"
 grammers-tl-types = "^0.8"
 hmac = "^0.12"
@@ -29,6 +31,7 @@ hyper = "^1"
 hyper-rustls = "^0.27"
 hyper-util = { version = "^0.1", features = ["client", "client-legacy", "http1"] }
 imap = "3.0.0-alpha.15"
+jiff = { version = "0.2.16", features = ["serde"] }
 oauth1-request = "^0.6"
 quick-xml = "0.38.4"
 rand = "^0.9"
@@ -47,12 +50,10 @@ xdg = { version = "3.0.0", features = ["serde"] }
 yup-oauth2 = "12"
 
 # my crates {{{
-futures = "0.3.31"
-grammers-mtsender = "^0.8"
-jiff = { version = "0.2.16", features = ["serde"] }
 tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
 v_exchanges = { version = "0.16.0", default-features = false, features = ["binance"] }
-v_utils = { version = "^2.13.1" } #ga: rm path
+v_utils = { version = "^2.14.0", features = ["xdg"] } #ga: rm path
+#,}}}
 
 [dev-dependencies]
 insta = "1.44.3"

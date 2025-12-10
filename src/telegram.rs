@@ -196,7 +196,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				continue;
 			}
 		};
-		debug!("Received update: {update:?}");
+		// NOTE: Don't debug print the full update - it can cause stack overflow due to deeply nested Debug formatting
 		message_counter += 1;
 
 		match update {
@@ -240,8 +240,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 			_ => {}
 		}
 
-		// Status update every 5 minutes
-
+		// Status update every 4 minutes
 		let now = Timestamp::now();
 		if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
 			if !status_drop.status.is_empty() {
