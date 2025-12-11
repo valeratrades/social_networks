@@ -184,7 +184,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut updates = client.stream_updates(
 		updates,
 		UpdatesConfiguration {
-			catch_up: true,
+			catch_up: false,
 			..Default::default()
 		},
 	);

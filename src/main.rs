@@ -15,7 +15,7 @@ use config::AppConfig;
 use v_utils::utils::exit_on_error;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
 struct Cli {
 	#[command(subcommand)]
 	command: Commands,
