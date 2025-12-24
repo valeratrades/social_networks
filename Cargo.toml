@@ -50,13 +50,13 @@ xdg = { version = "3.0.0", features = ["serde"] }
 yup-oauth2 = "12"
 
 # my crates {{{
-tg = { git = "https://github.com/valeratrades/tg", branch = "master" }
-v_exchanges = { version = "0.16.0", default-features = false, features = ["binance"] }
-v_utils = { version = "^2.14.0", features = ["xdg"] } #ga: rm path
+tg = "0.4.0"
+v_exchanges = { version = "0.16.7", default-features = false, features = ["binance"] }
+v_utils = { version = "^2.15.5", features = ["xdg"] } #ga: rm path
 #,}}}
 
 [dev-dependencies]
-insta = "1.44.3"
+insta = "1.45.0"
 
 [lints.clippy]
 # Stable
