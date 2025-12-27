@@ -1,8 +1,8 @@
 pub mod config;
 pub mod db;
-pub mod discord;
+pub mod dms;
 pub mod email;
-pub mod telegram;
+pub mod telegram_channel_watch;
 pub mod telegram_notifier;
 pub mod twitter;
 pub mod twitter_schedule;

@@ -9,7 +9,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
+use crate::config::{AppConfig, TelegramDestination};
 
 #[derive(Args)]
 pub struct TelegramArgs {}
@@ -20,8 +20,8 @@ struct StatusDrop {
 }
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
-	println!("Starting Telegram...");
-	v_utils::clientside!("telegram");
+	println!("Starting Telegram Channel Watch...");
+	v_utils::clientside!("telegram_channel_watch");
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async {
@@ -156,8 +156,8 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 	// Resolve output channel - extract username from TelegramDestination
 	let output_username = match &config.telegram.channel_output {
-		tg::chat::TelegramDestination::ChannelUsername(username) => username.trim_start_matches('@'),
-		tg::chat::TelegramDestination::ChannelExactUid(_) | tg::chat::TelegramDestination::Group { .. } => {
+		TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
+		_ => {
 			return Err(color_eyre::eyre::eyre!("channel_output must be a username for grammers client forwarding"));
 		}
 	};
@@ -174,11 +174,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 	};
 
-	eprintln!("Listening for messages...");
+	eprintln!("Listening for channel messages...");
 	info!("Starting main event loop");
 
 	// Main event loop
-	let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
 	let mut message_counter = 0u64;
 	let mut last_status_update = Timestamp::default();
 	let mut updates = client.stream_updates(
@@ -209,22 +208,6 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 					}
 				};
 				let peer_id = peer.id();
-
-				// Check if it's a DM with /ping
-				let text = message.text();
-				if text.contains("/ping") {
-					// Check if it's from a user (not a channel/group)
-					if let Some(sender) = message.sender()
-						&& matches!(peer, grammers_client::types::Peer::User(_))
-					{
-						let username = sender.username().unwrap_or("unknown");
-						if let Err(e) = telegram_notifier.send_ping_notification(username, "Telegram").await {
-							error!("Error sending notification: {e}");
-						} else {
-							info!("Successfully sent notification for user: {username}");
-						}
-					}
-				}
 
 				// Check if it's from a monitored channel
 				if poll_peer_ids.contains(&peer_id) {

@@ -1,8 +1,8 @@
 mod config;
 mod db;
-mod discord;
+mod dms;
 mod email;
-mod telegram;
+mod telegram_channel_watch;
 mod telegram_notifier;
 mod twitter;
 mod twitter_schedule;
@@ -11,7 +11,7 @@ mod utils;
 mod youtube;
 
 use clap::{Args, Parser, Subcommand};
-use config::AppConfig;
+use config::{AppConfig, LiveSettings, SettingsFlags};
 use v_utils::utils::exit_on_error;
 
 #[derive(Parser)]
@@ -19,20 +19,20 @@ use v_utils::utils::exit_on_error;
 struct Cli {
 	#[command(subcommand)]
 	command: Commands,
-	#[arg(long)]
-	config: Option<v_utils::io::ExpandedPath>,
+	#[command(flatten)]
+	settings: SettingsFlags,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-	/// Discord operations
-	Discord(discord::DiscordArgs),
+	/// DM monitoring (ping, monitored users) for Discord and Telegram simultaneously
+	Dms(dms::DmsArgs),
 	/// Email operations
 	Email(email::EmailArgs),
 	/// Run database migrations
 	MigrateDb,
-	/// Telegram operations
-	Telegram(telegram::TelegramArgs),
+	/// Telegram channel watching (poll/info forwarding)
+	TelegramChannelWatch(telegram_channel_watch::TelegramArgs),
 	/// Twitter operations
 	Twitter(twitter::TwitterArgs),
 	/// Twitter scheduled posting
@@ -47,16 +47,18 @@ struct NoArgs {}
 fn main() {
 	let cli = Cli::parse();
 
-	let config = exit_on_error(AppConfig::read(cli.config));
+	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
+	let config: AppConfig = exit_on_error(settings.config());
+
 	let success = match cli.command {
-		Commands::Discord(args) => discord::main(config, args),
+		Commands::Dms(args) => dms::main(config, args),
 		Commands::Email(args) => email::main(config, args),
 		Commands::MigrateDb => {
 			let db = db::Database::new(&config.clickhouse);
 			let runtime = tokio::runtime::Runtime::new().unwrap();
 			runtime.block_on(async { db.migrate().await })
 		}
-		Commands::Telegram(args) => telegram::main(config, args),
+		Commands::TelegramChannelWatch(args) => telegram_channel_watch::main(config, args),
 		Commands::Twitter(args) => twitter::main(config, args),
 		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),
 		Commands::Youtube(args) => youtube::main(config, args),

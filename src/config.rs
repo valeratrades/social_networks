@@ -1,37 +1,142 @@
-use color_eyre::eyre::Result;
-use tg::chat::TelegramDestination;
-use v_utils::{io::ExpandedPath, macros::MyConfigPrimitives, trades::Timeframe};
+use serde::Deserialize;
+pub use tg::TelegramDestination;
+use v_utils::{
+	macros::{LiveSettings, MyConfigPrimitives, Settings},
+	trades::Timeframe,
+};
 
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, Default, LiveSettings, MyConfigPrimitives, Settings)]
 pub struct AppConfig {
-	pub discord: DiscordConfig,
+	#[settings(skip)]
+	#[serde(default)]
+	pub dm_commands: DmCommandsConfig,
+	#[settings(skip)]
+	#[serde(default)]
 	pub telegram: TelegramConfig,
+	#[settings(skip)]
+	#[serde(default)]
 	pub twitter: TwitterConfig,
+	#[settings(skip)]
+	#[serde(default)]
 	pub youtube: YoutubeConfig,
+	#[settings(skip)]
+	#[serde(default)]
 	pub email: Option<EmailConfig>,
+	#[settings(skip)]
 	#[serde(default)]
 	pub clickhouse: ClickHouseConfig,
+}
+
+/// Configuration for DM command monitoring (ping, monitored users)
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct DmCommandsConfig {
+	/// Users to monitor across all platforms. Can be either:
+	/// - A plain string (applies to all platforms)
+	/// - An object like {telegram = "username"} or {discord = "username"}
+	#[serde(default)]
+	#[primitives(skip)]
+	pub monitored_users: Vec<MonitoredUser>,
+	#[serde(default)]
+	#[primitives(skip)]
+	pub discord: DiscordConfig,
+}
+
+impl DmCommandsConfig {
+	/// Get list of usernames to monitor for Discord
+	pub fn monitored_users_for_discord(&self) -> Vec<String> {
+		self.monitored_users
+			.iter()
+			.filter_map(|u| match u {
+				MonitoredUser::All(username) => Some(username.clone()),
+				MonitoredUser::Discord(username) => Some(username.clone()),
+				MonitoredUser::Telegram(_) => None,
+			})
+			.collect()
+	}
+
+	/// Get list of usernames to monitor for Telegram
+	pub fn monitored_users_for_telegram(&self) -> Vec<String> {
+		self.monitored_users
+			.iter()
+			.filter_map(|u| match u {
+				MonitoredUser::All(username) => Some(username.clone()),
+				MonitoredUser::Telegram(username) => Some(username.clone()),
+				MonitoredUser::Discord(_) => None,
+			})
+			.collect()
+	}
+}
+
+/// A monitored user can be either global (all platforms) or platform-specific
+#[derive(Clone, Debug)]
+pub enum MonitoredUser {
+	/// Applies to all platforms
+	All(String),
+	/// Discord-specific
+	Discord(String),
+	/// Telegram-specific
+	Telegram(String),
+}
+
+impl<'de> Deserialize<'de> for MonitoredUser {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>, {
+		use serde::de::{MapAccess, Visitor};
+
+		struct MonitoredUserVisitor;
+
+		impl<'de> Visitor<'de> for MonitoredUserVisitor {
+			type Value = MonitoredUser;
+
+			fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+				formatter.write_str("a string or an object with 'telegram' or 'discord' key")
+			}
+
+			fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+			where
+				E: serde::de::Error, {
+				Ok(MonitoredUser::All(v.to_string()))
+			}
+
+			fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+			where
+				M: MapAccess<'de>, {
+				let key: String = map.next_key()?.ok_or_else(|| serde::de::Error::custom("expected a key"))?;
+				let value: String = map.next_value()?;
+
+				match key.as_str() {
+					"telegram" => Ok(MonitoredUser::Telegram(value)),
+					"discord" => Ok(MonitoredUser::Discord(value)),
+					other => Err(serde::de::Error::custom(format!("unknown platform: {other}"))),
+				}
+			}
+		}
+
+		deserializer.deserialize_any(MonitoredUserVisitor)
+	}
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct DiscordConfig {
 	pub user_token: String,
-	pub monitored_users: Vec<String>,
 	pub my_username: String,
 }
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TelegramConfig {
 	pub bot_token: String,
-	#[private_value]
+	#[primitives(skip)]
 	pub channel_alerts: TelegramDestination,
-	#[private_value]
+	#[primitives(skip)]
 	pub channel_output: TelegramDestination,
 	pub api_id: i32,
 	pub api_hash: String,
 	pub phone: String,
 	pub username: String,
+	#[primitives(skip)]
 	pub poll_channels: Vec<String>,
+	#[primitives(skip)]
 	pub info_channels: Vec<String>,
 }
 
@@ -40,7 +145,9 @@ pub struct TwitterConfig {
 	pub bearer_token: String,
 	pub everytime_polls_list: String,
 	pub sometimes_polls_list: String,
+	#[primitives(skip)]
 	pub oauth: Option<TwitterOauthConfig>,
+	#[primitives(skip)]
 	pub poll: Option<TwitterPollConfig>,
 }
 
@@ -67,6 +174,7 @@ fn __default_num_of_retries() -> u8 {
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct YoutubeConfig {
+	#[primitives(skip)]
 	pub channels: std::collections::HashMap<String, String>,
 }
 
@@ -86,7 +194,7 @@ pub struct EmailConfig {
 	pub claude_token: Option<String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmailAuth {
 	Imap(ImapAuth),
@@ -114,7 +222,7 @@ fn __default_email_token_path() -> String {
 	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ClickHouseConfig {
 	#[serde(default = "__default_clickhouse_url")]
 	pub url: String,
@@ -144,39 +252,4 @@ fn __default_clickhouse_database() -> String {
 }
 fn __default_clickhouse_user() -> String {
 	"default".to_string()
-}
-
-impl AppConfig {
-	pub fn read(path: Option<ExpandedPath>) -> Result<Self, config::ConfigError> {
-		// Don't use Environment source at all to avoid conflicts
-		// Environment variables should be read explicitly via {env = "VAR"} in TOML
-		let mut builder = config::Config::builder();
-		let settings: Self = match path {
-			Some(path) => {
-				let builder = builder.add_source(config::File::with_name(&path.to_string()).required(true));
-				builder.build()?.try_deserialize()?
-			}
-			None => {
-				let app_name = env!("CARGO_PKG_NAME");
-				let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
-				let xdg_conf_dir = xdg_dirs.get_config_home().unwrap().parent().unwrap().display().to_string();
-
-				let locations = [format!("{xdg_conf_dir}/{app_name}"), format!("{xdg_conf_dir}/{app_name}/config")];
-				for location in locations.iter() {
-					builder = builder.add_source(config::File::with_name(location).required(false));
-				}
-				let raw: config::Config = builder.build()?;
-
-				match raw.try_deserialize() {
-					Ok(settings) => settings,
-					Err(e) => {
-						eprintln!("Config file does not exist or is invalid:");
-						return Err(e);
-					}
-				}
-			}
-		};
-
-		Ok(settings)
-	}
 }

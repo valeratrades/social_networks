@@ -348,7 +348,7 @@ impl EmailMonitor {
 
 		for message in messages {
 			if let Err(e) = self.process_message_oauth(&hub, &message).await {
-				let message_id = message.id.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+				let message_id = message.id.as_deref().unwrap_or("unknown");
 				let from = self.extract_header(&message, "From").unwrap_or_else(|| "Unknown".to_string());
 				error!("Failed to process message {} from {}: {:#}", message_id, from, e);
 			}
@@ -575,6 +575,8 @@ impl EmailMonitor {
 
 	async fn eval_is_human(&self, message: &EmailMessage) -> Result<bool> {
 		if let Some(ref token) = self.config.claude_token {
+			// SAFETY: This is only called from the single-threaded main task, and is setting an env var
+			// that is only read by the ask_llm crate during the subsequent API call in this same function.
 			unsafe {
 				std::env::set_var("CLAUDE_TOKEN", token);
 			}
