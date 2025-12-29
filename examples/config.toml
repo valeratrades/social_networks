@@ -1,6 +1,8 @@
-[discord]
-user_token = { env = "DISCORD_AUTH" }
+[dms]
 monitored_users = ["play_me_once", "deevsdeevs"]
+
+[dms.discord]
+user_token = { env = "DISCORD_AUTH" }
 my_username = { env = "DEFAULT_USERNAME" }
 
 [telegram]

@@ -29,7 +29,7 @@ pub struct TelegramMonitor {
 impl TelegramMonitor {
 	pub fn new(config: AppConfig) -> Self {
 		let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
-		let monitored_users = config.dm_commands.monitored_users_for_telegram();
+		let monitored_users = config.dms.monitored_users_for_telegram();
 
 		Self {
 			config,

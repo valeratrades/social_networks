@@ -9,7 +9,7 @@ use v_utils::{
 pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
-	pub dm_commands: DmCommandsConfig,
+	pub dms: DmsConfig,
 	#[settings(skip)]
 	#[serde(default)]
 	pub telegram: TelegramConfig,
@@ -27,9 +27,9 @@ pub struct AppConfig {
 	pub clickhouse: ClickHouseConfig,
 }
 
-/// Configuration for DM command monitoring (ping, monitored users)
+/// Configuration for DM monitoring (ping, monitored users)
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
-pub struct DmCommandsConfig {
+pub struct DmsConfig {
 	/// Users to monitor across all platforms. Can be either:
 	/// - A plain string (applies to all platforms)
 	/// - An object like {telegram = "username"} or {discord = "username"}
@@ -41,7 +41,7 @@ pub struct DmCommandsConfig {
 	pub discord: DiscordConfig,
 }
 
-impl DmCommandsConfig {
+impl DmsConfig {
 	/// Get list of usernames to monitor for Discord
 	pub fn monitored_users_for_discord(&self) -> Vec<String> {
 		self.monitored_users
@@ -126,9 +126,9 @@ pub struct DiscordConfig {
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TelegramConfig {
 	pub bot_token: String,
-	#[primitives(skip)]
+	#[private_value]
 	pub channel_alerts: TelegramDestination,
-	#[primitives(skip)]
+	#[private_value]
 	pub channel_output: TelegramDestination,
 	pub api_id: i32,
 	pub api_hash: String,

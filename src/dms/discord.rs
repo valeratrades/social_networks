@@ -46,7 +46,7 @@ pub struct DiscordMonitor {
 impl DiscordMonitor {
 	pub fn new(config: AppConfig) -> Self {
 		let telegram = TelegramNotifier::new(config.telegram.clone());
-		let monitored_users = config.dm_commands.monitored_users_for_discord();
+		let monitored_users = config.dms.monitored_users_for_discord();
 
 		Self {
 			config,
@@ -181,7 +181,7 @@ impl DiscordMonitor {
 		let identify = DiscordMessage {
 			op: 2,
 			d: Some(json!({
-				"token": self.config.dm_commands.discord.user_token,
+				"token": self.config.dms.discord.user_token,
 				"properties": {
 					"$os": "linux",
 					"$browser": "rust",
@@ -209,7 +209,7 @@ impl DiscordMonitor {
 
 			let has_ping = content.contains("/ping");
 			let is_monitored_user = self.monitored_users.contains(&author.to_string());
-			let is_my_message = author == self.config.dm_commands.discord.my_username;
+			let is_my_message = author == self.config.dms.discord.my_username;
 
 			// Determine if we should notify for /ping
 			if has_ping && !is_my_message {
@@ -219,14 +219,14 @@ impl DiscordMonitor {
 					should_notify_ping = true;
 				} else {
 					let event_str = serde_json::to_string(data)?;
-					let has_mention = event_str.contains(&self.config.dm_commands.discord.my_username);
+					let has_mention = event_str.contains(&self.config.dms.discord.my_username);
 
 					let is_reply_to_me = data
 						.get("referenced_message")
 						.and_then(|m| m.get("author"))
 						.and_then(|a| a.get("username"))
 						.and_then(|u| u.as_str())
-						.map(|u| u == self.config.dm_commands.discord.my_username)
+						.map(|u| u == self.config.dms.discord.my_username)
 						.unwrap_or(false);
 
 					if has_mention || is_reply_to_me {
