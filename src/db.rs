@@ -172,21 +172,25 @@ PRIMARY KEY version
 
 	/// Check if an email message has been processed
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
-		let query = format!("SELECT count() as count FROM social_networks.processed_emails WHERE message_id = '{}'", message_id);
-		let row = self.client.query(&query).fetch_one::<CountRow>().await?;
+		let row = self
+			.client
+			.query("SELECT count() as count FROM social_networks.processed_emails WHERE message_id = ?")
+			.bind(message_id)
+			.fetch_one::<CountRow>()
+			.await?;
 		Ok(row.count > 0)
 	}
 
 	/// Mark an email as processed
 	pub async fn mark_email_processed(&self, message_id: &str, from_email: &str, subject: &str, is_human: bool) -> Result<()> {
-		let query = format!(
-			"INSERT INTO social_networks.processed_emails (message_id, from_email, subject, is_human) VALUES ('{}', '{}', '{}', {})",
-			message_id.replace('\'', "''"),
-			from_email.replace('\'', "''"),
-			subject.replace('\'', "''"),
-			if is_human { 1 } else { 0 }
-		);
-		self.client.query(&query).execute().await?;
+		self.client
+			.query("INSERT INTO social_networks.processed_emails (message_id, from_email, subject, is_human) VALUES (?, ?, ?, ?)")
+			.bind(message_id)
+			.bind(from_email)
+			.bind(subject)
+			.bind(if is_human { 1u8 } else { 0u8 })
+			.execute()
+			.await?;
 		Ok(())
 	}
 }
