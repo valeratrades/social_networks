@@ -30,7 +30,7 @@ pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 }
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals
-#[instrument]
+#[instrument(skip(config))]
 async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result<()> {
 	println!("Twitter Schedule: Scheduler initialized");
 
@@ -94,7 +94,7 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 	}
 }
 
-#[instrument]
+#[instrument(skip(config))]
 async fn post_poll(config: &AppConfig) -> Result<()> {
 	let oauth = config.twitter.oauth.as_ref().ok_or_else(|| eyre!("twitter.oauth config not found"))?;
 	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
@@ -122,7 +122,7 @@ async fn post_poll(config: &AppConfig) -> Result<()> {
 	Ok(())
 }
 
-#[instrument]
+#[instrument(skip_all)]
 async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, access_token_secret: &str, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse> {
 	let url = "https://api.twitter.com/2/tweets";
 	let method = "POST";
@@ -210,7 +210,7 @@ impl VariableProvider {
 		Ok(date_str)
 	}
 
-	#[instrument]
+	#[instrument(skip(self))]
 	async fn resolve(&self, variable_name: &str) -> Result<String> {
 		match variable_name {
 			"btc_price" => self.btc_price().await,
@@ -245,7 +245,7 @@ fn extract_variable_names(text: &str) -> Vec<String> {
 	variables
 }
 
-#[instrument]
+#[instrument(skip(poll_config))]
 async fn parse_poll_text_async(text: &str, poll_config: &TwitterPollConfig) -> Result<(String, Vec<String>)> {
 	// First, extract variable names needed
 	let variable_names = extract_variable_names(text);

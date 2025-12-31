@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result};
-use jiff::{SignedDuration, Timestamp, Zoned};
+use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration};
@@ -36,7 +36,7 @@ pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 	})
 }
 
-#[instrument]
+#[instrument(skip(config))]
 async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(config.telegram.clone());
@@ -69,7 +69,7 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 	}
 }
 
-#[instrument]
+#[instrument(skip(client, last_uploaded, telegram))]
 async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name: &str, last_uploaded: &mut LastUploadedTitles, telegram: &TelegramNotifier) -> Result<()> {
 	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", channel_id);
 
@@ -149,10 +149,11 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 					&& title.is_some()
 					&& let Some(dt_str) = published
 				{
-					let published_dt: Zoned = dt_str.parse()?;
+					// YouTube returns ISO 8601 with offset (e.g., "2025-12-31T08:37:07+00:00")
+					let published_dt: Timestamp = dt_str.parse()?;
 
 					#[allow(clippy::unnecessary_unwrap)] // actually leads to borrowship issues
-					return Ok((video_id.unwrap(), title.unwrap(), published_dt.into()));
+					return Ok((video_id.unwrap(), title.unwrap(), published_dt));
 				}
 			}
 			Ok(Event::Eof) => break,
