@@ -23,7 +23,9 @@ pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
 	v_utils::clientside!("telegram_channel_watch");
 
-	let runtime = tokio::runtime::Runtime::new()?;
+	// Increase stack size to handle deeply nested Telegram TL types
+	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates
+	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
 	runtime.block_on(async {
 		loop {
 			if let Err(e) = run_telegram_monitor(&config).await {

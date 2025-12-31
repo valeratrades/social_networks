@@ -17,7 +17,9 @@ pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
 
 	println!("DMs: Starting Discord and Telegram monitors...");
 
-	let runtime = tokio::runtime::Runtime::new()?;
+	// Increase stack size to handle deeply nested Telegram TL types
+	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates
+	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
 	runtime.block_on(run(config))
 }
 
