@@ -12,7 +12,7 @@ repository = "https://github.com/valeratrades/social_networks"
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
-ask_llm = "^2.1.0"
+ask_llm = "^2.1.4"
 base64 = "^0.22"
 clap = { version = "^4", features = ["derive"] }
 clickhouse = { version = "^0.14", features = ["time"] }
@@ -41,7 +41,7 @@ rustls = { version = "^0.23", features = ["aws-lc-rs"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 sha1 = "^0.10"
-tg = "^0.6"
+tg = "^0.7"
 tokio = { version = "^1", features = ["full"] }
 tokio-tungstenite = { version = "^0", features = ["native-tls"] }
 tracing = "^0"
@@ -52,11 +52,11 @@ yup-oauth2 = "12"
 
 # my crates {{{
 v_exchanges = { version = "0.16.7", default-features = false, features = ["binance"] }
-v_utils = { version = "^2.15.9", features = ["xdg", "cli"] } #ga: rm path
+v_utils = { version = "^2.15.15", features = ["xdg", "cli"] } #ga: rm path
 #,}}}
 
 [dev-dependencies]
-insta = "1.45.0"
+insta = "1.45.1"
 
 [lints.clippy]
 # Stable

@@ -126,9 +126,9 @@ checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
 name = "ask_llm"
-version = "2.1.0"
+version = "2.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0652d8d18977bc0851adb31247ee05008b9a6f2eafc385fd585ddfbaf6b2aeb"
+checksum = "5583fe57f68d09be0839a83723f904757345863961fa9a8320a5feb4568b0a5a"
 dependencies = [
  "base64",
  "bytes",
@@ -1831,9 +1831,9 @@ dependencies = [
 
 [[package]]
 name = "insta"
-version = "1.45.0"
+version = "1.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b76866be74d68b1595eb8060cb9191dca9c021db2316558e52ddc5d55d41b66c"
+checksum = "983e3b24350c84ab8a65151f537d67afbbf7153bb9f1110e03e9fa9b07f67a5c"
 dependencies = [
  "console",
  "once_cell",
@@ -3821,11 +3821,10 @@ dependencies = [
 
 [[package]]
 name = "tg"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c22b25d73fb68d608759286b709b76cf89c70433ffb7d2d6603679d73391dd7"
+checksum = "ab2d5fcc0952f4791b0f85617486641ae32056392d3e638ed2ef81e412f6e592"
 dependencies = [
- "chrono",
  "clap",
  "clap_complete",
  "color-eyre",
@@ -3840,6 +3839,7 @@ dependencies = [
  "grammers-mtsender",
  "grammers-session",
  "grammers-tl-types",
+ "jiff",
  "regex",
  "reqwest",
  "serde",
@@ -4490,9 +4490,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.15.9"
+version = "2.15.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c72fde9b17ebe822878bf24618b8dffeb3b034cf45a73c60851cc2dad6722c2"
+checksum = "d30c42f3a4694b8c2656a319088281b0209051f1fed5a7cbccc5249166cf1e0e"
 dependencies = [
  "config",
  "const_format",
@@ -4525,9 +4525,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.11.9"
+version = "2.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f427eb52f1200d4d61f029b287eafbf24331a2c984502a7b7012772810d76d3"
+checksum = "0b525ed9db52064e242bdb4c5ae74329abd89b0882a4df3ad6859e89139c50e5"
 dependencies = [
  "eyre",
  "heck 0.5.0",
