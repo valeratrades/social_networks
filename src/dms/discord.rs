@@ -124,10 +124,10 @@ impl DiscordMonitor {
 								}
 								0 => {
 									// Dispatch event
-									if let Some(d) = &event.d {
-										if let Err(e) = self.handle_message(d).await {
-											error!("Error handling message: {e}");
-										}
+									if let Some(d) = &event.d
+										&& let Err(e) = self.handle_message(d).await
+									{
+										error!("Error handling message: {e}");
 									}
 								}
 								_ => {}

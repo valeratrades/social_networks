@@ -24,8 +24,8 @@ pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
 }
 
 enum MonitorInstance {
-	Discord(discord::DiscordMonitor),
-	Telegram(telegram::TelegramMonitor),
+	Discord(Box<discord::DiscordMonitor>),
+	Telegram(Box<telegram::TelegramMonitor>),
 }
 
 async fn run(config: AppConfig) -> Result<()> {
@@ -38,13 +38,13 @@ async fn run(config: AppConfig) -> Result<()> {
 	futures.push(Box::pin(async move {
 		let mut m = discord_monitor;
 		let result = m.collect().await;
-		(MonitorInstance::Discord(m), result)
+		(MonitorInstance::Discord(Box::new(m)), result)
 	}));
 
 	futures.push(Box::pin(async move {
 		let mut m = telegram_monitor;
 		let result = m.collect().await;
-		(MonitorInstance::Telegram(m), result)
+		(MonitorInstance::Telegram(Box::new(m)), result)
 	}));
 
 	while let Some((instance, result)) = futures.next().await {
@@ -53,16 +53,14 @@ async fn run(config: AppConfig) -> Result<()> {
 		}
 
 		match instance {
-			MonitorInstance::Discord(m) => {
+			MonitorInstance::Discord(mut m) => {
 				futures.push(Box::pin(async move {
-					let mut m = m;
 					let result = m.collect().await;
 					(MonitorInstance::Discord(m), result)
 				}));
 			}
-			MonitorInstance::Telegram(m) => {
+			MonitorInstance::Telegram(mut m) => {
 				futures.push(Box::pin(async move {
-					let mut m = m;
 					let result = m.collect().await;
 					(MonitorInstance::Telegram(m), result)
 				}));

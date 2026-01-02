@@ -14,7 +14,7 @@ type UpdateStream = grammers_client::client::updates::UpdateStream;
 
 enum State {
 	Disconnected,
-	Connected { updates: UpdateStream },
+	Connected { updates: Box<UpdateStream> },
 }
 
 pub struct TelegramMonitor {
@@ -49,7 +49,7 @@ impl TelegramMonitor {
 						info!("--Telegram DM Commands-- connected and authorized");
 						println!("Telegram DM Commands: Connected");
 						self.client = Some(client);
-						self.state = State::Connected { updates };
+						self.state = State::Connected { updates: Box::new(updates) };
 					}
 					Err(e) => {
 						error!("Telegram connection error: {e}");
