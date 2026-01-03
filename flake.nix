@@ -4,7 +4,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v-utils.url = "github:valeratrades/.github/v1.2.1";
+    v-utils.url = "github:valeratrades/.github?ref=v1.3";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem (
@@ -33,6 +33,14 @@
           jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
           jobsOther = [ "loc-badge" ];
         };
+        rs = v-utils.rs {
+          inherit pkgs;
+          cranelift = true;
+          build = {
+            enable = true;
+            workspace."./" = [ "git_version" "log_directives" ];
+          };
+        };
         readme = v-utils.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.92";
@@ -51,7 +59,7 @@
             };
           in
           {
-            default = rustPlatform.buildRustPackage rec {
+            default = rustPlatform.buildRustPackage {
               inherit pname;
               version = manifest.version;
 
@@ -72,20 +80,13 @@
             shellHook =
               pre-commit-check.shellHook +
               github.shellHook +
+              rs.shellHook +
               ''
                 cp -f ${v-utils.files.licenses.blue_oak} ./LICENSE
 
                 cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
 
-                mkdir -p ./.cargo
-                cp -f ${(v-utils.files.rust.config { inherit pkgs; })} ./.cargo/config.toml
-                cp -f ${(v-utils.files.rust.clippy { inherit pkgs; })} ./.cargo/.clippy.toml
-                cp -f ${ (v-utils.files.rust.toolchain { inherit pkgs; }) } ./.cargo/rust-toolchain.toml
-                cp -f ${(v-utils.files.rust.rustfmt { inherit pkgs; })} ./.rustfmt.toml
-
                 cp -f ${readme} ./README.md
-
-                alias qr="./target/debug/${pname}"
               '';
 
             packages = [
