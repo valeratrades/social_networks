@@ -45,9 +45,8 @@ duration_hours = 24
 schedule_every = "1w"
 num_of_retries = 5
 text = """
-Sentiment check: $BTC, how are we feeling?
+Sentiment check: $BTC at ~$${btc_price}, - how are we feeling?
 
-for future reference: $BTC ~$${btc_price}
 - [ ] Bullish
 - [ ] Neutral
 - [ ] Bearish

@@ -1,6 +1,7 @@
 use color_eyre::eyre::Result;
 
 #[tokio::test]
+#[ignore] // Requires API credentials
 async fn test_ask_llm_isolated() -> Result<()> {
 	color_eyre::install()?;
 
