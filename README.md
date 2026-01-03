@@ -10,6 +10,7 @@
 scripts to automate scraping from or certain parts of interactions with social networks.
 
 has aggregators of sentiment polls from Twitter and Telegram, interpretation of Hamaha's video titles, discord /ping notifier, etc
+If the broader architecture is of interest, see [ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 <!-- markdownlint-disable -->
 <details>
 <summary>
@@ -54,7 +55,7 @@ social_networks youtube
 #### License
 
 <sup>
-	Licensed under <a href="LICENSE">Blue Oak 1.0.0</a>
+	Licensed under <a href="LICENSE">GLWTS</a>
 </sup>
 
 <br>
