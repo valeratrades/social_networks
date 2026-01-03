@@ -4,7 +4,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v-utils.url = "github:valeratrades/.github?ref=v1.3";
+    v-utils.url = "github:valeratrades/.github?ref=v1.4";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem (
@@ -29,9 +29,11 @@
           inherit pkgs pname;
           langs = [ "rs" ];
           lastSupportedVersion = "nightly-2025-10-10";
-          jobsErrors = [ "rust-tests" ];
-          jobsWarnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
-          jobsOther = [ "loc-badge" ];
+          jobs = {
+            errors = [ "rust-tests" ];
+            warnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
+            other = [ "loc-badge" ];
+          };
         };
         rs = v-utils.rs {
           inherit pkgs;
@@ -45,7 +47,7 @@
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.92";
           rootDir = ./.;
-          licenses = [{ name = "Blue Oak 1.0.0"; outPath = "LICENSE"; }];
+          licenses = [{ license = v-utils.files.licenses.nsfw; }];
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
       in
@@ -82,12 +84,9 @@
               github.shellHook +
               rs.shellHook +
               ''
-                cp -f ${v-utils.files.licenses.blue_oak} ./LICENSE
-
                 cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
-
-                cp -f ${readme} ./README.md
-              '';
+              '' +
+              readme.shellHook;
 
             packages = [
               mold-wrapped

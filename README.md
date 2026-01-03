@@ -17,15 +17,40 @@ has aggregators of sentiment polls from Twitter and Telegram, interpretation of 
 </summary>
 
 ```sh
-cargo install --git https://github.com/valeratrades/social_networks --branch master # semantically `release` is preferrable, but I forget to push there sometimes
+cargo install --git https://github.com/valeratrades/social_networks --branch master
 ```
 
-#### Email Setup (Remote Server)
-For the email service on a remote server, you need to authenticate locally first, then copy the token file:
+### Email Setup
 
-1. Run `social_networks email` on your **local machine** (where you can open a browser)
-2. Complete the OAuth authentication flow
-3. Copy the token file to the remote server:
+The email command supports two authentication methods:
+
+#### Option 1: IMAP with App Password (simpler)
+1. Enable 2-Step Verification on your Google account
+2. Go to [Google App Passwords](https://myaccount.google.com/apppasswords)
+3. Generate an app password for "Mail"
+4. Add to your config:
+   ```toml
+   [email]
+   email = "your@gmail.com"
+   [email.auth.imap]
+   pass = "your-app-password"
+   ```
+
+#### Option 2: OAuth (for remote servers)
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the Gmail API
+3. Create OAuth 2.0 credentials (Desktop app)
+4. Add to your config:
+   ```toml
+   [email]
+   email = "your@gmail.com"
+   [email.auth.oauth]
+   client_id = "..."
+   client_secret = "..."
+   ```
+5. Run `social_networks email` on your **local machine** (where you can open a browser)
+6. Complete the OAuth authentication flow
+7. Copy the token file to the remote server:
    ```sh
    scp ~/.local/state/social_networks/gmail_tokens.json <remote-server>:~/.local/state/social_networks/
    ```
@@ -34,27 +59,33 @@ For the email service on a remote server, you need to authenticate locally first
 <!-- markdownlint-restore -->
 
 ## Usage
-on the server, fill in the [~/.config/social_networks.toml], following, [../examples/config.toml]
-Then startup needed services:
-```sh
-social_networks discord
-social_networks telegram
-social_networks twitter
-social_networks youtube
-```
+Fill in `~/.config/social_networks.toml` following [examples/config.toml](./examples/config.toml).
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `dms` | DM monitoring (ping, monitored users) for Discord and Telegram simultaneously |
+| `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
+| `health` | Show health status of all services, config, and directories |
+| `migrate-db` | Run database migrations |
+| `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
+| `twitter` | Twitter operations |
+| `twitter-schedule` | Twitter scheduled posting |
+| `youtube` | YouTube operations |
 
 
 
 <br>
 
 <sup>
-	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting).
+	This repository follows <a href="https://github.com/valeratrades/.github/tree/master/best_practices">my best practices</a> and <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">Tiger Style</a> (except "proper capitalization for acronyms": (VsrState, not VSRState) and formatting). For project's architecture, see <a href="./docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.
 </sup>
 
 #### License
 
 <sup>
-	Licensed under <a href="LICENSE">Blue Oak 1.0.0</a>
+	Licensed under <a href="LICENSE">GLWTS</a>
 </sup>
 
 <br>
