@@ -203,6 +203,17 @@ impl TelegramMonitor {
 			info!("Session saved successfully to {}", session_file.display());
 		}
 
+		// Pre-fetch all dialogs to warm the peer cache with access hashes.
+		// This prevents "missing its hash" warnings when receiving updates for channels.
+		info!("Pre-fetching dialogs to warm peer cache...");
+		let mut dialog_count = 0;
+		let mut dialogs = client.iter_dialogs();
+		while let Some(dialog) = dialogs.next().await? {
+			dialog_count += 1;
+			debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
+		}
+		info!("Cached {dialog_count} dialogs");
+
 		let updates = client.stream_updates(
 			updates,
 			UpdatesConfiguration {

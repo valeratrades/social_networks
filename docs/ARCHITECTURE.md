@@ -1,6 +1,6 @@
+<!--Reference: https://matklad.github.io/2021/02/06/ARCHITECTURE.md.html-->
 # Architecture
 
-Reference: https://matklad.github.io/2021/02/06/ARCHITECTURE.md.html
 
 ## Overview
 
@@ -41,7 +41,7 @@ Gmail ────┘                              └── Output Channel (pol
 
 ## Key Entities
 
-- `AppConfig` (config.rs): Root config with per-service sections
+- `AppConfig` (config.rs): Root config with per-service sections. Wrapped in `LiveSettings`; allowing update awareness.
 - `TelegramNotifier` (telegram_notifier.rs): All outbound notifications flow through here
 - `Database` (db.rs): Email deduplication via ClickHouse
 
