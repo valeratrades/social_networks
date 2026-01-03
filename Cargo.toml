@@ -17,6 +17,7 @@ base64 = "^0.22.1"
 clap = { version = "^4.5.54", features = ["derive"] }
 clickhouse = { version = "^0.14.1", features = ["time"] }
 color-eyre = "^0.6.5"
+colored = "^3"
 config = "^0.15.19"
 derive-new = "^0.7.0"
 futures = "0.3.31"

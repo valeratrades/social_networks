@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod dms;
 mod email;
+mod health;
 mod telegram_channel_watch;
 mod telegram_notifier;
 mod twitter;
@@ -29,6 +30,8 @@ enum Commands {
 	Dms(dms::DmsArgs),
 	/// Email operations
 	Email(email::EmailArgs),
+	/// Show health status of all services, config, and directories
+	Health,
 	/// Run database migrations
 	MigrateDb,
 	/// Telegram channel watching (poll/info forwarding)
@@ -53,6 +56,7 @@ fn main() {
 	let success = match cli.command {
 		Commands::Dms(args) => dms::main(config, args),
 		Commands::Email(args) => email::main(config, args),
+		Commands::Health => health::main(config),
 		Commands::MigrateDb => {
 			let db = db::Database::new(&config.clickhouse);
 			let runtime = tokio::runtime::Runtime::new().unwrap();
