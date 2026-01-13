@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use clap::Args;
 use color_eyre::eyre::Result;
+use futures::FutureExt;
 use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
 use grammers_session::{defs::PeerRef, storages::SqliteSession};
@@ -19,6 +20,11 @@ struct StatusDrop {
 	status: String,
 }
 
+fn reconnect_delay(attempt: u32) -> Duration {
+	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0); // cap at 10 min
+	Duration::from_secs_f64(delay_secs)
+}
+
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
 	v_utils::clientside!("telegram_channel_watch");
@@ -27,10 +33,35 @@ pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates
 	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
 	runtime.block_on(async {
+		let mut attempt = 0u32;
 		loop {
-			if let Err(e) = run_telegram_monitor(&config).await {
-				error!("Telegram monitor error: {e}\nReconnecting in 10 minutes...");
-				tokio::time::sleep(tokio::time::Duration::from_secs(10 * 60)).await;
+			// Wrap in catch_unwind to recover from stack overflows and other panics
+			let result = AssertUnwindSafe(run_telegram_monitor(&config)).catch_unwind().await;
+
+			match result {
+				Ok(Ok(())) => {
+					// Clean exit (shouldn't happen in normal operation)
+					attempt = 0;
+				}
+				Ok(Err(e)) => {
+					let delay = reconnect_delay(attempt);
+					error!("Telegram monitor error: {e}\nReconnecting in {:.1}s...", delay.as_secs_f64());
+					tokio::time::sleep(delay).await;
+					attempt += 1;
+				}
+				Err(panic_info) => {
+					let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+						s.to_string()
+					} else if let Some(s) = panic_info.downcast_ref::<String>() {
+						s.clone()
+					} else {
+						"unknown panic".to_string()
+					};
+					let delay = reconnect_delay(attempt);
+					error!("Telegram monitor PANIC: {panic_msg}\nRestarting in {:.1}s...", delay.as_secs_f64());
+					tokio::time::sleep(delay).await;
+					attempt += 1;
+				}
 			}
 		}
 	})
@@ -126,6 +157,17 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 
 	println!("Telegram started");
 	info!("--Telegram-- connected and authorized");
+
+	// Pre-fetch all dialogs to warm the peer cache with access hashes.
+	// This prevents "missing its hash" warnings when receiving updates for channels.
+	info!("Pre-fetching dialogs to warm peer cache...");
+	let mut dialog_count = 0;
+	let mut dialogs = client.iter_dialogs();
+	while let Some(dialog) = dialogs.next().await? {
+		dialog_count += 1;
+		debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
+	}
+	info!("Cached {dialog_count} dialogs");
 
 	// Resolve channel peer IDs
 	info!("Resolving {} poll channels", config.telegram.poll_channels.len());
