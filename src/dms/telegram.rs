@@ -60,6 +60,8 @@ impl TelegramMonitor {
 				Ok(())
 			}
 			State::Connected { updates } => {
+				crate::utils::log_stack_usage("dms telegram before updates.next()");
+
 				let update = match updates.next().await {
 					Ok(u) => u,
 					Err(e) => {
@@ -69,6 +71,8 @@ impl TelegramMonitor {
 						return Ok(());
 					}
 				};
+
+				crate::utils::log_stack_usage("dms telegram after updates.next()");
 
 				match update {
 					Update::NewMessage(message) if !message.outgoing() => {

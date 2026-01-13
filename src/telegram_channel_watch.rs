@@ -232,6 +232,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		},
 	);
 	loop {
+		// Log stack usage every iteration to detect accumulation
+		crate::utils::log_stack_usage("telegram_channel_watch loop start");
+
 		let update = match updates.next().await {
 			Ok(u) => u,
 			Err(e) => {
@@ -239,6 +242,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 				continue;
 			}
 		};
+
+		crate::utils::log_stack_usage("telegram_channel_watch after updates.next()");
+
 		// NOTE: Don't debug print the full update - it can cause stack overflow due to deeply nested Debug formatting
 		message_counter += 1;
 

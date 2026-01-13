@@ -17,6 +17,11 @@ fn main() {
 	println!("  updates::Difference: {}", size_of::<grammers_tl_types::enums::updates::Difference>());
 	println!("  updates::ChannelDifference: {}", size_of::<grammers_tl_types::enums::updates::ChannelDifference>());
 
+	println!("\nDeserialize-related types (likely on stack during deserialization):");
+	println!("  tl::enums::Updates: {}", size_of::<grammers_tl_types::enums::Updates>());
+	println!("  tl::types::Updates: {}", size_of::<grammers_tl_types::types::Updates>());
+	println!("  tl::types::UpdatesCombined: {}", size_of::<grammers_tl_types::types::UpdatesCombined>());
+
 	println!("\nStack frame reference:");
 	println!("  Default tokio stack: 2 MB = {} bytes", 2 * 1024 * 1024);
 	println!("  Current configured:  8 MB = {} bytes", 8 * 1024 * 1024);

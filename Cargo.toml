@@ -52,6 +52,7 @@ xdg = { version = "3.0.0", features = ["serde"] }
 yup-oauth2 = "12"
 
 # my crates {{{
+psm = "0.1.28"
 v_exchanges = { version = "0.16.7", default-features = false, features = ["binance"] }
 v_utils = { version = "^2.15.16", features = ["xdg", "cli"] } #ga: rm path
 #,}}}
