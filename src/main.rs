@@ -1,3 +1,25 @@
+fn main() {
+	let cli = Cli::parse();
+
+	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
+	let config: AppConfig = exit_on_error(settings.config());
+
+	let success = match cli.command {
+		Commands::Dms(args) => dms::main(config, args),
+		Commands::Email(args) => email::main(config, args),
+		Commands::Health => health::main(config),
+		Commands::MigrateDb => {
+			let db = db::Database::new(&config.clickhouse);
+			let runtime = tokio::runtime::Runtime::new().unwrap();
+			runtime.block_on(async { db.migrate().await })
+		}
+		Commands::TelegramChannelWatch(args) => telegram_channel_watch::main(config, args),
+		Commands::Twitter(args) => twitter::main(config, args),
+		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),
+		Commands::Youtube(args) => youtube::main(config, args),
+	};
+	exit_on_error(success);
+}
 mod config;
 mod db;
 mod dms;
@@ -46,26 +68,3 @@ enum Commands {
 
 #[derive(Args)]
 struct NoArgs {}
-
-fn main() {
-	let cli = Cli::parse();
-
-	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
-	let config: AppConfig = exit_on_error(settings.config());
-
-	let success = match cli.command {
-		Commands::Dms(args) => dms::main(config, args),
-		Commands::Email(args) => email::main(config, args),
-		Commands::Health => health::main(config),
-		Commands::MigrateDb => {
-			let db = db::Database::new(&config.clickhouse);
-			let runtime = tokio::runtime::Runtime::new().unwrap();
-			runtime.block_on(async { db.migrate().await })
-		}
-		Commands::TelegramChannelWatch(args) => telegram_channel_watch::main(config, args),
-		Commands::Twitter(args) => twitter::main(config, args),
-		Commands::TwitterSchedule(args) => twitter_schedule::main(config, args),
-		Commands::Youtube(args) => youtube::main(config, args),
-	};
-	exit_on_error(success);
-}

@@ -5,17 +5,13 @@ use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use jiff::Timestamp;
-use tokio::time::{self, Duration};
+use tokio::{
+	task::JoinHandle,
+	time::{self, Duration},
+};
 use tracing::{debug, error, info};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
-
-type UpdateStream = grammers_client::client::updates::UpdateStream;
-
-enum State {
-	Disconnected,
-	Connected { updates: Box<UpdateStream> },
-}
 
 pub struct TelegramMonitor {
 	config: AppConfig,
@@ -25,7 +21,6 @@ pub struct TelegramMonitor {
 	last_message_times: HashMap<i64, Timestamp>,
 	monitored_users: Vec<String>,
 }
-
 impl TelegramMonitor {
 	pub fn new(config: AppConfig) -> Self {
 		let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
@@ -45,11 +40,14 @@ impl TelegramMonitor {
 		match &mut self.state {
 			State::Disconnected => {
 				match self.connect().await {
-					Ok((client, updates)) => {
+					Ok((client, updates, runner_handle)) => {
 						info!("--Telegram DM Commands-- connected and authorized");
 						println!("Telegram DM Commands: Connected");
 						self.client = Some(client);
-						self.state = State::Connected { updates: Box::new(updates) };
+						self.state = State::Connected {
+							updates: Box::new(updates),
+							runner_handle,
+						};
 					}
 					Err(e) => {
 						error!("Telegram connection error: {e}");
@@ -59,13 +57,14 @@ impl TelegramMonitor {
 				}
 				Ok(())
 			}
-			State::Connected { updates } => {
+			State::Connected { updates, runner_handle } => {
 				// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
 				// force a reconnect to reset the stack before we overflow.
 				// Stack overflows are fatal and can't be caught by catch_unwind.
 				let (stack_used, _) = crate::utils::stack_usage();
 				if stack_used > 6 * 1024 * 1024 {
 					crate::utils::log_stack_critical("dms telegram forcing reconnect", stack_used);
+					runner_handle.abort();
 					self.state = State::Disconnected;
 					self.client = None;
 					return Ok(());
@@ -77,6 +76,7 @@ impl TelegramMonitor {
 					Ok(u) => u,
 					Err(e) => {
 						error!("Error getting next update: {e}, reconnecting...");
+						runner_handle.abort();
 						self.state = State::Disconnected;
 						self.client = None;
 						return Ok(());
@@ -147,7 +147,7 @@ impl TelegramMonitor {
 		}
 	}
 
-	async fn connect(&self) -> Result<(Client, UpdateStream)> {
+	async fn connect(&self) -> Result<(Client, UpdateStream, JoinHandle<()>)> {
 		let session_filename = format!("{}_dm.session", self.config.telegram.username);
 		let session_file = v_utils::xdg_state_file!(&session_filename);
 		info!("Using session file: {}", session_file.display());
@@ -172,7 +172,7 @@ impl TelegramMonitor {
 		let pool = SenderPool::new(Arc::clone(&session), self.config.telegram.api_id);
 		let client = Client::new(&pool);
 		let SenderPool { runner, updates, .. } = pool;
-		tokio::spawn(runner.run());
+		let runner_handle = tokio::spawn(async move { runner.run().await });
 		info!("Connected to Telegram");
 
 		if !client.is_authorized().await? {
@@ -186,7 +186,7 @@ impl TelegramMonitor {
 			let code = code.trim();
 			println!("Code received, authenticating...");
 			info!("Received code from user (length: {})", code.len());
-			debug!("Code value: '{}'", code);
+			debug!("Code value: '{code}'");
 
 			match client.sign_in(&token, code).await {
 				Ok(_) => {
@@ -237,6 +237,13 @@ impl TelegramMonitor {
 			},
 		);
 
-		Ok((client, updates))
+		Ok((client, updates, runner_handle))
 	}
+}
+
+type UpdateStream = grammers_client::client::updates::UpdateStream;
+
+enum State {
+	Disconnected,
+	Connected { updates: Box<UpdateStream>, runner_handle: JoinHandle<()> },
 }

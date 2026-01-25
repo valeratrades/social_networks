@@ -5,51 +5,10 @@ use tracing::info;
 
 use crate::config::ClickHouseConfig;
 
-#[derive(Deserialize, Row)]
-struct CountRow {
-	count: u64,
-}
-
-#[derive(Deserialize, Row)]
-struct MaxVersionRow {
-	max_version: u32,
-}
-
-const MIGRATIONS: &[&str] = &[
-	// Migration 0: Create processed_emails table with message_id as primary key
-	r#"
-CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
-    message_id String,
-    processed_at DateTime DEFAULT now(),
-    from_email String,
-    subject String,
-    is_human UInt8
-) ENGINE = MergeTree()
-ORDER BY message_id
-PRIMARY KEY message_id
-"#,
-];
-
 pub struct Database {
 	client: Client,
 	url: String,
 }
-
-impl std::fmt::Debug for Database {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("Database").finish()
-	}
-}
-
-impl Clone for Database {
-	fn clone(&self) -> Self {
-		Self {
-			client: self.client.clone(),
-			url: self.url.clone(),
-		}
-	}
-}
-
 impl Database {
 	pub fn new(config: &ClickHouseConfig) -> Self {
 		tracing::debug!(
@@ -81,7 +40,7 @@ impl Database {
 
 		// Get current migration version
 		let current_version = self.get_migration_version().await?;
-		info!("Current migration version: {}", current_version);
+		info!("Current migration version: {current_version}");
 		info!("Total migrations available: {}", MIGRATIONS.len());
 
 		// Apply pending migrations
@@ -89,7 +48,7 @@ impl Database {
 		for (idx, migration) in MIGRATIONS.iter().enumerate() {
 			let version = idx as i32;
 			if version > current_version {
-				info!("Applying migration {}", version);
+				info!("Applying migration {version}");
 				self.client.query(migration).execute().await?;
 				self.record_migration(version as u32).await?;
 				applied += 1;
@@ -97,7 +56,7 @@ impl Database {
 		}
 
 		if applied > 0 {
-			info!("Applied {} migration(s)", applied);
+			info!("Applied {applied} migration(s)");
 		} else {
 			info!("No new migrations to apply");
 		}
@@ -124,9 +83,8 @@ impl Database {
 				  - Check status: sudo systemctl status clickhouse-server\n\
 				  - Verify URL in config file under [clickhouse] section\n\
 				\n\
-				Original error: {:#}",
-				self.url,
-				e
+				Original error: {e:#}",
+				self.url
 			)
 		})?;
 		Ok(())
@@ -165,7 +123,7 @@ PRIMARY KEY version
 	}
 
 	async fn record_migration(&self, version: u32) -> Result<()> {
-		let query = format!("INSERT INTO social_networks.migrations (version) VALUES ({})", version);
+		let query = format!("INSERT INTO social_networks.migrations (version) VALUES ({version})");
 		self.client.query(&query).execute().await?;
 		Ok(())
 	}
@@ -192,5 +150,45 @@ PRIMARY KEY version
 			.execute()
 			.await?;
 		Ok(())
+	}
+}
+
+#[derive(Deserialize, Row)]
+struct CountRow {
+	count: u64,
+}
+
+#[derive(Deserialize, Row)]
+struct MaxVersionRow {
+	max_version: u32,
+}
+
+const MIGRATIONS: &[&str] = &[
+	// Migration 0: Create processed_emails table with message_id as primary key
+	r#"
+CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
+    message_id String,
+    processed_at DateTime DEFAULT now(),
+    from_email String,
+    subject String,
+    is_human UInt8
+) ENGINE = MergeTree()
+ORDER BY message_id
+PRIMARY KEY message_id
+"#,
+];
+
+impl std::fmt::Debug for Database {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Database").finish()
+	}
+}
+
+impl Clone for Database {
+	fn clone(&self) -> Self {
+		Self {
+			client: self.client.clone(),
+			url: self.url.clone(),
+		}
 	}
 }

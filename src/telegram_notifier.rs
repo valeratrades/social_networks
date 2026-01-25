@@ -1,4 +1,4 @@
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use reqwest::Client;
 use tracing::instrument;
 
@@ -26,15 +26,12 @@ impl TelegramNotifier {
 	}
 
 	pub async fn send_twitter_poll(&self, author: &str, text: &str, tweet_id: &str) -> Result<()> {
-		let message = format!("Twitter poll from {}:\n{}\n\nhttps://twitter.com/twitter/statuses/{}", author, text, tweet_id);
+		let message = format!("Twitter poll from {author}:\n{text}\n\nhttps://twitter.com/twitter/statuses/{tweet_id}");
 		self.send_message_to_output(&message).await
 	}
 
 	pub async fn send_youtube_notification(&self, channel_name: &str, title: &str, sentiment: &str, video_id: &str) -> Result<()> {
-		let message = format!(
-			"[{}] uploaded a new video: [{}]\nPerception: {}\n\nhttps://youtube.com/watch?v={}",
-			channel_name, title, sentiment, video_id
-		);
+		let message = format!("[{channel_name}] uploaded a new video: [{title}]\nPerception: {sentiment}\n\nhttps://youtube.com/watch?v={video_id}");
 		self.send_message_to_output(&message).await
 	}
 
@@ -61,7 +58,7 @@ impl TelegramNotifier {
 
 		if !response.status().is_success() {
 			let error_text = response.text().await?;
-			return Err(color_eyre::eyre::eyre!("Failed to send Telegram message: {error_text}"));
+			bail!("Failed to send Telegram message: {error_text}");
 		}
 
 		Ok(())

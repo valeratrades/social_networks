@@ -19,52 +19,6 @@ use crate::{
 };
 
 // Wrapper to make yup-oauth2 Authenticator compatible with google-apis-common GetToken
-#[derive(Clone)]
-struct AuthWrapper(std::sync::Arc<yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>>);
-
-impl google_gmail1::common::GetToken for AuthWrapper {
-	fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> Pin<Box<dyn Future<Output = Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
-		let auth = self.0.clone();
-		Box::pin(async move {
-			let scopes = &["https://www.googleapis.com/auth/gmail.modify"];
-			match auth.token(scopes).await {
-				Ok(token) => {
-					let access_token = token.token().map(|t| t.to_string());
-					Ok(access_token)
-				}
-				Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-			}
-		})
-	}
-}
-
-// Custom flow delegate to print a nice URL with tmux link support
-struct CustomFlowDelegate;
-
-impl InstalledFlowDelegate for CustomFlowDelegate {
-	fn present_user_url<'a>(&'a self, url: &'a str, need_code: bool) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send + 'a>> {
-		Box::pin(async move {
-			if need_code {
-				println!("\n\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\\n", url, url);
-				use std::io::{self, BufRead};
-				let mut code = String::new();
-				io::stdin().lock().read_line(&mut code).map_err(|e| e.to_string())?;
-				Ok(code.trim().to_string())
-			} else {
-				println!("\n\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\\n", url, url);
-				Ok(String::new())
-			}
-		})
-	}
-}
-
-#[derive(Args)]
-pub struct EmailArgs {
-	/// Mark all unread emails as read without processing
-	#[arg(long)]
-	mark_all_read: bool,
-}
-
 pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 	v_utils::clientside!("email");
 
@@ -100,7 +54,12 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 		}
 	})
 }
-
+#[derive(Args)]
+pub struct EmailArgs {
+	/// Mark all unread emails as read without processing
+	#[arg(long)]
+	mark_all_read: bool,
+}
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
@@ -108,36 +67,12 @@ pub struct EmailMonitor {
 	db: Database,
 	ignore_regexes: Vec<Regex>,
 }
-
-impl std::fmt::Debug for EmailMonitor {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("EmailMonitor")
-			.field("config", &self.config)
-			.field("notifier", &self.notifier)
-			.field("db", &self.db)
-			.finish()
-	}
-}
-
-/// Parsed email message (used for both IMAP and OAuth paths)
-#[derive(Clone, Debug)]
-struct EmailMessage {
-	id: String,
-	from: String,
-	subject: String,
-	date: String,
-	body_preview: String,
-	reply_to: Option<String>,
-	list_unsubscribe: Option<String>,
-	extra_headers: String,
-}
-
 impl EmailMonitor {
 	pub fn new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let ignore_regexes = config
 			.ignore_patterns
 			.iter()
-			.map(|pattern| Regex::new(pattern).context(format!("Invalid ignore pattern: {}", pattern)))
+			.map(|pattern| Regex::new(pattern).context(format!("Invalid ignore pattern: {pattern}")))
 			.collect::<Result<Vec<_>>>()?;
 
 		Ok(Self {
@@ -194,7 +129,7 @@ impl EmailMonitor {
 
 			for uid in uids.iter() {
 				if let Err(e) = this.process_message_imap(&mut session, *uid) {
-					error!("Failed to process message {}: {:#}", uid, e);
+					error!("Failed to process message {uid}: {e:#}");
 				}
 			}
 
@@ -219,9 +154,9 @@ impl EmailMonitor {
 				let mailbox = addr.mailbox.as_ref().map(|m| String::from_utf8_lossy(m).to_string()).unwrap_or_default();
 				let host = addr.host.as_ref().map(|h| String::from_utf8_lossy(h).to_string()).unwrap_or_default();
 				if name.is_empty() {
-					format!("{}@{}", mailbox, host)
+					format!("{mailbox}@{host}")
 				} else {
-					format!("{} <{}@{}>", name, mailbox, host)
+					format!("{name} <{mailbox}@{host}>")
 				}
 			})
 			.unwrap_or_else(|| "Unknown".to_string());
@@ -237,7 +172,7 @@ impl EmailMonitor {
 		let body_preview: String = message.text().map(|t| String::from_utf8_lossy(t).chars().take(500).collect()).unwrap_or_default();
 
 		let email_msg = EmailMessage {
-			id: format!("imap-{}", uid),
+			id: format!("imap-{uid}"),
 			from,
 			subject,
 			date,
@@ -270,7 +205,7 @@ impl EmailMonitor {
 				return Ok(());
 			}
 
-			println!("Marking {} unread messages as read...", count);
+			println!("Marking {count} unread messages as read...");
 
 			for (i, uid) in uids.iter().enumerate() {
 				let from = if let Ok(messages) = session.uid_fetch(uid.to_string(), "ENVELOPE") {
@@ -285,9 +220,9 @@ impl EmailMonitor {
 							let mailbox = addr.mailbox.as_ref().map(|m| String::from_utf8_lossy(m).to_string()).unwrap_or_default();
 							let host = addr.host.as_ref().map(|h| String::from_utf8_lossy(h).to_string()).unwrap_or_default();
 							if name.is_empty() {
-								format!("{}@{}", mailbox, host)
+								format!("{mailbox}@{host}")
 							} else {
-								format!("{} <{}@{}>", name, mailbox, host)
+								format!("{name} <{mailbox}@{host}>")
 							}
 						})
 						.unwrap_or_else(|| "Unknown".to_string())
@@ -299,7 +234,7 @@ impl EmailMonitor {
 				println!("[{}/{}] Marked as read: {}", i + 1, count, from);
 			}
 
-			println!("\nAll done! Marked {} messages as read.", count);
+			println!("\nAll done! Marked {count} messages as read.");
 			session.logout().ok();
 			Ok(())
 		})
@@ -350,7 +285,7 @@ impl EmailMonitor {
 			if let Err(e) = self.process_message_oauth(&hub, &message).await {
 				let message_id = message.id.as_deref().unwrap_or("unknown");
 				let from = self.extract_header(&message, "From").unwrap_or_else(|| "Unknown".to_string());
-				error!("Failed to process message {} from {}: {:#}", message_id, from, e);
+				error!("Failed to process message {message_id} from {from}: {e:#}");
 			}
 		}
 
@@ -368,7 +303,7 @@ impl EmailMonitor {
 				request = request.page_token(token);
 			}
 
-			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {:#?}", e))?;
+			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {e:#?}"))?;
 
 			if let Some(msg_list) = result.1.messages {
 				use futures::stream::{self, StreamExt};
@@ -505,7 +440,7 @@ impl EmailMonitor {
 				return Ok(());
 			}
 
-			println!("Marking {} unread messages as read...", count);
+			println!("Marking {count} unread messages as read...");
 
 			for (i, message) in messages.iter().enumerate() {
 				let message_id = message.id.clone().unwrap_or_default();
@@ -583,7 +518,7 @@ impl EmailMonitor {
 		// Check patterns that match against any field
 		for pattern in &patterns.any {
 			if email.subject.contains(pattern) || email.body_preview.contains(pattern) || email.from.contains(pattern) {
-				debug!("Email matches important pattern '{}' (any field)", pattern);
+				debug!("Email matches important pattern '{pattern}' (any field)");
 				return true;
 			}
 		}
@@ -591,7 +526,7 @@ impl EmailMonitor {
 		// Check subject-specific patterns
 		for pattern in &patterns.subject {
 			if email.subject.contains(pattern) {
-				debug!("Email matches important pattern '{}' (subject)", pattern);
+				debug!("Email matches important pattern '{pattern}' (subject)");
 				return true;
 			}
 		}
@@ -599,7 +534,7 @@ impl EmailMonitor {
 		// Check body-specific patterns
 		for pattern in &patterns.body {
 			if email.body_preview.contains(pattern) {
-				debug!("Email matches important pattern '{}' (body)", pattern);
+				debug!("Email matches important pattern '{pattern}' (body)");
 				return true;
 			}
 		}
@@ -607,7 +542,7 @@ impl EmailMonitor {
 		// Check address-specific patterns
 		for pattern in &patterns.address {
 			if email.from.contains(pattern) {
-				debug!("Email matches important pattern '{}' (address)", pattern);
+				debug!("Email matches important pattern '{pattern}' (address)");
 				return true;
 			}
 		}
@@ -617,9 +552,9 @@ impl EmailMonitor {
 
 	#[instrument(skip(self, body))]
 	async fn forward_to_telegram(&self, from: &str, subject: &str, body: &str) -> Result<()> {
-		let text = format!("📧 New Email\n\nFrom: {}\nSubject: {}\n\n{}", from, subject, body);
+		let text = format!("📧 New Email\n\nFrom: {from}\nSubject: {subject}\n\n{body}");
 		self.notifier.send_message_to_alerts(&text).await?;
-		info!("Forwarded email from {} to Telegram", from);
+		info!("Forwarded email from {from} to Telegram");
 		Ok(())
 	}
 
@@ -669,7 +604,7 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		let response = match ask_llm::Client::new().model(ask_llm::Model::Fast).ask(&prompt).await {
 			Ok(r) => r,
 			Err(e) => {
-				error!("LLM call failed for email from {}: {:#}", message.from, e);
+				error!("LLM call failed for email from {}: {e:#}", message.from);
 				return Err(e).context("Failed to call LLM for email evaluation");
 			}
 		};
@@ -685,4 +620,66 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 
 		Ok(is_human)
 	}
+}
+
+#[derive(Clone)]
+struct AuthWrapper(std::sync::Arc<yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>>);
+
+impl google_gmail1::common::GetToken for AuthWrapper {
+	fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> Pin<Box<dyn Future<Output = Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
+		let auth = self.0.clone();
+		Box::pin(async move {
+			let scopes = &["https://www.googleapis.com/auth/gmail.modify"];
+			match auth.token(scopes).await {
+				Ok(token) => {
+					let access_token = token.token().map(|t| t.to_string());
+					Ok(access_token)
+				}
+				Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+			}
+		})
+	}
+}
+
+// Custom flow delegate to print a nice URL with tmux link support
+struct CustomFlowDelegate;
+
+impl InstalledFlowDelegate for CustomFlowDelegate {
+	fn present_user_url<'a>(&'a self, url: &'a str, need_code: bool) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send + 'a>> {
+		Box::pin(async move {
+			if need_code {
+				println!("\n\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\\n");
+				use std::io::{self, BufRead};
+				let mut code = String::new();
+				io::stdin().lock().read_line(&mut code).map_err(|e| e.to_string())?;
+				Ok(code.trim().to_string())
+			} else {
+				println!("\n\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\\n");
+				Ok(String::new())
+			}
+		})
+	}
+}
+
+impl std::fmt::Debug for EmailMonitor {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("EmailMonitor")
+			.field("config", &self.config)
+			.field("notifier", &self.notifier)
+			.field("db", &self.db)
+			.finish()
+	}
+}
+
+/// Parsed email message (used for both IMAP and OAuth paths)
+#[derive(Clone, Debug)]
+struct EmailMessage {
+	id: String,
+	from: String,
+	subject: String,
+	date: String,
+	body_preview: String,
+	reply_to: Option<String>,
+	list_unsubscribe: Option<String>,
+	extra_headers: String,
 }

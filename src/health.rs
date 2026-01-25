@@ -5,6 +5,16 @@ use colored::Colorize;
 
 use crate::config::AppConfig;
 
+pub fn main(config: AppConfig) -> Result<()> {
+	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
+
+	check_services();
+	check_env_vars(&config);
+	check_directories();
+
+	println!();
+	Ok(())
+}
 const SIZE_THRESHOLD_GB: f64 = 10.0;
 
 /// Checks if a systemd service is running
@@ -172,15 +182,4 @@ fn check_journald_size() {
 			println!("  {} journald total ({})", status_icon(true), size_str.trim());
 		}
 	}
-}
-
-pub fn main(config: AppConfig) -> Result<()> {
-	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
-
-	check_services();
-	check_env_vars(&config);
-	check_directories();
-
-	println!();
-	Ok(())
 }

@@ -168,16 +168,11 @@ pub struct TwitterPollConfig {
 	#[serde(default = "__default_num_of_retries")]
 	pub num_of_retries: u8,
 }
-fn __default_num_of_retries() -> u8 {
-	3
-}
-
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct YoutubeConfig {
 	#[primitives(skip)]
 	pub channels: std::collections::HashMap<String, String>,
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct EmailConfig {
 	/// Gmail email address to monitor
@@ -197,7 +192,6 @@ pub struct EmailConfig {
 	#[serde(default)]
 	pub claude_token: Option<String>,
 }
-
 /// Patterns to check for marking email as alert-worthy.
 /// If any pattern matches, the email is forwarded without LLM check.
 /// Top-level `any` matches against all fields (subject, body, address).
@@ -216,19 +210,16 @@ pub struct ImportantIfContains {
 	#[serde(default)]
 	pub address: Vec<String>,
 }
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmailAuth {
 	Imap(ImapAuth),
 	Oauth(OAuthAuth),
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct ImapAuth {
 	pub pass: String,
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct OAuthAuth {
 	pub client_id: String,
@@ -238,13 +229,6 @@ pub struct OAuthAuth {
 	#[primitives(skip)]
 	pub token_path: String,
 }
-
-fn __default_email_token_path() -> String {
-	let app_name = env!("CARGO_PKG_NAME");
-	let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
-	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClickHouseConfig {
 	#[serde(default = "__default_clickhouse_url")]
@@ -255,6 +239,15 @@ pub struct ClickHouseConfig {
 	pub user: String,
 	#[serde(default)]
 	pub password: String,
+}
+fn __default_num_of_retries() -> u8 {
+	3
+}
+
+fn __default_email_token_path() -> String {
+	let app_name = env!("CARGO_PKG_NAME");
+	let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
+	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
 impl Default for ClickHouseConfig {

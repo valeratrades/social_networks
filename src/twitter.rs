@@ -26,6 +26,8 @@ pub fn main(config: AppConfig, _args: TwitterArgs) -> Result<()> {
 	})
 }
 
+#[derive(Args)]
+pub struct TwitterArgs {}
 async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(config.telegram.clone());
@@ -115,7 +117,7 @@ async fn process_list(
 		let parsed_id = parsed_tweets[user_idx].clone();
 
 		if let Err(e) = check_for_updates(client, config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx).await {
-			error!("Error checking updates for user {}: {}", member.name, e);
+			error!("Error checking updates for user {}: {e}", member.name);
 		}
 	}
 
@@ -186,7 +188,7 @@ async fn check_for_updates(
 
 		// Send to Telegram
 		if let Err(e) = telegram.send_twitter_poll(&member.name, &tweet_response.data.text, &tweet_response.data.id).await {
-			error!("Failed to send poll notification: {}", e);
+			error!("Failed to send poll notification: {e}");
 		}
 	}
 
@@ -195,9 +197,6 @@ async fn check_for_updates(
 
 	Ok(())
 }
-
-#[derive(Args)]
-pub struct TwitterArgs {}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TwitterApiUser {

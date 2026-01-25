@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use clap::Args;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -9,14 +9,6 @@ use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
-
-#[derive(Args)]
-pub struct YoutubeArgs {}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct LastUploadedTitles {
-	channels: HashMap<String, String>,
-}
 
 pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 	v_utils::clientside!("youtube");
@@ -34,6 +26,13 @@ pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 			}
 		}
 	})
+}
+#[derive(Args)]
+pub struct YoutubeArgs {}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct LastUploadedTitles {
+	channels: HashMap<String, String>,
 }
 
 #[instrument(skip(config))]
@@ -55,8 +54,8 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 	loop {
 		for (channel_name, channel_id) in &config.youtube.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram).await {
-				Ok(_) => debug!("Checked channel: {}", channel_name),
-				Err(e) => error!("Error checking channel {}: {}", channel_name, e),
+				Ok(_) => debug!("Checked channel: {channel_name}"),
+				Err(e) => error!("Error checking channel {channel_name}: {e}"),
 			}
 		}
 
@@ -71,7 +70,7 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 
 #[instrument(skip(client, last_uploaded, telegram))]
 async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name: &str, last_uploaded: &mut LastUploadedTitles, telegram: &TelegramNotifier) -> Result<()> {
-	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", channel_id);
+	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
 
 	let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed")?;
 
@@ -96,13 +95,13 @@ async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name:
 
 		// Get sentiment analysis
 		let sentiment = analyze_sentiment(&title).await.unwrap_or_else(|e| {
-			error!("Failed to analyze sentiment: {}", e);
+			error!("Failed to analyze sentiment: {e}");
 			"unclear".to_string()
 		});
 
 		// Send notification
 		if let Err(e) = telegram.send_youtube_notification(channel_name, &title, &sentiment, &video_id).await {
-			error!("Failed to send YouTube notification: {}", e);
+			error!("Failed to send YouTube notification: {e}");
 		}
 
 		// Update last uploaded
@@ -157,7 +156,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 				}
 			}
 			Ok(Event::Eof) => break,
-			Err(e) => return Err(color_eyre::eyre::eyre!("Error parsing XML: {}", e)),
+			Err(e) => bail!("Error parsing XML: {e}"),
 			_ => {}
 		}
 		buf.clear();
@@ -173,9 +172,8 @@ async fn analyze_sentiment(title: &str) -> Result<String> {
 	let prompt = format!(
 		"You receive a title of a youtube video from a crypto channel and current BTC price in case they reference it. \
 		You determine if it projects a bullish/bearish/unclear sentiment. Return your choice in one word without nothing else.\n\n\
-		BTC price: {}\n\
-		Title of the video: {}",
-		btc_price, title
+		BTC price: {btc_price}\n\
+		Title of the video: {title}"
 	);
 
 	let response = ask_llm::oneshot(&prompt).await?;

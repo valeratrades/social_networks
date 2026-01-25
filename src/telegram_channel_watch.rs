@@ -1,7 +1,7 @@
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use clap::Args;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, bail};
 use futures::FutureExt;
 use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
@@ -11,19 +11,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
 use crate::config::{AppConfig, TelegramDestination};
-
-#[derive(Args)]
-pub struct TelegramArgs {}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct StatusDrop {
-	status: String,
-}
-
-fn reconnect_delay(attempt: u32) -> Duration {
-	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0); // cap at 10 min
-	Duration::from_secs_f64(delay_secs)
-}
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
@@ -65,6 +52,18 @@ pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 			}
 		}
 	})
+}
+#[derive(Args)]
+pub struct TelegramArgs {}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct StatusDrop {
+	status: String,
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0); // cap at 10 min
+	Duration::from_secs_f64(delay_secs)
 }
 
 async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
@@ -122,7 +121,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		let code = code.trim();
 		println!("Code received, authenticating...");
 		info!("Received code from user (length: {})", code.len());
-		debug!("Code value: '{}'", code);
+		debug!("Code value: '{code}'");
 
 		match client.sign_in(&token, code).await {
 			Ok(_) => {
@@ -176,10 +175,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				poll_peer_ids.push(peer.id());
-				info!("Resolved poll channel: {} -> {}", channel, peer.id().bot_api_dialog_id());
+				info!("Resolved poll channel: {channel} -> {}", peer.id().bot_api_dialog_id());
 			}
 			None => {
-				error!("Could not resolve poll channel: {}", channel);
+				error!("Could not resolve poll channel: {channel}");
 			}
 		}
 	}
@@ -190,10 +189,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				info_peer_ids.push(peer.id());
-				info!("Resolved info channel: {} -> {}", channel, peer.id().bot_api_dialog_id());
+				info!("Resolved info channel: {channel} -> {}", peer.id().bot_api_dialog_id());
 			}
 			None => {
-				error!("Could not resolve info channel: {}", channel);
+				error!("Could not resolve info channel: {channel}");
 			}
 		}
 	}
@@ -202,7 +201,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let output_username = match &config.telegram.channel_output {
 		TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
 		_ => {
-			return Err(color_eyre::eyre::eyre!("channel_output must be a username for grammers client forwarding"));
+			bail!("channel_output must be a username for grammers client forwarding");
 		}
 	};
 
@@ -214,7 +213,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		}
 		None => {
 			error!("Could not resolve output channel: {output_username}");
-			return Err(color_eyre::eyre::eyre!("Could not resolve output channel: {output_username}"));
+			bail!("Could not resolve output channel: {output_username}");
 		}
 	};
 
@@ -238,10 +237,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		let (stack_used, _) = crate::utils::stack_usage();
 		if stack_used > 6 * 1024 * 1024 {
 			crate::utils::log_stack_critical("telegram_channel_watch forcing reconnect", stack_used);
-			return Err(color_eyre::eyre::eyre!(
-				"Stack usage critical ({:.2}MB), forcing reconnect",
-				stack_used as f64 / (1024.0 * 1024.0)
-			));
+			bail!("Stack usage critical ({:.2}MB), forcing reconnect", stack_used as f64 / (1024.0 * 1024.0));
 		}
 
 		// Log stack usage every iteration to detect accumulation

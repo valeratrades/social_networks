@@ -18,8 +18,6 @@ use crate::{
 	utils::{btc_price, format_num_with_thousands},
 };
 
-type HmacSha1 = Hmac<Sha1>;
-
 pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 	v_utils::clientside!("twitter_schedule");
 
@@ -28,6 +26,13 @@ pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async { schedule_sentiment_poll(&config, args.skip_first).await })
 }
+#[derive(Args)]
+pub struct TwitterScheduleArgs {
+	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
+	#[arg(long)]
+	pub skip_first: bool,
+}
+type HmacSha1 = Hmac<Sha1>;
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals
 #[instrument(skip(config))]
@@ -38,8 +43,8 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 
 	// Get the schedule interval
 	let schedule_duration = poll_config.schedule_every.duration();
-	info!("schedule_interval={:?} retries={} skip_first={}", schedule_duration, poll_config.num_of_retries, skip_first);
-	println!("Schedule interval: {:?}", schedule_duration);
+	info!("schedule_interval={schedule_duration:?} retries={} skip_first={skip_first}", poll_config.num_of_retries);
+	println!("Schedule interval: {schedule_duration:?}");
 
 	if skip_first {
 		let next_time = Timestamp::now()
@@ -48,8 +53,8 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 			.unwrap();
 		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
 
-		info!("skip_first=true next={}", next_time_str);
-		println!("Skipping first post, next poll: {}", next_time_str);
+		info!("skip_first=true next={next_time_str}");
+		println!("Skipping first post, next poll: {next_time_str}");
 
 		time::sleep(schedule_duration).await;
 	}
@@ -58,21 +63,21 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
 		let time_str = strtime::format("%Y-%m-%d %H:%M:%S", &now).unwrap();
 
-		info!("cycle_start time={}", time_str);
-		println!("\n[{}] Starting poll posting cycle", time_str);
+		info!("cycle_start time={time_str}");
+		println!("\n[{time_str}] Starting poll posting cycle");
 
 		// Post the poll with retries
 		let mut success = false;
 		for attempt in 1..=poll_config.num_of_retries {
 			match post_poll(config).await {
 				Ok(()) => {
-					info!("post_success attempt={}", attempt);
+					info!("post_success attempt={attempt}");
 					println!("✓ Poll posted successfully");
 					success = true;
 					break;
 				}
 				Err(e) => {
-					error!("post_failed attempt={}/{} error={:?}", attempt, poll_config.num_of_retries, e);
+					error!("post_failed attempt={attempt}/{} error={e:?}", poll_config.num_of_retries);
 					if attempt == poll_config.num_of_retries {
 						println!("✗ Failed to post poll: {e}");
 					}
@@ -86,8 +91,8 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 			.unwrap();
 		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
 
-		info!("cycle_complete success={} next={}", success, next_time_str);
-		println!("Next poll: {}", next_time_str);
+		info!("cycle_complete success={success} next={next_time_str}");
+		println!("Next poll: {next_time_str}");
 
 		// Sleep until next cycle
 		time::sleep(schedule_duration).await;
@@ -153,7 +158,7 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 	let signing_key = format!("{}&{}", percent_encode(api_key_secret), percent_encode(access_token_secret));
 
 	// Generate signature
-	let mut mac = HmacSha1::new_from_slice(signing_key.as_bytes()).map_err(|e| eyre!("Failed to create HMAC: {}", e))?;
+	let mut mac = HmacSha1::new_from_slice(signing_key.as_bytes()).map_err(|e| eyre!("Failed to create HMAC: {e}"))?;
 	mac.update(signature_base.as_bytes());
 	let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mac.finalize().into_bytes());
 
@@ -288,7 +293,7 @@ fn parse_poll_text(text: &str, variables: &HashMap<String, String>) -> Result<(S
 
 	// Substitute variables
 	for (key, value) in variables {
-		let placeholder = format!("${{{}}}", key);
+		let placeholder = format!("${{{key}}}");
 		tweet_text = tweet_text.replace(&placeholder, value);
 	}
 
@@ -310,13 +315,6 @@ fn percent_encode(s: &str) -> String {
 			_ => format!("%{:02X}", c as u8),
 		})
 		.collect()
-}
-
-#[derive(Args)]
-pub struct TwitterScheduleArgs {
-	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
-	#[arg(long)]
-	pub skip_first: bool,
 }
 
 #[derive(Debug, Serialize)]

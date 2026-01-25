@@ -1,3 +1,15 @@
+pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
+	v_utils::clientside!("dms");
+
+	println!("DMs: Starting Discord and Telegram monitors...");
+
+	// Increase stack size to handle deeply nested Telegram TL types
+	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates
+	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
+	runtime.block_on(run(config))
+}
+#[derive(Args)]
+pub struct DmsArgs {}
 mod discord;
 mod telegram;
 
@@ -10,23 +22,9 @@ use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use crate::config::AppConfig;
 
-#[derive(Args)]
-pub struct DmsArgs {}
-
 fn reconnect_delay(attempt: u32) -> Duration {
 	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0); // cap at 10 min
 	Duration::from_secs_f64(delay_secs)
-}
-
-pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
-	v_utils::clientside!("dms");
-
-	println!("DMs: Starting Discord and Telegram monitors...");
-
-	// Increase stack size to handle deeply nested Telegram TL types
-	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates
-	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
-	runtime.block_on(run(config))
 }
 
 enum MonitorInstance {

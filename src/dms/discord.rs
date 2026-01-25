@@ -15,25 +15,6 @@ use tracing::{error, info};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 
-#[derive(Debug, Deserialize, Serialize)]
-struct DiscordMessage {
-	op: u8,
-	d: Option<serde_json::Value>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	s: Option<u64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	t: Option<String>,
-}
-
-enum State {
-	Disconnected,
-	Connected {
-		read: SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>,
-		write: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
-		heartbeat_interval: Interval,
-	},
-}
-
 pub struct DiscordMonitor {
 	config: AppConfig,
 	state: State,
@@ -42,7 +23,6 @@ pub struct DiscordMonitor {
 	monitored_users: Vec<String>,
 	message_counter: u64,
 }
-
 impl DiscordMonitor {
 	pub fn new(config: AppConfig) -> Self {
 		let telegram = TelegramNotifier::new(config.telegram.clone());
@@ -263,4 +243,23 @@ impl DiscordMonitor {
 
 		Ok(())
 	}
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DiscordMessage {
+	op: u8,
+	d: Option<serde_json::Value>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	s: Option<u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	t: Option<String>,
+}
+
+enum State {
+	Disconnected,
+	Connected {
+		read: SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>,
+		write: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
+		heartbeat_interval: Interval,
+	},
 }
