@@ -43,6 +43,7 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 			return monitor.mark_all_as_read().await;
 		}
 
+		//LOOP: daemon - runs until process termination
 		loop {
 			if let Err(e) = monitor.run().await {
 				error!("Email monitor error: {e}");
@@ -296,6 +297,7 @@ impl EmailMonitor {
 		let mut all_messages = Vec::new();
 		let mut page_token: Option<String> = None;
 
+		//LOOP: pagination - terminates when next_page_token is None
 		loop {
 			let mut request = hub.users().messages_list(&self.config.email).q("is:unread").max_results(500);
 
@@ -430,6 +432,7 @@ impl EmailMonitor {
 	async fn mark_all_as_read_oauth(&self, oauth: &OAuthAuth) -> Result<()> {
 		let hub = self.create_gmail_hub(oauth).await?;
 
+		//LOOP: drains unread messages in batches until none remain
 		loop {
 			println!("Fetching next batch of unread messages...");
 			let messages = self.fetch_unread_messages_oauth(&hub).await?;

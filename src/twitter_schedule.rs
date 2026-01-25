@@ -59,6 +59,7 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 		time::sleep(schedule_duration).await;
 	}
 
+	//LOOP: daemon - runs until process termination
 	loop {
 		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
 		let time_str = strtime::format("%Y-%m-%d %H:%M:%S", &now).unwrap();

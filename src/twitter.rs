@@ -46,6 +46,7 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 	// Track last tweet IDs for each user in each list
 	let mut user_last_tweets: HashMap<String, String> = HashMap::new();
 
+	//LOOP: daemon - runs until process termination
 	loop {
 		// Process everytime polls list
 		if let Err(e) = process_list(

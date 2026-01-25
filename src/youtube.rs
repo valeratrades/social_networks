@@ -51,6 +51,7 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 
 	info!("--YouTube-- monitor started");
 
+	//LOOP: daemon - runs until process termination
 	loop {
 		for (channel_name, channel_id) in &config.youtube.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram).await {
@@ -122,18 +123,18 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 	let mut published = None;
 	let mut current_tag = String::new();
 
-	loop {
-		match reader.read_event_into(&mut buf) {
-			Ok(Event::Start(e)) => {
+	while let Ok(event) = reader.read_event_into(&mut buf) {
+		match event {
+			Event::Eof => break,
+			Event::Start(e) => {
 				let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 				if tag_name == "entry" {
 					in_entry = true;
 				}
 				current_tag = tag_name;
 			}
-			Ok(Event::Text(event)) if in_entry => {
-				//let text = event.unescape().unwrap().to_string();
-				let text = event.escape_ascii().to_string();
+			Event::Text(e) if in_entry => {
+				let text = e.escape_ascii().to_string();
 				match current_tag.as_str() {
 					"yt:videoId" => video_id = Some(text),
 					"title" => title = Some(text),
@@ -141,7 +142,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 					_ => {}
 				}
 			}
-			Ok(Event::End(e)) => {
+			Event::End(e) => {
 				let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 				if tag_name == "entry"
 					&& video_id.is_some()
@@ -155,14 +156,12 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 					return Ok((video_id.unwrap(), title.unwrap(), published_dt));
 				}
 			}
-			Ok(Event::Eof) => break,
-			Err(e) => bail!("Error parsing XML: {e}"),
 			_ => {}
 		}
 		buf.clear();
 	}
 
-	Err(color_eyre::eyre::eyre!("No video entry found in RSS feed"))
+	bail!("No video entry found in RSS feed")
 }
 
 async fn analyze_sentiment(title: &str) -> Result<String> {

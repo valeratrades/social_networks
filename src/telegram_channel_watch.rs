@@ -26,6 +26,7 @@ pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
 	runtime.block_on(async {
 		let mut attempt = 0u32;
+		//LOOP: daemon - runs until process termination
 		loop {
 			// Wrap in catch_unwind to recover from stack overflows and other panics
 			let result = AssertUnwindSafe(run_telegram_monitor(&config)).catch_unwind().await;
@@ -153,7 +154,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let mut message_counter = 0u64;
 	let mut last_status_update = Timestamp::default();
 
-	//LOOP: process channel updates and forward matching messages until error/disconnect
+	//LOOP: terminates on error/bail, causing reconnect in outer daemon loop
 	loop {
 		// Check stack usage and bail if critical
 		if telegram_utils::should_reconnect_for_stack() {
