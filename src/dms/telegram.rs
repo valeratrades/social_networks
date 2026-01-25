@@ -1,15 +1,17 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::collections::HashMap;
 
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
-use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
-use grammers_mtsender::SenderPool;
-use grammers_session::storages::SqliteSession;
+use grammers_client::{Client, Update};
 use jiff::Timestamp;
 use tokio::time::{self, Duration};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
+use crate::{
+	config::AppConfig,
+	telegram_notifier::TelegramNotifier,
+	telegram_utils::{self, ConnectionConfig, RunnerFuture, TelegramConnection},
+};
 
 pub struct TelegramMonitor {
 	config: AppConfig,
@@ -38,14 +40,11 @@ impl TelegramMonitor {
 		match &mut self.state {
 			State::Disconnected => {
 				match self.connect().await {
-					Ok((client, updates, runner)) => {
+					Ok(TelegramConnection { client, updates, runner }) => {
 						info!("--Telegram DM Commands-- connected and authorized");
 						println!("Telegram DM Commands: Connected");
 						self.client = Some(client);
-						self.state = State::Connected {
-							updates: Box::new(updates),
-							runner: Box::pin(runner.run()),
-						};
+						self.state = State::Connected { updates: Box::new(updates), runner };
 					}
 					Err(e) => {
 						error!("Telegram connection error: {e}");
@@ -56,18 +55,14 @@ impl TelegramMonitor {
 				Ok(())
 			}
 			State::Connected { updates, runner } => {
-				// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
-				// force a reconnect to reset the stack before we overflow.
-				// Stack overflows are fatal and can't be caught by catch_unwind.
-				let (stack_used, _) = crate::utils::stack_usage();
-				if stack_used > 6 * 1024 * 1024 {
-					crate::utils::log_stack_critical("dms telegram forcing reconnect", stack_used);
+				// Check stack usage and force reconnect if critical
+				if telegram_utils::should_reconnect_for_stack() {
 					self.state = State::Disconnected;
 					self.client = None;
 					return Ok(());
 				}
 
-				crate::utils::log_stack_usage("dms telegram before updates.next()");
+				telegram_utils::log_stack("dms telegram before select");
 
 				enum Event {
 					Update(Result<Update, grammers_client::InvocationError>),
@@ -84,7 +79,7 @@ impl TelegramMonitor {
 					}
 				};
 
-				crate::utils::log_stack_usage("dms telegram after updates.next()");
+				telegram_utils::log_stack("dms telegram after select");
 
 				match event {
 					Event::RunnerExited => {
@@ -168,101 +163,19 @@ impl TelegramMonitor {
 		}
 	}
 
-	async fn connect(&self) -> Result<(Client, UpdateStream, grammers_mtsender::SenderPoolRunner)> {
-		let session_filename = format!("{}_dm.session", self.config.telegram.username);
-		let session_file = v_utils::xdg_state_file!(&session_filename);
-		info!("Using session file: {}", session_file.display());
-
-		info!("Opening session database");
-		let session = match SqliteSession::open(&session_file) {
-			Ok(s) => Arc::new(s),
-			Err(e) => {
-				let err_str = e.to_string();
-				if err_str.contains("not a database") || err_str.contains("code 26") {
-					error!("Session database is corrupted: {e}");
-					info!("Deleting corrupted session file and creating a new one");
-					std::fs::remove_file(&session_file)?;
-					Arc::new(SqliteSession::open(&session_file)?)
-				} else {
-					return Err(e.into());
-				}
-			}
-		};
-
-		info!("Connecting to Telegram with api_id: {}", self.config.telegram.api_id);
-		let pool = SenderPool::new(Arc::clone(&session), self.config.telegram.api_id);
-		let client = Client::new(&pool);
-		let SenderPool { runner, updates, .. } = pool;
-		info!("Connected to Telegram");
-
-		if !client.is_authorized().await? {
-			info!("Not authorized, requesting login code for {}", self.config.telegram.phone);
-			let token = client.request_login_code(&self.config.telegram.phone, &self.config.telegram.api_hash).await?;
-			info!("Login code requested successfully, check your Telegram app");
-
-			println!("Enter the code you received: ");
-			let mut code = String::new();
-			std::io::stdin().read_line(&mut code)?;
-			let code = code.trim();
-			println!("Code received, authenticating...");
-			info!("Received code from user (length: {})", code.len());
-			debug!("Code value: '{code}'");
-
-			match client.sign_in(&token, code).await {
-				Ok(_) => {
-					eprintln!("Sign in successful! Saving session...");
-					info!("Sign in successful");
-				}
-				Err(SignInError::PasswordRequired(password_token)) => {
-					info!("2FA password required");
-					print!("Enter your 2FA password: ");
-					std::io::Write::flush(&mut std::io::stderr())?;
-					let mut password = String::new();
-					std::io::stdin().read_line(&mut password)?;
-					let password = password.trim();
-					eprintln!("Password received, checking 2FA...");
-					info!("Received 2FA password from user");
-					debug!("Password length: {}", password.len());
-
-					client.check_password(password_token, password).await?;
-					eprintln!("2FA authentication successful! Saving session...");
-					info!("2FA authentication successful");
-				}
-				Err(e) => {
-					error!("Sign in failed with error: {e}");
-					return Err(e.into());
-				}
-			}
-
-			eprintln!("Session saved successfully");
-			info!("Session saved successfully to {}", session_file.display());
-		}
-
-		// Pre-fetch all dialogs to warm the peer cache with access hashes.
-		// This prevents "missing its hash" warnings when receiving updates for channels.
-		info!("Pre-fetching dialogs to warm peer cache...");
-		let mut dialog_count = 0;
-		let mut dialogs = client.iter_dialogs();
-		while let Some(dialog) = dialogs.next().await? {
-			dialog_count += 1;
-			debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
-		}
-		info!("Cached {dialog_count} dialogs");
-
-		let updates = client.stream_updates(
-			updates,
-			UpdatesConfiguration {
-				catch_up: false,
-				..Default::default()
-			},
-		);
-
-		Ok((client, updates, runner))
+	async fn connect(&self) -> Result<TelegramConnection> {
+		telegram_utils::connect(ConnectionConfig {
+			username: &self.config.telegram.username,
+			phone: &self.config.telegram.phone,
+			api_id: self.config.telegram.api_id,
+			api_hash: &self.config.telegram.api_hash,
+			session_suffix: "_dm",
+		})
+		.await
 	}
 }
 
 type UpdateStream = grammers_client::client::updates::UpdateStream;
-type RunnerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 enum State {
 	Disconnected,

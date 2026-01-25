@@ -27,6 +27,7 @@ mod email;
 mod health;
 mod telegram_channel_watch;
 mod telegram_notifier;
+mod telegram_utils;
 mod twitter;
 mod twitter_schedule;
 mod twitter_user;

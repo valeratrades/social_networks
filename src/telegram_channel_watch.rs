@@ -1,16 +1,21 @@
-use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{panic::AssertUnwindSafe, time::Duration};
 
 use clap::Args;
 use color_eyre::eyre::{Result, bail};
-use futures::FutureExt;
-use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
-use grammers_mtsender::SenderPool;
-use grammers_session::{defs::PeerRef, storages::SqliteSession};
+use futures::{
+	FutureExt,
+	future::{Either, select},
+};
+use grammers_client::{Client, Update};
+use grammers_session::defs::PeerRef;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
-use crate::config::{AppConfig, TelegramDestination};
+use crate::{
+	config::{AppConfig, TelegramDestination},
+	telegram_utils::{self, ConnectionConfig, TelegramConnection},
+};
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
@@ -67,28 +72,6 @@ fn reconnect_delay(attempt: u32) -> Duration {
 }
 
 async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
-	// Load or create session file (using username like Python code does)
-	let session_filename = format!("{}.session", config.telegram.username);
-	let session_file = v_utils::xdg_state_file!(&session_filename);
-	info!("Using session file: {}", session_file.display());
-
-	info!("Opening session database");
-	let session = match SqliteSession::open(&session_file) {
-		Ok(s) => Arc::new(s),
-		Err(e) => {
-			// Check if it's a database corruption error (SQLite error code 26: SQLITE_NOTADB)
-			let err_str = e.to_string();
-			if err_str.contains("not a database") || err_str.contains("code 26") {
-				error!("Session database is corrupted: {e}");
-				info!("Deleting corrupted session file and creating a new one");
-				std::fs::remove_file(&session_file)?;
-				Arc::new(SqliteSession::open(&session_file)?)
-			} else {
-				return Err(e.into());
-			}
-		}
-	};
-
 	// Load status drop
 	let status_file = v_utils::xdg_state_file!("telegram_status.json");
 	let status_drop: StatusDrop = if status_file.exists() {
@@ -101,72 +84,18 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		StatusDrop::default()
 	};
 
-	// Create client
-	info!("Connecting to Telegram with api_id: {}", config.telegram.api_id);
-	let pool = SenderPool::new(Arc::clone(&session), config.telegram.api_id);
-	let client = Client::new(&pool);
-	let SenderPool { runner, updates, .. } = pool;
-	let _pool_task = tokio::spawn(runner.run());
-	info!("Connected to Telegram");
-
-	// Sign in if not already
-	if !client.is_authorized().await? {
-		info!("Not authorized, requesting login code for {}", config.telegram.phone);
-		let token = client.request_login_code(&config.telegram.phone, &config.telegram.api_hash).await?;
-		info!("Login code requested successfully, check your Telegram app");
-
-		println!("Enter the code you received: ");
-		let mut code = String::new();
-		std::io::stdin().read_line(&mut code)?;
-		let code = code.trim();
-		println!("Code received, authenticating...");
-		info!("Received code from user (length: {})", code.len());
-		debug!("Code value: '{code}'");
-
-		match client.sign_in(&token, code).await {
-			Ok(_) => {
-				eprintln!("Sign in successful! Saving session...");
-				info!("Sign in successful");
-			}
-			Err(SignInError::PasswordRequired(password_token)) => {
-				info!("2FA password required");
-				print!("Enter your 2FA password: ");
-				std::io::Write::flush(&mut std::io::stderr())?;
-				let mut password = String::new();
-				std::io::stdin().read_line(&mut password)?;
-				let password = password.trim();
-				eprintln!("Password received, checking 2FA...");
-				info!("Received 2FA password from user");
-				debug!("Password length: {}", password.len());
-
-				client.check_password(password_token, password).await?;
-				eprintln!("2FA authentication successful! Saving session...");
-				info!("2FA authentication successful");
-			}
-			Err(e) => {
-				error!("Sign in failed with error: {e}");
-				return Err(e.into());
-			}
-		}
-
-		// SqliteSession saves automatically, no need to manually save
-		eprintln!("Session saved successfully");
-		info!("Session saved successfully to {}", session_file.display());
-	}
+	// Connect using shared utilities
+	let TelegramConnection { client, mut updates, mut runner } = telegram_utils::connect(ConnectionConfig {
+		username: &config.telegram.username,
+		phone: &config.telegram.phone,
+		api_id: config.telegram.api_id,
+		api_hash: &config.telegram.api_hash,
+		session_suffix: "",
+	})
+	.await?;
 
 	println!("Telegram started");
 	info!("--Telegram-- connected and authorized");
-
-	// Pre-fetch all dialogs to warm the peer cache with access hashes.
-	// This prevents "missing its hash" warnings when receiving updates for channels.
-	info!("Pre-fetching dialogs to warm peer cache...");
-	let mut dialog_count = 0;
-	let mut dialogs = client.iter_dialogs();
-	while let Some(dialog) = dialogs.next().await? {
-		dialog_count += 1;
-		debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
-	}
-	info!("Cached {dialog_count} dialogs");
 
 	// Resolve channel peer IDs
 	info!("Resolving {} poll channels", config.telegram.poll_channels.len());
@@ -223,75 +152,82 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	// Main event loop
 	let mut message_counter = 0u64;
 	let mut last_status_update = Timestamp::default();
-	let mut updates = client.stream_updates(
-		updates,
-		UpdatesConfiguration {
-			catch_up: false,
-			..Default::default()
-		},
-	);
+
+	//LOOP: process channel updates and forward matching messages until error/disconnect
 	loop {
-		// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
-		// return an error to trigger reconnect before we overflow.
-		// Stack overflows are fatal and can't be caught by catch_unwind.
-		let (stack_used, _) = crate::utils::stack_usage();
-		if stack_used > 6 * 1024 * 1024 {
-			crate::utils::log_stack_critical("telegram_channel_watch forcing reconnect", stack_used);
-			bail!("Stack usage critical ({:.2}MB), forcing reconnect", stack_used as f64 / (1024.0 * 1024.0));
+		// Check stack usage and bail if critical
+		if telegram_utils::should_reconnect_for_stack() {
+			bail!("Stack usage critical, forcing reconnect");
 		}
 
-		// Log stack usage every iteration to detect accumulation
-		crate::utils::log_stack_usage("telegram_channel_watch loop start");
+		telegram_utils::log_stack("telegram_channel_watch loop start");
 
-		let update = match updates.next().await {
-			Ok(u) => u,
-			Err(e) => {
-				error!("Error getting next update: {e}");
-				continue;
+		enum Event {
+			Update(Result<Update, grammers_client::InvocationError>),
+			RunnerExited,
+		}
+
+		let event = {
+			let update_fut = std::pin::pin!(updates.next());
+			let runner_fut = runner.as_mut();
+
+			match select(update_fut, runner_fut).await {
+				Either::Left((result, _)) => Event::Update(result),
+				Either::Right(((), _)) => Event::RunnerExited,
 			}
 		};
 
-		crate::utils::log_stack_usage("telegram_channel_watch after updates.next()");
+		telegram_utils::log_stack("telegram_channel_watch after select");
 
-		// NOTE: Don't debug print the full update - it can cause stack overflow due to deeply nested Debug formatting
-		message_counter += 1;
+		match event {
+			Event::RunnerExited => {
+				bail!("MTProto runner exited unexpectedly");
+			}
+			Event::Update(Err(e)) => {
+				error!("Error getting next update: {e}");
+				continue;
+			}
+			Event::Update(Ok(update)) => {
+				message_counter += 1;
 
-		match update {
-			Update::NewMessage(message) if !message.outgoing() => {
-				let peer = match message.peer() {
-					Ok(p) => p,
-					Err(e) => {
-						error!("Skipping message with unresolved peer: {e:?}");
-						continue;
+				match update {
+					Update::NewMessage(message) if !message.outgoing() => {
+						let peer = match message.peer() {
+							Ok(p) => p,
+							Err(e) => {
+								error!("Skipping message with unresolved peer: {e:?}");
+								continue;
+							}
+						};
+						let peer_id = peer.id();
+
+						// Check if it's from a monitored channel
+						if poll_peer_ids.contains(&peer_id) {
+							if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
+								error!("Error handling poll message: {e}");
+							}
+						} else if info_peer_ids.contains(&peer_id)
+							&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
+						{
+							error!("Error handling info message: {e}");
+						}
 					}
-				};
-				let peer_id = peer.id();
+					_ => {}
+				}
 
-				// Check if it's from a monitored channel
-				if poll_peer_ids.contains(&peer_id) {
-					if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
-						error!("Error handling poll message: {e}");
+				// Status update every 4 minutes
+				let now = Timestamp::now();
+				if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
+					if !status_drop.status.is_empty() {
+						if let Err(e) = update_profile(&client, &status_drop.status).await {
+							error!("Error updating profile: {e}");
+						} else {
+							debug!("Profile status updated; message counter: {message_counter}");
+						}
 					}
-				} else if info_peer_ids.contains(&peer_id)
-					&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
-				{
-					error!("Error handling info message: {e}");
+					last_status_update = now;
 				}
 			}
-			_ => {}
-		}
-
-		// Status update every 4 minutes
-		let now = Timestamp::now();
-		if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
-			if !status_drop.status.is_empty() {
-				if let Err(e) = update_profile(&client, &status_drop.status).await {
-					error!("Error updating profile: {e}");
-				} else {
-					debug!("Profile status updated; message counter: {message_counter}");
-				}
-			}
-			last_status_update = now;
 		}
 	}
 }

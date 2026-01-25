@@ -4,6 +4,7 @@ pub mod dms;
 pub mod email;
 pub mod telegram_channel_watch;
 pub mod telegram_notifier;
+pub mod telegram_utils;
 pub mod twitter;
 pub mod twitter_schedule;
 pub mod twitter_user;
