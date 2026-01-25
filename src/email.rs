@@ -294,22 +294,20 @@ impl EmailMonitor {
 	}
 
 	async fn fetch_unread_messages_oauth(&self, hub: &Gmail<HttpsConnector<HttpConnector>>) -> Result<Vec<Message>> {
+		use futures::stream::{self, StreamExt};
+
 		let mut all_messages = Vec::new();
-		let mut page_token: Option<String> = None;
+		let mut page_token: Option<String> = Some(String::new()); // empty string = first page
 
-		//LOOP: pagination - terminates when next_page_token is None
-		loop {
+		while let Some(token) = page_token.take() {
 			let mut request = hub.users().messages_list(&self.config.email).q("is:unread").max_results(500);
-
-			if let Some(ref token) = page_token {
-				request = request.page_token(token);
+			if !token.is_empty() {
+				request = request.page_token(&token);
 			}
 
 			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {e:#?}"))?;
 
 			if let Some(msg_list) = result.1.messages {
-				use futures::stream::{self, StreamExt};
-
 				let messages: Vec<_> = stream::iter(msg_list.iter())
 					.map(|msg| async {
 						if let Some(ref id) = msg.id {
@@ -328,9 +326,6 @@ impl EmailMonitor {
 			}
 
 			page_token = result.1.next_page_token;
-			if page_token.is_none() {
-				break;
-			}
 		}
 
 		Ok(all_messages)
@@ -432,17 +427,11 @@ impl EmailMonitor {
 	async fn mark_all_as_read_oauth(&self, oauth: &OAuthAuth) -> Result<()> {
 		let hub = self.create_gmail_hub(oauth).await?;
 
-		//LOOP: drains unread messages in batches until none remain
-		loop {
-			println!("Fetching next batch of unread messages...");
-			let messages = self.fetch_unread_messages_oauth(&hub).await?;
+		println!("Fetching next batch of unread messages...");
+		let mut messages = self.fetch_unread_messages_oauth(&hub).await?;
 
+		while !messages.is_empty() {
 			let count = messages.len();
-			if count == 0 {
-				println!("No unread messages found.");
-				return Ok(());
-			}
-
 			println!("Marking {count} unread messages as read...");
 
 			for (i, message) in messages.iter().enumerate() {
@@ -456,10 +445,15 @@ impl EmailMonitor {
 			}
 
 			if count < 100 {
-				println!("\nAll done!");
-				return Ok(());
+				break;
 			}
+
+			println!("Fetching next batch of unread messages...");
+			messages = self.fetch_unread_messages_oauth(&hub).await?;
 		}
+
+		println!("\nAll done!");
+		Ok(())
 	}
 
 	fn extract_header(&self, message: &Message, header_name: &str) -> Option<String> {
