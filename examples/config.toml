@@ -1,8 +1,6 @@
-[dms]
-monitored_users = ["play_me_once", "deevsdeevs"]
-
-[dms.discord]
+[discord]
 user_token = { env = "DISCORD_AUTH" }
+monitored_users = ["play_me_once", "deevsdeevs"]
 my_username = { env = "DEFAULT_USERNAME" }
 
 [telegram]
@@ -45,8 +43,9 @@ duration_hours = 24
 schedule_every = "1w"
 num_of_retries = 5
 text = """
-Sentiment check: $BTC at ~$${btc_price}, - how are we feeling?
+Sentiment check: $BTC, how are we feeling?
 
+for future reference: $BTC ~$${btc_price}
 - [ ] Bullish
 - [ ] Neutral
 - [ ] Bearish
@@ -63,10 +62,14 @@ ignore_patterns = [
 ]
 claude_token = { env = "CLAUDE_TOKEN" }
 
+[email.important_if_contains]
+any = []
+subject = ["Appointment booked"]
+body = []
+address = []
+
 [email.auth.imap]
 pass = { env = "GOOGLE_MAIN_MAIL_PASS" }
-#client_id = { env = "GMAIL_PROJECT_MAILREADER_ID" } 
-#client_secret = { env = "GMAIL_PROJECT_MAILREADER_SECRET" }
 
 [clickhouse]
 url = "http://localhost:8123"

@@ -29,14 +29,10 @@
           inherit pkgs pname;
           langs = [ "rs" ];
           lastSupportedVersion = "nightly-2025-10-10";
-          jobs = {
-            errors = [ "rust-tests" ];
-            warnings = [ "rust-doc" "rust-clippy" "rust-machete" "rust-sorted" "rust-sorted-derives" "tokei" ];
-            other = [ "loc-badge" ];
-          };
+          jobs.default = true;
         };
         rs = v-utils.rs {
-          inherit pkgs;
+          inherit pkgs rust;
           cranelift = true;
           build = {
             enable = true;
@@ -50,6 +46,7 @@
           licenses = [{ license = v-utils.files.licenses.nsfw; }];
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
+        combined = v-utils.utils.combine [ rs github readme ];
       in
       {
         packages =
@@ -81,19 +78,16 @@
             inherit stdenv;
             shellHook =
               pre-commit-check.shellHook +
-              github.shellHook +
-              rs.shellHook +
+              combined.shellHook +
               ''
                 cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
-              '' +
-              readme.shellHook;
-
+              '';
             packages = [
               mold-wrapped
               openssl
               pkg-config
               rust
-            ] ++ pre-commit-check.enabledPackages ++ github.enabledPackages;
+            ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;

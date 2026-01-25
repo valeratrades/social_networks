@@ -454,17 +454,22 @@ impl EmailMonitor {
 			return Ok(());
 		}
 
-		// Evaluate if human
-		let is_from_human = self.eval_is_human(&email_msg).await?;
+		// Determine if alert-worthy: either matches important pattern OR is from human (LLM check)
+		let alert_worthy = if self.matches_important_pattern(&email_msg) {
+			log!("Email matches important pattern, marking as alert-worthy: {}", email_msg.from);
+			true
+		} else {
+			self.eval_is_human(&email_msg).await?
+		};
 
-		if is_from_human {
+		if alert_worthy {
 			self.forward_to_telegram(&email_msg.from, &email_msg.subject, &email_msg.body_preview).await?;
-			log!("Forwarded human email from: {}", email_msg.from);
-			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, is_from_human).await?;
+			log!("Forwarded alert-worthy email from: {}", email_msg.from);
+			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, alert_worthy).await?;
 		} else {
 			self.mark_as_read_oauth(hub, message_id).await?;
-			elog!("Marked non-human email as read: {}", email_msg.from);
-			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, is_from_human).await?;
+			elog!("Marked non-alert email as read: {}", email_msg.from);
+			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, alert_worthy).await?;
 		}
 
 		Ok(())
@@ -545,17 +550,22 @@ impl EmailMonitor {
 			return Ok(());
 		}
 
-		// Evaluate if human
-		let is_from_human = rt.block_on(async { self.eval_is_human(email).await })?;
+		// Determine if alert-worthy: either matches important pattern OR is from human (LLM check)
+		let alert_worthy = if self.matches_important_pattern(email) {
+			log!("Email matches important pattern, marking as alert-worthy: {}", email.from);
+			true
+		} else {
+			rt.block_on(async { self.eval_is_human(email).await })?
+		};
 
-		if is_from_human {
+		if alert_worthy {
 			rt.block_on(async { self.forward_to_telegram(&email.from, &email.subject, &email.body_preview).await })?;
-			log!("Forwarded human email from: {}", email.from);
-			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, is_from_human).await })?;
+			log!("Forwarded alert-worthy email from: {}", email.from);
+			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, alert_worthy).await })?;
 		} else {
 			mark_as_read(&email.id)?;
-			elog!("Marked non-human email as read: {}", email.from);
-			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, is_from_human).await })?;
+			elog!("Marked non-alert email as read: {}", email.from);
+			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, alert_worthy).await })?;
 		}
 
 		Ok(())
@@ -563,6 +573,46 @@ impl EmailMonitor {
 
 	fn should_ignore(&self, from: &str) -> bool {
 		self.ignore_regexes.iter().any(|regex| regex.is_match(from))
+	}
+
+	/// Check if email matches any of the configured important patterns.
+	/// Returns true if email should be marked as alert-worthy without LLM evaluation.
+	fn matches_important_pattern(&self, email: &EmailMessage) -> bool {
+		let patterns = &self.config.important_if_contains;
+
+		// Check patterns that match against any field
+		for pattern in &patterns.any {
+			if email.subject.contains(pattern) || email.body_preview.contains(pattern) || email.from.contains(pattern) {
+				debug!("Email matches important pattern '{}' (any field)", pattern);
+				return true;
+			}
+		}
+
+		// Check subject-specific patterns
+		for pattern in &patterns.subject {
+			if email.subject.contains(pattern) {
+				debug!("Email matches important pattern '{}' (subject)", pattern);
+				return true;
+			}
+		}
+
+		// Check body-specific patterns
+		for pattern in &patterns.body {
+			if email.body_preview.contains(pattern) {
+				debug!("Email matches important pattern '{}' (body)", pattern);
+				return true;
+			}
+		}
+
+		// Check address-specific patterns
+		for pattern in &patterns.address {
+			if email.from.contains(pattern) {
+				debug!("Email matches important pattern '{}' (address)", pattern);
+				return true;
+			}
+		}
+
+		false
 	}
 
 	#[instrument(skip(self, body))]

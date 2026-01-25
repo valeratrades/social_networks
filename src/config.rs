@@ -189,9 +189,32 @@ pub struct EmailConfig {
 	#[serde(default)]
 	#[primitives(skip)]
 	pub ignore_patterns: Vec<String>,
+	/// Patterns that mark an email as alert-worthy without LLM evaluation
+	#[serde(default)]
+	#[primitives(skip)]
+	pub important_if_contains: ImportantIfContains,
 	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
 	#[serde(default)]
 	pub claude_token: Option<String>,
+}
+
+/// Patterns to check for marking email as alert-worthy.
+/// If any pattern matches, the email is forwarded without LLM check.
+/// Top-level `any` matches against all fields (subject, body, address).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ImportantIfContains {
+	/// Patterns to match against any field (subject, body, address)
+	#[serde(default)]
+	pub any: Vec<String>,
+	/// Patterns to match against subject/title only
+	#[serde(default)]
+	pub subject: Vec<String>,
+	/// Patterns to match against body only
+	#[serde(default)]
+	pub body: Vec<String>,
+	/// Patterns to match against sender address only
+	#[serde(default)]
+	pub address: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
