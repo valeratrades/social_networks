@@ -1,14 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::Result;
+use futures::future::{Either, select};
 use grammers_client::{Client, SignInError, Update, UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use jiff::Timestamp;
-use tokio::{
-	task::JoinHandle,
-	time::{self, Duration},
-};
+use tokio::time::{self, Duration};
 use tracing::{debug, error, info};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
@@ -40,13 +38,13 @@ impl TelegramMonitor {
 		match &mut self.state {
 			State::Disconnected => {
 				match self.connect().await {
-					Ok((client, updates, runner_handle)) => {
+					Ok((client, updates, runner)) => {
 						info!("--Telegram DM Commands-- connected and authorized");
 						println!("Telegram DM Commands: Connected");
 						self.client = Some(client);
 						self.state = State::Connected {
 							updates: Box::new(updates),
-							runner_handle,
+							runner: Box::pin(runner.run()),
 						};
 					}
 					Err(e) => {
@@ -57,14 +55,13 @@ impl TelegramMonitor {
 				}
 				Ok(())
 			}
-			State::Connected { updates, runner_handle } => {
+			State::Connected { updates, runner } => {
 				// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
 				// force a reconnect to reset the stack before we overflow.
 				// Stack overflows are fatal and can't be caught by catch_unwind.
 				let (stack_used, _) = crate::utils::stack_usage();
 				if stack_used > 6 * 1024 * 1024 {
 					crate::utils::log_stack_critical("dms telegram forcing reconnect", stack_used);
-					runner_handle.abort();
 					self.state = State::Disconnected;
 					self.client = None;
 					return Ok(());
@@ -72,82 +69,106 @@ impl TelegramMonitor {
 
 				crate::utils::log_stack_usage("dms telegram before updates.next()");
 
-				let update = match updates.next().await {
-					Ok(u) => u,
-					Err(e) => {
-						error!("Error getting next update: {e}, reconnecting...");
-						runner_handle.abort();
-						self.state = State::Disconnected;
-						self.client = None;
-						return Ok(());
+				enum Event {
+					Update(Result<Update, grammers_client::InvocationError>),
+					RunnerExited,
+				}
+
+				let event = {
+					let update_fut = std::pin::pin!(updates.next());
+					let runner_fut = runner.as_mut();
+
+					match select(update_fut, runner_fut).await {
+						Either::Left((result, _)) => Event::Update(result),
+						Either::Right(((), _)) => Event::RunnerExited,
 					}
 				};
 
 				crate::utils::log_stack_usage("dms telegram after updates.next()");
 
-				match update {
-					Update::NewMessage(message) if !message.outgoing() => {
-						let peer = match message.peer() {
-							Ok(p) => p,
-							Err(e) => {
-								error!("Skipping message with unresolved peer: {e:?}");
-								return Ok(());
-							}
-						};
-
-						// Only process DMs (user peers)
-						if !matches!(peer, grammers_client::types::Peer::User(_)) {
-							return Ok(());
-						}
-
-						let text = message.text();
-						let sender = match message.sender() {
-							Some(s) => s,
-							None => return Ok(()),
-						};
-						let username = sender.username().unwrap_or("unknown");
-						let chat_id = peer.id().bot_api_dialog_id();
-						let now = Timestamp::now();
-
-						let has_ping = text.contains("/ping");
-						let is_monitored_user = self.monitored_users.contains(&username.to_string());
-
-						if has_ping {
-							if let Err(e) = self.telegram_notifier.send_ping_notification(username, "Telegram").await {
-								error!("Error sending ping notification: {e}");
-							} else {
-								info!("Successfully sent ping notification for user: {username}");
-							}
-						} else if is_monitored_user {
-							let last_message_time = self.last_message_times.get(&chat_id).copied();
-
-							let should_notify = if let Some(last_time) = last_message_time {
-								let duration_since_last = now.duration_since(last_time);
-								duration_since_last.as_secs() >= 15 * 60
-							} else {
-								true
-							};
-
-							if should_notify {
-								println!("Telegram message from monitored user {username}");
-								if let Err(e) = self.telegram_notifier.send_monitored_user_message(username, "Telegram").await {
-									error!("Error sending monitored user notification: {e}");
-								} else {
-									info!("Successfully sent monitored user notification for: {username}");
-								}
-							}
-
-							self.last_message_times.insert(chat_id, now);
-						}
+				match event {
+					Event::RunnerExited => {
+						error!("MTProto runner exited unexpectedly, reconnecting...");
+						self.state = State::Disconnected;
+						self.client = None;
+						return Ok(());
 					}
-					_ => {}
+					Event::Update(Err(e)) => {
+						error!("Error getting next update: {e}, reconnecting...");
+						self.state = State::Disconnected;
+						self.client = None;
+						return Ok(());
+					}
+					Event::Update(Ok(update)) => {
+						self.handle_update(update).await;
+					}
 				}
 				Ok(())
 			}
 		}
 	}
 
-	async fn connect(&self) -> Result<(Client, UpdateStream, JoinHandle<()>)> {
+	async fn handle_update(&mut self, update: Update) {
+		match update {
+			Update::NewMessage(message) if !message.outgoing() => {
+				let peer = match message.peer() {
+					Ok(p) => p,
+					Err(e) => {
+						error!("Skipping message with unresolved peer: {e:?}");
+						return;
+					}
+				};
+
+				// Only process DMs (user peers)
+				if !matches!(peer, grammers_client::types::Peer::User(_)) {
+					return;
+				}
+
+				let text = message.text();
+				let sender = match message.sender() {
+					Some(s) => s,
+					None => return,
+				};
+				let username = sender.username().unwrap_or("unknown");
+				let chat_id = peer.id().bot_api_dialog_id();
+				let now = Timestamp::now();
+
+				let has_ping = text.contains("/ping");
+				let is_monitored_user = self.monitored_users.contains(&username.to_string());
+
+				if has_ping {
+					if let Err(e) = self.telegram_notifier.send_ping_notification(username, "Telegram").await {
+						error!("Error sending ping notification: {e}");
+					} else {
+						info!("Successfully sent ping notification for user: {username}");
+					}
+				} else if is_monitored_user {
+					let last_message_time = self.last_message_times.get(&chat_id).copied();
+
+					let should_notify = if let Some(last_time) = last_message_time {
+						let duration_since_last = now.duration_since(last_time);
+						duration_since_last.as_secs() >= 15 * 60
+					} else {
+						true
+					};
+
+					if should_notify {
+						println!("Telegram message from monitored user {username}");
+						if let Err(e) = self.telegram_notifier.send_monitored_user_message(username, "Telegram").await {
+							error!("Error sending monitored user notification: {e}");
+						} else {
+							info!("Successfully sent monitored user notification for: {username}");
+						}
+					}
+
+					self.last_message_times.insert(chat_id, now);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	async fn connect(&self) -> Result<(Client, UpdateStream, grammers_mtsender::SenderPoolRunner)> {
 		let session_filename = format!("{}_dm.session", self.config.telegram.username);
 		let session_file = v_utils::xdg_state_file!(&session_filename);
 		info!("Using session file: {}", session_file.display());
@@ -172,7 +193,6 @@ impl TelegramMonitor {
 		let pool = SenderPool::new(Arc::clone(&session), self.config.telegram.api_id);
 		let client = Client::new(&pool);
 		let SenderPool { runner, updates, .. } = pool;
-		let runner_handle = tokio::spawn(async move { runner.run().await });
 		info!("Connected to Telegram");
 
 		if !client.is_authorized().await? {
@@ -237,13 +257,14 @@ impl TelegramMonitor {
 			},
 		);
 
-		Ok((client, updates, runner_handle))
+		Ok((client, updates, runner))
 	}
 }
 
 type UpdateStream = grammers_client::client::updates::UpdateStream;
+type RunnerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 enum State {
 	Disconnected,
-	Connected { updates: Box<UpdateStream>, runner_handle: JoinHandle<()> },
+	Connected { updates: Box<UpdateStream>, runner: RunnerFuture },
 }
