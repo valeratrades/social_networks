@@ -232,6 +232,18 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		},
 	);
 	loop {
+		// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
+		// return an error to trigger reconnect before we overflow.
+		// Stack overflows are fatal and can't be caught by catch_unwind.
+		let (stack_used, _) = crate::utils::stack_usage();
+		if stack_used > 6 * 1024 * 1024 {
+			crate::utils::log_stack_critical("telegram_channel_watch forcing reconnect", stack_used);
+			return Err(color_eyre::eyre::eyre!(
+				"Stack usage critical ({:.2}MB), forcing reconnect",
+				stack_used as f64 / (1024.0 * 1024.0)
+			));
+		}
+
 		// Log stack usage every iteration to detect accumulation
 		crate::utils::log_stack_usage("telegram_channel_watch loop start");
 

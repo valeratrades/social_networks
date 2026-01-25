@@ -60,6 +60,17 @@ impl TelegramMonitor {
 				Ok(())
 			}
 			State::Connected { updates } => {
+				// Preemptive stack check: if we're using more than 6MB of stack (out of 8MB),
+				// force a reconnect to reset the stack before we overflow.
+				// Stack overflows are fatal and can't be caught by catch_unwind.
+				let (stack_used, _) = crate::utils::stack_usage();
+				if stack_used > 6 * 1024 * 1024 {
+					crate::utils::log_stack_critical("dms telegram forcing reconnect", stack_used);
+					self.state = State::Disconnected;
+					self.client = None;
+					return Ok(());
+				}
+
 				crate::utils::log_stack_usage("dms telegram before updates.next()");
 
 				let update = match updates.next().await {

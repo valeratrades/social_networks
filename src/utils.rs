@@ -35,6 +35,25 @@ pub fn log_stack_usage(context: &str) {
 	}
 }
 
+/// Log detailed diagnostic info when stack usage is critical.
+/// Call this before forcing a reconnect due to high stack usage.
+#[inline(never)]
+pub fn log_stack_critical(context: &str, stack_used: usize) {
+	use std::backtrace::Backtrace;
+
+	let bt = Backtrace::force_capture();
+
+	tracing::error!(
+		"[STACK CRITICAL] {context}\n\
+		 Stack used: {:.2}MB\n\
+		 Thread: {:?} (id: {:?})\n\
+		 Backtrace:\n{bt}",
+		stack_used as f64 / (1024.0 * 1024.0),
+		std::thread::current().name(),
+		std::thread::current().id(),
+	);
+}
+
 pub(crate) async fn btc_price(n_retries: u8) -> Result<u64> {
 	let mut binance_exchange = ExchangeName::Binance.init_client();
 	binance_exchange.set_max_tries(n_retries);
