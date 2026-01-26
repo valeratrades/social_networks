@@ -44,12 +44,18 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 		}
 
 		//LOOP: daemon - runs until process termination
+		let mut was_error = false;
 		loop {
 			if let Err(e) = monitor.run().await {
 				error!("Email monitor error: {e}");
 				error!("Retrying in 5 minutes...");
 				time::sleep(Duration::from_secs(5 * 60)).await;
+				was_error = true;
 			} else {
+				if was_error {
+					info!("Email monitor reconnected successfully");
+					was_error = false;
+				}
 				time::sleep(Duration::from_secs(60)).await;
 			}
 		}
