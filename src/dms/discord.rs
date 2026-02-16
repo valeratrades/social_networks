@@ -22,6 +22,7 @@ pub struct DiscordMonitor {
 	last_message_times: HashMap<String, Timestamp>,
 	monitored_users: Vec<String>,
 	message_counter: u64,
+	my_user_id: Option<String>,
 }
 impl DiscordMonitor {
 	pub fn new(config: AppConfig) -> Self {
@@ -35,6 +36,7 @@ impl DiscordMonitor {
 			last_message_times: HashMap::new(),
 			monitored_users,
 			message_counter: 0,
+			my_user_id: None,
 		}
 	}
 
@@ -104,10 +106,16 @@ impl DiscordMonitor {
 								}
 								0 => {
 									// Dispatch event
-									if let Some(d) = &event.d
-										&& let Err(e) = self.handle_message(d).await
-									{
-										error!("Error handling message: {e}");
+									if let Some(d) = &event.d {
+										let event_type = event.t.as_deref();
+										let result = match event_type {
+											Some("READY") => self.handle_ready(d),
+											Some("CALL_CREATE") => self.handle_call_create(d).await,
+											_ => self.handle_message(d).await,
+										};
+										if let Err(e) = result {
+											error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
+										}
 									}
 								}
 								_ => {}
@@ -176,6 +184,31 @@ impl DiscordMonitor {
 		write.lock().await.send(Message::Text(msg.into())).await?;
 
 		Ok((read, write, heartbeat_secs))
+	}
+
+	fn handle_ready(&mut self, data: &serde_json::Value) -> Result<()> {
+		let user_id = data
+			.get("user")
+			.and_then(|u| u.get("id"))
+			.and_then(|id| id.as_str())
+			.ok_or_else(|| color_eyre::eyre::eyre!("READY event missing user.id"))?;
+		info!("Captured my user id: {user_id}");
+		self.my_user_id = Some(user_id.to_string());
+		Ok(())
+	}
+
+	async fn handle_call_create(&self, data: &serde_json::Value) -> Result<()> {
+		let my_id = self.my_user_id.as_deref().ok_or_else(|| color_eyre::eyre::eyre!("my_user_id not set"))?;
+		let ringing = data.get("ringing").and_then(|r| r.as_array());
+		if let Some(ringing) = ringing
+			&& ringing.iter().any(|id| id.as_str() == Some(my_id))
+		{
+			let channel_id = data.get("channel_id").and_then(|c| c.as_str()).unwrap_or("unknown");
+			println!("Incoming Discord call on channel {channel_id}");
+			self.telegram.send_call_notification("Discord").await?;
+			info!("Sent call notification for channel: {channel_id}");
+		}
+		Ok(())
 	}
 
 	async fn handle_message(&mut self, data: &serde_json::Value) -> Result<()> {
