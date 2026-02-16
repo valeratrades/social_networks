@@ -5,6 +5,20 @@ use tracing::info;
 
 use crate::config::ClickHouseConfig;
 
+const MIGRATIONS: &[&str] = &[
+	// Migration 0: Create processed_emails table with message_id as primary key
+	r#"
+CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
+    message_id String,
+    processed_at DateTime DEFAULT now(),
+    from_email String,
+    subject String,
+    is_human UInt8
+) ENGINE = MergeTree()
+ORDER BY message_id
+PRIMARY KEY message_id
+"#,
+];
 pub struct Database {
 	client: Client,
 	url: String,
@@ -162,21 +176,6 @@ struct CountRow {
 struct MaxVersionRow {
 	max_version: u32,
 }
-
-const MIGRATIONS: &[&str] = &[
-	// Migration 0: Create processed_emails table with message_id as primary key
-	r#"
-CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
-    message_id String,
-    processed_at DateTime DEFAULT now(),
-    from_email String,
-    subject String,
-    is_human UInt8
-) ENGINE = MergeTree()
-ORDER BY message_id
-PRIMARY KEY message_id
-"#,
-];
 
 impl std::fmt::Debug for Database {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

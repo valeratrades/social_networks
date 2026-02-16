@@ -18,6 +18,7 @@ use crate::{
 	utils::{btc_price, format_num_with_thousands},
 };
 
+type HmacSha1 = Hmac<Sha1>;
 pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 	v_utils::clientside!("twitter_schedule");
 
@@ -32,7 +33,6 @@ pub struct TwitterScheduleArgs {
 	#[arg(long)]
 	pub skip_first: bool,
 }
-type HmacSha1 = Hmac<Sha1>;
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals
 #[instrument(skip(config))]

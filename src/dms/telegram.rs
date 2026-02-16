@@ -13,6 +13,7 @@ use crate::{
 	telegram_utils::{self, ConnectionConfig, RunnerFuture, TelegramConnection},
 };
 
+type UpdateStream = grammers_client::client::updates::UpdateStream;
 pub struct TelegramMonitor {
 	config: AppConfig,
 	state: State,
@@ -174,8 +175,6 @@ impl TelegramMonitor {
 		.await
 	}
 }
-
-type UpdateStream = grammers_client::client::updates::UpdateStream;
 
 enum State {
 	Disconnected,

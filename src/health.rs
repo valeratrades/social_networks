@@ -5,6 +5,16 @@ use colored::Colorize;
 
 use crate::config::AppConfig;
 
+const SIZE_THRESHOLD_GB: f64 = 10.0;
+/// All services that can be run as systemd units
+const SERVICES: &[(&str, &str)] = &[
+	("social_networks_dms", "DMs (Discord + Telegram)"),
+	("social_networks_email", "Email"),
+	("social_networks_telegram_channel_watch", "Telegram Channel Watch"),
+	("social_networks_twitter", "Twitter Monitor"),
+	("social_networks_twitter_schedule", "Twitter Schedule"),
+	("social_networks_youtube", "YouTube Monitor"),
+];
 pub fn main(config: AppConfig) -> Result<()> {
 	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
 
@@ -15,7 +25,6 @@ pub fn main(config: AppConfig) -> Result<()> {
 	println!();
 	Ok(())
 }
-const SIZE_THRESHOLD_GB: f64 = 10.0;
 
 /// Checks if a systemd service is running
 fn is_service_running(service_name: &str) -> bool {
@@ -64,16 +73,6 @@ fn bytes_to_human(bytes: u64) -> String {
 fn status_icon(ok: bool) -> colored::ColoredString {
 	if ok { "✓".green() } else { "✗".red() }
 }
-
-/// All services that can be run as systemd units
-const SERVICES: &[(&str, &str)] = &[
-	("social_networks_dms", "DMs (Discord + Telegram)"),
-	("social_networks_email", "Email"),
-	("social_networks_telegram_channel_watch", "Telegram Channel Watch"),
-	("social_networks_twitter", "Twitter Monitor"),
-	("social_networks_twitter_schedule", "Twitter Schedule"),
-	("social_networks_youtube", "YouTube Monitor"),
-];
 
 fn check_services() {
 	println!("{}", "Services:".bold());
