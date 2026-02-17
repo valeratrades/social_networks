@@ -70,7 +70,7 @@ jobs:
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && cargo build --release --target \${{ matrix.target }} \${{ matrix.cargo_flags
+        && cargo build --release --target ${{ matrix.target }} ${{ matrix.cargo_flags
         }}"
     - if: runner.os != 'Windows'
       name: Package binary (unix)
