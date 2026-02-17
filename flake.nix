@@ -30,6 +30,7 @@
           langs = [ "rs" ];
           lastSupportedVersion = "nightly-2025-10-10";
           jobs.default = true;
+          release.default = true;
         };
         rs = v-utils.rs {
           inherit pkgs rust;

@@ -11,6 +11,11 @@ repository = "https://github.com/valeratrades/social_networks"
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [dependencies]
 ask_llm = "^2.1.4"
 base64 = "^0.22.1"
