@@ -65,6 +65,13 @@
             rustPlatform = pkgs.makeRustPlatform {
               inherit rustc cargo stdenv;
             };
+            # Filter out .cargo/config.toml (dev-only flags: cranelift, mold, etc.)
+            cleanSrc = pkgs.lib.cleanSourceWith {
+              src = ./.;
+              filter = path: type:
+                !(pkgs.lib.hasSuffix ".cargo/config.toml" path)
+                && !(pkgs.lib.hasSuffix ".cargo/config" path);
+            };
           in
           {
             default = rustPlatform.buildRustPackage {
@@ -77,9 +84,44 @@
               nativeBuildInputs = with pkgs; [ pkg-config ];
 
               cargoLock.lockFile = ./Cargo.lock;
-              src = pkgs.lib.cleanSource ./.;
+              src = cleanSrc;
             };
-          };
+          } // (if pkgs.stdenv.hostPlatform.isLinux then {
+            # Musl-static build for portable Linux binaries (used by release CI)
+            static =
+              let
+                muslTarget = "x86_64-unknown-linux-musl";
+                pkgsMusl = pkgs.pkgsCross.musl64;
+                opensslStatic = pkgsMusl.pkgsStatic.openssl;
+                # Use host (glibc) rustc/cargo with musl target added.
+                # pkgsCross.musl64.makeRustPlatform sets hostPlatform correctly for --target,
+                # but uses our native glibc toolchain binaries.
+                rustStatic = pkgs.rust-bin.selectLatestNightlyWith (toolchain:
+                  toolchain.minimal.override {
+                    targets = [ muslTarget ];
+                  }
+                );
+                rustPlatformMusl = pkgsMusl.makeRustPlatform {
+                  rustc = rustStatic;
+                  cargo = rustStatic;
+                };
+              in
+              rustPlatformMusl.buildRustPackage {
+                inherit pname;
+                version = manifest.version;
+
+                nativeBuildInputs = [ pkgs.pkg-config ];
+
+                env.OPENSSL_STATIC = "1";
+                env.OPENSSL_DIR = "${opensslStatic.dev}";
+                env.OPENSSL_LIB_DIR = "${opensslStatic.out}/lib";
+                env.OPENSSL_INCLUDE_DIR = "${opensslStatic.dev}/include";
+                env.RUSTFLAGS = "-C target-feature=+crt-static";
+
+                cargoLock.lockFile = ./Cargo.lock;
+                src = cleanSrc;
+              };
+          } else { });
 
         devShells.default =
           with pkgs;
