@@ -64,6 +64,8 @@ jobs:
         \nnix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo \"query failed\"\
         \necho \"\"\necho \"20. System libssl:\"\nldconfig -p 2>/dev/null | grep libssl\
         \ || echo \"no system libssl\"\necho \"\"\necho \"=== END DEBUG ===\"\n"
+    - name: Remove dev cargo config
+      run: rm -f .cargo/config.toml .cargo/config
     - name: Build release binary
       run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
