@@ -42,7 +42,7 @@
           };
         rs = v-utils.rs {
           inherit pkgs rust;
-          cranelift = true;
+          cranelift = false; #dbg: broken rn
           build = {
             enable = true;
             workspace."./" = [ "git_version" "log_directives" ];

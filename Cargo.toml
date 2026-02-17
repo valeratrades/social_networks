@@ -8,6 +8,7 @@ description = "my utils for social networks managing/monitoring"
 readme = "README.md"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
+exclude = [".cargo/"]
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
@@ -16,6 +17,12 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-x86_64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-x86_64-unknown-linux-musl.tar.gz"
 
 [dependencies]
 ask_llm = "^2.1.4"
