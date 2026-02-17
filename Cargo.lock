@@ -3798,11 +3798,33 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+dependencies = [
+ "strum_macros 0.26.4",
+]
+
+[[package]]
+name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn",
 ]
 
 [[package]]
@@ -4501,9 +4523,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "v_exchanges"
-version = "0.16.7"
+version = "0.16.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecacb865380b188f8b184ba032f3c057e615ed7291b253da2b3d18c76017f160"
+checksum = "af48ab71d5a7f359616767c4070cd274f236b2933405f14e08641ad475a64096"
 dependencies = [
  "async-trait",
  "cfg-if",
@@ -4512,10 +4534,12 @@ dependencies = [
  "enum_dispatch",
  "eyre",
  "jiff",
+ "miette",
  "secrecy",
  "serde",
  "serde_json",
  "serde_with",
+ "strum 0.26.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4525,9 +4549,9 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_adapters"
-version = "0.16.7"
+version = "0.16.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0712391a503ff4598fb0d5f4a505d56fbfd475d765943248503f7ed38570496"
+checksum = "b8174e2f8bae2674ee488d1bc219857313feac0adcd402c37f1df855ba3d2768"
 dependencies = [
  "base64",
  "derive-new",
@@ -4552,9 +4576,9 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_api_generics"
-version = "0.18.7"
+version = "0.18.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24041a5acde4bd909b48e45bf1e8d2efff087d56e5745850e59b14abb50a442b"
+checksum = "440f331e6d2df2f1fec5109e89855bbfc1177384b01264e6533b40858fc6bec7"
 dependencies = [
  "bytes",
  "derive-new",
@@ -4562,6 +4586,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "jiff",
+ "miette",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4599,7 +4624,7 @@ dependencies = [
  "rand_distr",
  "serde",
  "serde_json",
- "strum",
+ "strum 0.27.2",
  "thiserror 2.0.18",
  "tokio",
  "toml",
