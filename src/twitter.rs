@@ -10,7 +10,7 @@ use tracing::{error, info};
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 
 pub fn main(config: AppConfig, _args: TwitterArgs) -> Result<()> {
-	v_utils::clientside!("twitter");
+	v_utils::clientside!(Some("twitter"));
 
 	println!("Twitter: Listening...");
 

@@ -19,7 +19,7 @@ use crate::{
 
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
-	v_utils::clientside!("telegram_channel_watch");
+	v_utils::clientside!(Some("telegram_channel_watch"));
 
 	// Increase stack size to handle deeply nested Telegram TL types
 	// Default tokio stack is 2MB, increase to 8MB to prevent stack overflow on complex updates

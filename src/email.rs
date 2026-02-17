@@ -20,7 +20,7 @@ use crate::{
 
 // Wrapper to make yup-oauth2 Authenticator compatible with google-apis-common GetToken
 pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
-	v_utils::clientside!("email");
+	v_utils::clientside!(Some("email"));
 
 	// Install default crypto provider for rustls (needed for OAuth)
 	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();

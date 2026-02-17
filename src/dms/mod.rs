@@ -1,5 +1,5 @@
 pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
-	v_utils::clientside!("dms");
+	v_utils::clientside!(Some("dms"));
 
 	println!("DMs: Starting Discord and Telegram monitors...");
 

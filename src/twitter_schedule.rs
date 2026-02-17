@@ -20,7 +20,7 @@ use crate::{
 
 type HmacSha1 = Hmac<Sha1>;
 pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
-	v_utils::clientside!("twitter_schedule");
+	v_utils::clientside!(Some("twitter_schedule"));
 
 	println!("Twitter Schedule: Starting scheduled poll posting...");
 

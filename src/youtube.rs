@@ -11,7 +11,7 @@ use tracing::{debug, error, info, instrument};
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
 
 pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
-	v_utils::clientside!("youtube");
+	v_utils::clientside!(Some("youtube"));
 
 	println!("YouTube: Listening...");
 	info!("Monitoring channels: {:?}", config.youtube.channels.keys());
