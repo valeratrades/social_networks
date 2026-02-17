@@ -1,43 +1,134 @@
 jobs:
+  load_nix:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@main
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@main
+    - name: Cache packages
+      run: '# Pre-fetch packages into nix store so they''re cached for dependent jobs
+
+        # Use nix-shell which properly sets up env vars like PKG_CONFIG_PATH
+
+        nix-shell -p mold pkg-config openssl.out openssl.dev --run "echo packages
+        cached"
+
+        '
   loc-badge:
     name: Update LOC Badge
+    needs: load_nix
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@main
+    - name: Restore Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@main
+    - name: Debug nix environment
+      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
+        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
+        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
+        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
+        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
+        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
+        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
+        \ 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
+        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
+        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
+        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
+        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
+        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
+        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
+        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
+        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
+        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
+        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
+        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
+        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
+        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
+        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
+        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
+        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
+        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
+        13. Test nix-shell environment:\"\nnix-shell -p mold pkg-config openssl.out\
+        \ openssl.dev --run 'echo \"Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"\
+        '\necho \"\"\necho \"14. Test nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell\
+        \ -p mold pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH=\"\
+        $(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
+        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
+        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
+        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
+        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
+        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
+        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
+        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
+        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
+        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
+        \ Test subprocess inheritance:\"\nnix-shell -p mold pkg-config openssl.out\
+        \ openssl.dev --command 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\"\
+        \ -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\" && bash -c \"echo subprocess\
+        \ sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho \"19. All openssl-related packages:\"\
+        \nnix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo \"query failed\"\
+        \necho \"\"\necho \"20. System libssl:\"\nldconfig -p 2>/dev/null | grep libssl\
+        \ || echo \"no system libssl\"\necho \"\"\necho \"=== END DEBUG ===\"\n"
     - name: Check for loc_gist_token secret
-      run: "if [ -z \"$\\{{ secrets.loc_gist_token }}\" ]; then\n  echo \"::error::Secret\
-        \ 'loc_gist_token' is not set for this repository.\"\n  echo \"::error::To\
-        \ fix this, run one of the following commands:\"\n  echo \"::error::  1. For\
-        \ this repo only: gh secret set loc_gist_token --repo $GITHUB_REPOSITORY --body\
-        \ YOUR_TOKEN\"\n  echo \"::error::  2. For all repos: https://github.com/valeratrades/nix/tree/e4338bf5943d7403b949a8e079f9073987d9cd68/home/scripts/shared_github_secrets.bash\"\
-        \n  exit 1\nfi\n"
+      run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
+        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
+        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
+        \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
+        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && if [\
+        \ -z \\\"\\$\\{{ secrets.loc_gist_token }}\\\" ]; then\n  echo \\\"::error::Secret\
+        \ 'loc_gist_token' is not set for this repository.\\\"\n  echo \\\"::error::To\
+        \ fix this, run one of the following commands:\\\"\n  echo \\\"::error:: \
+        \ 1. For this repo only: gh secret set loc_gist_token --repo \\$GITHUB_REPOSITORY\
+        \ --body YOUR_TOKEN\\\"\n  echo \\\"::error::  2. For all repos: https://github.com/valeratrades/nix/tree/e4338bf5943d7403b949a8e079f9073987d9cd68/home/scripts/shared_github_secrets.bash\\\
+        \"\n  exit 1\nfi\n\""
     - name: Install tokei
-      run: cargo install tokei
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && cargo install tokei"
     - id: count
       name: Count lines of code
-      run: '# Extract repository name (e.g., "valeratrades/readme-fw" -> "readme-fw")
+      run: 'nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+        LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && # Extract repository name (e.g., \"valeratrades/readme-fw\" -> \"readme-fw\")
 
-        PNAME="${GITHUB_REPOSITORY##*/}"
+        PNAME=\"\${GITHUB_REPOSITORY##*/}\"
 
-        echo "pname=$PNAME" >> $GITHUB_OUTPUT
+        echo \"pname=\$PNAME\" >> \$GITHUB_OUTPUT
 
 
-        LOC=$(tokei --output json | jq ''.Total.code'')
+        LOC=\$(tokei --output json | jq ''.Total.code'')
 
-        echo "loc=$LOC" >> $GITHUB_OUTPUT
+        echo \"loc=\$LOC\" >> \$GITHUB_OUTPUT
 
-        echo "Lines of code for $PNAME: $LOC"
+        echo \"Lines of code for \$PNAME: \$LOC\"
 
 
         # Generate JSON with project-specific filename
 
-        echo "{\"schemaVersion\": 1, \"label\": \"LoC\", \"message\": \"$LOC\", \"color\":
-        \"lightblue\"}" > ${PNAME}-loc.json
+        echo \"{\\"schemaVersion\\": 1, \\"label\\": \\"LoC\\", \\"message\\": \\"\$LOC\\",
+        \\"color\\": \\"lightblue\\"}\" > \${PNAME}-loc.json
 
-        '
+        "'
     - name: Display generated JSON
-      run: cat ${{ steps.count.outputs.pname }}-loc.json
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && cat \${{ steps.count.outputs.pname }}-loc.json"
     - name: Update gist
       uses: exuanbo/actions-deploy-gist@v1
       with:

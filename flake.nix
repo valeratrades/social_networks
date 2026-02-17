@@ -30,16 +30,15 @@
 
         github =
           let
-            jobDeps = { packages = alwaysPkgNames ++ [ "fd" "pkg-config" ]; debug = true; };
+            jobDeps = { packages = alwaysPkgNames ++ [ "pkg-config" ]; debug = true; };
           in
           v-utils.github {
             inherit pkgs pname;
             langs = [ "rs" ];
             lastSupportedVersion = "nightly-2025-10-10";
-            #jobs.errors.install = jobDeps;
-            jobs.warnings.install = jobDeps;
             jobs.default = true;
             release.default = true;
+            install = jobDeps;
           };
         rs = v-utils.rs {
           inherit pkgs rust;
