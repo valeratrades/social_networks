@@ -25,13 +25,22 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        github = v-utils.github {
-          inherit pkgs pname;
-          langs = [ "rs" ];
-          lastSupportedVersion = "nightly-2025-10-10";
-          jobs.default = true;
-          release.default = true;
-        };
+        alwaysPkgNames = [ "mold" ];
+        alwaysPkgs = map (name: pkgs.${name}) alwaysPkgNames ++ [ pkgs.openssl.dev ];
+
+        github =
+          let
+            jobDeps = { packages = alwaysPkgNames ++ [ "fd" "pkg-config" ]; debug = true; };
+          in
+          v-utils.github {
+            inherit pkgs pname;
+            langs = [ "rs" ];
+            lastSupportedVersion = "nightly-2025-10-10";
+            #jobs.errors.install = jobDeps;
+            jobs.warnings.install = jobDeps;
+            jobs.default = true;
+            release.default = true;
+          };
         rs = v-utils.rs {
           inherit pkgs rust;
           cranelift = true;
@@ -83,12 +92,14 @@
               ''
                 cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
-            packages = [
-              mold-wrapped
-              openssl
-              pkg-config
-              rust
-            ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
+            packages =
+              alwaysPkgs ++
+              [
+                mold
+                openssl
+                pkg-config
+                rust
+              ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
             env.RUST_BACKTRACE = 1;
             env.RUST_LIB_BACKTRACE = 0;
