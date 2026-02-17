@@ -6,14 +6,14 @@ use colored::Colorize;
 use crate::config::AppConfig;
 
 const SIZE_THRESHOLD_GB: f64 = 10.0;
-/// All services that can be run as systemd units
+/// All services: (subcommand, display_name)
 const SERVICES: &[(&str, &str)] = &[
-	("social_networks_dms", "DMs (Discord + Telegram)"),
-	("social_networks_email", "Email"),
-	("social_networks_telegram_channel_watch", "Telegram Channel Watch"),
-	("social_networks_twitter", "Twitter Monitor"),
-	("social_networks_twitter_schedule", "Twitter Schedule"),
-	("social_networks_youtube", "YouTube Monitor"),
+	("dms", "DMs (Discord + Telegram)"),
+	("email", "Email"),
+	("telegram-channel-watch", "Telegram Channel Watch"),
+	("twitter", "Twitter Monitor"),
+	("twitter-schedule", "Twitter Schedule"),
+	("youtube", "YouTube Monitor"),
 ];
 pub fn main(config: AppConfig) -> Result<()> {
 	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
@@ -26,12 +26,34 @@ pub fn main(config: AppConfig) -> Result<()> {
 	Ok(())
 }
 
-/// Checks if a systemd service is running
-fn is_service_running(service_name: &str) -> bool {
-	std::process::Command::new("systemctl")
-		.args(["is-active", "--quiet", service_name])
-		.status()
-		.is_ok_and(|s| s.success())
+/// Checks if a process with binary ending in `social_networks` and the given subcommand is running.
+/// Scans /proc to work regardless of how the process was launched (cargo run, installed binary, systemd).
+fn is_service_running(subcommand: &str) -> bool {
+	let Ok(entries) = std::fs::read_dir("/proc") else {
+		return false;
+	};
+	let my_pid = std::process::id().to_string();
+	for entry in entries.flatten() {
+		let pid = entry.file_name();
+		let pid_str = pid.to_string_lossy();
+		if !pid_str.chars().all(|c| c.is_ascii_digit()) || pid_str == my_pid {
+			continue;
+		}
+		let cmdline_path = entry.path().join("cmdline");
+		let Ok(cmdline) = std::fs::read(&cmdline_path) else {
+			continue;
+		};
+		let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
+		if args.len() < 2 {
+			continue;
+		}
+		let binary = String::from_utf8_lossy(args[0]);
+		let arg1 = String::from_utf8_lossy(args[1]);
+		if binary.ends_with("social_networks") && arg1 == subcommand {
+			return true;
+		}
+	}
+	false
 }
 
 /// Gets the directory size in bytes
