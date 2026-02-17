@@ -164,7 +164,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 		telegram_utils::log_stack("telegram_channel_watch loop start");
 
 		enum Event {
-			Update(Result<Update, grammers_client::InvocationError>),
+			Update(Box<Result<Update, grammers_client::InvocationError>>),
 			RunnerExited,
 		}
 
@@ -173,7 +173,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 			let runner_fut = runner.as_mut();
 
 			match select(update_fut, runner_fut).await {
-				Either::Left((result, _)) => Event::Update(result),
+				Either::Left((result, _)) => Event::Update(Box::new(result)),
 				Either::Right(((), _)) => Event::RunnerExited,
 			}
 		};
@@ -184,51 +184,53 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 			Event::RunnerExited => {
 				bail!("MTProto runner exited unexpectedly");
 			}
-			Event::Update(Err(e)) => {
-				error!("Error getting next update: {e}");
-				continue;
-			}
-			Event::Update(Ok(update)) => {
-				message_counter += 1;
-
-				match update {
-					Update::NewMessage(message) if !message.outgoing() => {
-						let peer = match message.peer() {
-							Ok(p) => p,
-							Err(e) => {
-								error!("Skipping message with unresolved peer: {e:?}");
-								continue;
-							}
-						};
-						let peer_id = peer.id();
-
-						// Check if it's from a monitored channel
-						if poll_peer_ids.contains(&peer_id) {
-							if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
-								error!("Error handling poll message: {e}");
-							}
-						} else if info_peer_ids.contains(&peer_id)
-							&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
-						{
-							error!("Error handling info message: {e}");
-						}
-					}
-					_ => {}
+			Event::Update(result) => match *result {
+				Err(e) => {
+					error!("Error getting next update: {e}");
+					continue;
 				}
+				Ok(update) => {
+					message_counter += 1;
 
-				// Status update every 4 minutes
-				let now = Timestamp::now();
-				if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
-					if !status_drop.status.is_empty() {
-						if let Err(e) = update_profile(&client, &status_drop.status).await {
-							error!("Error updating profile: {e}");
-						} else {
-							debug!("Profile status updated; message counter: {message_counter}");
+					match update {
+						Update::NewMessage(message) if !message.outgoing() => {
+							let peer = match message.peer() {
+								Ok(p) => p,
+								Err(e) => {
+									error!("Skipping message with unresolved peer: {e:?}");
+									continue;
+								}
+							};
+							let peer_id = peer.id();
+
+							// Check if it's from a monitored channel
+							if poll_peer_ids.contains(&peer_id) {
+								if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
+									error!("Error handling poll message: {e}");
+								}
+							} else if info_peer_ids.contains(&peer_id)
+								&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
+							{
+								error!("Error handling info message: {e}");
+							}
 						}
+						_ => {}
 					}
-					last_status_update = now;
+
+					// Status update every 4 minutes
+					let now = Timestamp::now();
+					if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
+						if !status_drop.status.is_empty() {
+							if let Err(e) = update_profile(&client, &status_drop.status).await {
+								error!("Error updating profile: {e}");
+							} else {
+								debug!("Profile status updated; message counter: {message_counter}");
+							}
+						}
+						last_status_update = now;
+					}
 				}
-			}
+			},
 		}
 	}
 }

@@ -66,7 +66,7 @@ impl TelegramMonitor {
 				telegram_utils::log_stack("dms telegram before select");
 
 				enum Event {
-					Update(Result<Update, grammers_client::InvocationError>),
+					Update(Box<Result<Update, grammers_client::InvocationError>>),
 					RunnerExited,
 				}
 
@@ -75,7 +75,7 @@ impl TelegramMonitor {
 					let runner_fut = runner.as_mut();
 
 					match select(update_fut, runner_fut).await {
-						Either::Left((result, _)) => Event::Update(result),
+						Either::Left((result, _)) => Event::Update(Box::new(result)),
 						Either::Right(((), _)) => Event::RunnerExited,
 					}
 				};
@@ -89,15 +89,17 @@ impl TelegramMonitor {
 						self.client = None;
 						return Ok(());
 					}
-					Event::Update(Err(e)) => {
-						error!("Error getting next update: {e}, reconnecting...");
-						self.state = State::Disconnected;
-						self.client = None;
-						return Ok(());
-					}
-					Event::Update(Ok(update)) => {
-						self.handle_update(update).await;
-					}
+					Event::Update(result) => match *result {
+						Err(e) => {
+							error!("Error getting next update: {e}, reconnecting...");
+							self.state = State::Disconnected;
+							self.client = None;
+							return Ok(());
+						}
+						Ok(update) => {
+							self.handle_update(update).await;
+						}
+					},
 				}
 				Ok(())
 			}
