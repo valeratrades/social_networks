@@ -4,6 +4,7 @@ name = "social_networks"
 version = "0.2.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+description = "my utils for social networks managing/monitoring"
 readme = "README.md"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
