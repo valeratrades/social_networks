@@ -61,6 +61,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - id: tag
+      name: Resolve release tag
+      run: "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  echo \"tag=${{\
+        \ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  TAG=$(git describe --tags\
+        \ --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo \"\")\n  if [[ -z \"$TAG\"\
+        \ ]]; then\n    echo \"::error::No version tag found\"\n    exit 1\n  fi\n\
+        \  echo \"tag=$TAG\" >> \"$GITHUB_OUTPUT\"\nfi\n"
     - uses: actions/download-artifact@v4
       with:
         merge-multiple: true
@@ -71,6 +81,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: artifacts/*
+        tag_name: ${{ steps.tag.outputs.tag }}
 name: Release
 'on':
   push:

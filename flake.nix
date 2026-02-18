@@ -30,6 +30,7 @@
           langs = [ "rs" ];
           lastSupportedVersion = "nightly-2025-10-10";
           jobs.default = true;
+          jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
           release.default = true;
         };
         rs = v-utils.rs {
