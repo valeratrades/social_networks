@@ -62,15 +62,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
     - id: tag
       name: Resolve release tag
       run: "if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then\n  echo \"tag=${{\
-        \ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  TAG=$(git describe --tags\
-        \ --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo \"\")\n  if [[ -z \"$TAG\"\
-        \ ]]; then\n    echo \"::error::No version tag found\"\n    exit 1\n  fi\n\
-        \  echo \"tag=$TAG\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+        \ github.ref_name }}\" >> \"$GITHUB_OUTPUT\"\nelse\n  VERSION=$(sed -n '/^\\\
+        [package\\]/,/^\\[/{s/^version *= *\"\\(.*\\)\"/\\1/p}' Cargo.toml | head\
+        \ -1)\n  if [[ -z \"$VERSION\" ]]; then\n    echo \"::error::No version found\
+        \ in Cargo.toml [package] section. Cannot infer release tag for workflow_dispatch.\"\
+        \n    exit 1\n  fi\n  echo \"tag=v$VERSION\" >> \"$GITHUB_OUTPUT\"\nfi\n"
     - uses: actions/download-artifact@v4
       with:
         merge-multiple: true
