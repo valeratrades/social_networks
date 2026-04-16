@@ -1,3 +1,16 @@
+mod discord;
+mod telegram;
+use std::{panic::AssertUnwindSafe, pin::Pin, time::Duration};
+
+use clap::Args;
+use color_eyre::eyre::Result;
+use futures::FutureExt;
+use futures_util::{StreamExt, stream::FuturesUnordered};
+
+use crate::config::AppConfig;
+
+#[derive(Args)]
+pub struct DmsArgs {}
 pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
 	v_utils::clientside!(Some("dms"));
 
@@ -8,19 +21,6 @@ pub fn main(config: AppConfig, _args: DmsArgs) -> Result<()> {
 	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(8 * 1024 * 1024).build()?;
 	runtime.block_on(run(config))
 }
-#[derive(Args)]
-pub struct DmsArgs {}
-mod discord;
-mod telegram;
-
-use std::{panic::AssertUnwindSafe, pin::Pin, time::Duration};
-
-use clap::Args;
-use color_eyre::eyre::Result;
-use futures::FutureExt;
-use futures_util::{StreamExt, stream::FuturesUnordered};
-
-use crate::config::AppConfig;
 
 fn reconnect_delay(attempt: u32) -> Duration {
 	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0); // cap at 10 min

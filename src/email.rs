@@ -19,6 +19,12 @@ use crate::{
 };
 
 // Wrapper to make yup-oauth2 Authenticator compatible with google-apis-common GetToken
+#[derive(Args)]
+pub struct EmailArgs {
+	/// Mark all unread emails as read without processing
+	#[arg(long)]
+	mark_all_read: bool,
+}
 pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 	v_utils::clientside!(Some("email"));
 
@@ -37,7 +43,7 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 	runtime.block_on(async {
 		db.migrate().await.context("Failed to run database migrations")?;
 
-		let monitor = EmailMonitor::new(email_config.clone(), notifier.clone(), db.clone())?;
+		let monitor = EmailMonitor::try_new(email_config.clone(), notifier.clone(), db.clone())?;
 
 		if args.mark_all_read {
 			return monitor.mark_all_as_read().await;
@@ -61,12 +67,6 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 		}
 	})
 }
-#[derive(Args)]
-pub struct EmailArgs {
-	/// Mark all unread emails as read without processing
-	#[arg(long)]
-	mark_all_read: bool,
-}
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
@@ -75,7 +75,7 @@ pub struct EmailMonitor {
 	ignore_regexes: Vec<Regex>,
 }
 impl EmailMonitor {
-	pub fn new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
+	pub fn try_new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let ignore_regexes = config
 			.ignore_patterns
 			.iter()

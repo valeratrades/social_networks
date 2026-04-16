@@ -39,7 +39,9 @@ hyper-rustls = "^0.27"
 hyper-util = { version = "^0.1.20", features = ["client", "client-legacy", "http1"] }
 imap = "3.0.0-alpha.15"
 jiff = { version = "0.2.23", features = ["serde"] }
+miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter", "serde"] }
 oauth1-request = "^0.6"
+psm = "0.1.30"
 quick-xml = "0.39.2"
 rand = "^0.10"
 regex = "^1.12.3"
@@ -54,14 +56,10 @@ tokio-tungstenite = { version = "^0", features = ["native-tls"] }
 tracing = "^0"
 tracing-appender = "^0"
 tracing-subscriber = "^0"
-xdg = { version = "3.0.0", features = ["serde"] }
-yup-oauth2 = "12"
-
-# my crates {{{
-miette = { version = "7.6.0", features = ["fancy", "syntect-highlighter", "serde"] }
-psm = "0.1.30"
 v_exchanges = { version = "0.17.1", default-features = false, features = ["binance"] }
 v_utils = { version = "^2.15.37", features = ["xdg", "cli", "tracing"] } #ga: rm path
+xdg = { version = "3.0.0", features = ["serde"] }
+yup-oauth2 = "12"
 #,}}}
 
 [dev-dependencies]

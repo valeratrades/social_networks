@@ -17,6 +17,8 @@ use crate::{
 	telegram_utils::{self, ConnectionConfig, TelegramConnection},
 };
 
+#[derive(Args)]
+pub struct TelegramArgs {}
 pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 	println!("Starting Telegram Channel Watch...");
 	v_utils::clientside!(Some("telegram_channel_watch"));
@@ -59,8 +61,6 @@ pub fn main(config: AppConfig, _args: TelegramArgs) -> Result<()> {
 		}
 	})
 }
-#[derive(Args)]
-pub struct TelegramArgs {}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct StatusDrop {

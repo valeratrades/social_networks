@@ -9,6 +9,8 @@ use tracing::{error, info};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
 
+#[derive(Args)]
+pub struct TwitterArgs {}
 pub fn main(config: AppConfig, _args: TwitterArgs) -> Result<()> {
 	v_utils::clientside!(Some("twitter"));
 
@@ -26,8 +28,6 @@ pub fn main(config: AppConfig, _args: TwitterArgs) -> Result<()> {
 	})
 }
 
-#[derive(Args)]
-pub struct TwitterArgs {}
 async fn run_twitter_monitor(config: &AppConfig) -> Result<()> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(config.telegram.clone());

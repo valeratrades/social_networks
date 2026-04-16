@@ -19,6 +19,12 @@ use crate::{
 };
 
 type HmacSha1 = Hmac<Sha1>;
+#[derive(Args)]
+pub struct TwitterScheduleArgs {
+	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
+	#[arg(long)]
+	pub skip_first: bool,
+}
 pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 	v_utils::clientside!(Some("twitter_schedule"));
 
@@ -26,12 +32,6 @@ pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
 
 	let runtime = tokio::runtime::Runtime::new()?;
 	runtime.block_on(async { schedule_sentiment_poll(&config, args.skip_first).await })
-}
-#[derive(Args)]
-pub struct TwitterScheduleArgs {
-	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
-	#[arg(long)]
-	pub skip_first: bool,
 }
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals

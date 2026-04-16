@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 pub mod config;
 pub mod db;
 pub mod dms;

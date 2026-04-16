@@ -10,6 +10,8 @@ use tracing::{debug, error, info, instrument};
 
 use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
 
+#[derive(Args)]
+pub struct YoutubeArgs {}
 pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 	v_utils::clientside!(Some("youtube"));
 
@@ -27,8 +29,6 @@ pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
 		}
 	})
 }
-#[derive(Args)]
-pub struct YoutubeArgs {}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct LastUploadedTitles {
