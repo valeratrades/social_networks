@@ -4,7 +4,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v-utils.url = "github:valeratrades/.github?ref=v1.4";
+    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem (
@@ -25,14 +25,6 @@
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        github = v-utils.github {
-          inherit pkgs pname;
-          langs = [ "rs" ];
-          lastSupportedVersion = "nightly-2025-10-10";
-          jobs.default = true;
-          jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
-          release.default = true;
-        };
         rs = v-utils.rs {
           inherit pkgs rust;
           cranelift = true;
@@ -40,6 +32,14 @@
             enable = true;
             workspace."./" = [ "git_version" "log_directives" ];
           };
+        };
+        github = v-utils.github {
+          inherit pkgs pname rs;
+          enable = true;
+          lastSupportedVersion = "nightly-2025-10-10";
+          jobs.default = true;
+          jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
+          release.default = true;
         };
         readme = v-utils.readme-fw {
           inherit pkgs pname;

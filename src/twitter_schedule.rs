@@ -5,9 +5,9 @@ use std::{
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use jiff::{Timestamp, fmt::strtime};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use tokio::time;

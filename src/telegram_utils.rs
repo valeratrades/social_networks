@@ -5,7 +5,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
-use grammers_client::{Client, SignInError, UpdatesConfiguration};
+use grammers_client::{Client, SignInError, client::UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use tracing::{debug, error, info};
@@ -17,7 +17,7 @@ pub type RunnerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// Result of establishing a Telegram connection.
 pub struct TelegramConnection {
 	pub client: Client,
-	pub updates: grammers_client::client::updates::UpdateStream,
+	pub updates: grammers_client::client::UpdateStream,
 	pub runner: RunnerFuture,
 }
 
@@ -46,7 +46,7 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 	info!("Using session file: {}", session_file.display());
 
 	info!("Opening session database");
-	let session = match SqliteSession::open(&session_file) {
+	let session = match SqliteSession::open(&session_file).await {
 		Ok(s) => Arc::new(s),
 		Err(e) => {
 			let err_str = e.to_string();
@@ -54,7 +54,7 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 				error!("Session database is corrupted: {e}");
 				info!("Deleting corrupted session file and creating a new one");
 				std::fs::remove_file(&session_file)?;
-				Arc::new(SqliteSession::open(&session_file)?)
+				Arc::new(SqliteSession::open(&session_file).await?)
 			} else {
 				return Err(e.into());
 			}
@@ -63,8 +63,8 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 
 	info!("Connecting to Telegram with api_id: {}", config.api_id);
 	let pool = SenderPool::new(Arc::clone(&session), config.api_id);
-	let client = Client::new(&pool);
-	let SenderPool { runner, updates, .. } = pool;
+	let SenderPool { runner, handle, updates } = pool;
+	let client = Client::new(handle);
 	let runner: RunnerFuture = Box::pin(runner.run());
 	info!("Connected to Telegram");
 
@@ -83,13 +83,15 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 	}
 	info!("Cached {dialog_count} dialogs");
 
-	let updates = client.stream_updates(
-		updates,
-		UpdatesConfiguration {
-			catch_up: false,
-			..Default::default()
-		},
-	);
+	let updates = client
+		.stream_updates(
+			updates,
+			UpdatesConfiguration {
+				catch_up: false,
+				..Default::default()
+			},
+		)
+		.await;
 
 	Ok(TelegramConnection { client, updates, runner })
 }

@@ -6,8 +6,8 @@ use futures::{
 	FutureExt,
 	future::{Either, select},
 };
-use grammers_client::{Client, Update};
-use grammers_session::defs::PeerRef;
+use grammers_client::{Client, update::Update};
+use grammers_session::types::PeerRef;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
@@ -139,7 +139,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	let watch_chat = match client.resolve_username(output_username).await? {
 		Some(peer) => {
 			info!("Output channel resolved: {}", peer.id().bot_api_dialog_id());
-			PeerRef::from(peer)
+			match peer.to_ref().await {
+				Some(r) => r,
+				None => bail!("Output channel peer has no access hash: {output_username}"),
+			}
 		}
 		None => {
 			error!("Could not resolve output channel: {output_username}");
@@ -195,9 +198,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 					match update {
 						Update::NewMessage(message) if !message.outgoing() => {
 							let peer = match message.peer() {
-								Ok(p) => p,
-								Err(e) => {
-									error!("Skipping message with unresolved peer: {e:?}");
+								Some(p) => p,
+								None => {
+									error!("Skipping message with unresolved peer");
 									continue;
 								}
 							};
@@ -235,24 +238,25 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<()> {
 	}
 }
 
-async fn handle_poll_message(client: &Client, message: &grammers_client::types::Message, watch_chat: PeerRef) -> Result<()> {
+async fn handle_poll_message(client: &Client, message: &grammers_client::update::Message, watch_chat: PeerRef) -> Result<()> {
 	// Check if message contains a poll or media
 	if message.media().is_some() {
 		// Forward poll messages to watch channel
-		let source = match message.peer() {
-			Ok(p) => p,
-			Err(e) => {
-				error!("Cannot forward poll message - unresolved peer: {e:?}");
+		let source_ref = match message.peer_ref().await {
+			Some(r) => r,
+			None => {
+				error!("Cannot forward poll message - unresolved peer");
 				return Ok(());
 			}
 		};
-		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source.clone())).await?;
-		info!("Forwarded poll/media message from {}", source.name().unwrap_or("unknown"));
+		let source_name = message.peer().and_then(|p| p.name()).unwrap_or("unknown").to_string();
+		client.forward_messages(watch_chat, &[message.id()], source_ref).await?;
+		info!("Forwarded poll/media message from {source_name}");
 	}
 	Ok(())
 }
 
-async fn handle_info_message(client: &Client, message: &grammers_client::types::Message, watch_chat: PeerRef) -> Result<()> {
+async fn handle_info_message(client: &Client, message: &grammers_client::update::Message, watch_chat: PeerRef) -> Result<()> {
 	let key_words = [
 		"самые торгуемые акции",
 		"отслеживание настроений",
@@ -272,15 +276,16 @@ async fn handle_info_message(client: &Client, message: &grammers_client::types::
 	let text_lower = text.to_lowercase();
 	if key_words.iter().any(|word| text_lower.contains(word)) {
 		// Forward message to watch channel
-		let source = match message.peer() {
-			Ok(p) => p,
-			Err(e) => {
-				error!("Cannot forward info message - unresolved peer: {e:?}");
+		let source_ref = match message.peer_ref().await {
+			Some(r) => r,
+			None => {
+				error!("Cannot forward info message - unresolved peer");
 				return Ok(());
 			}
 		};
-		client.forward_messages(watch_chat, &[message.id()], PeerRef::from(source.clone())).await?;
-		info!("Forwarded info message from {}", source.name().unwrap_or("unknown"));
+		let source_name = message.peer().and_then(|p| p.name()).unwrap_or("unknown").to_string();
+		client.forward_messages(watch_chat, &[message.id()], source_ref).await?;
+		info!("Forwarded info message from {source_name}");
 	}
 	Ok(())
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
-use grammers_client::{Client, Update};
+use grammers_client::{Client, update::Update};
 use jiff::Timestamp;
 use tokio::time::{self, Duration};
 use tracing::{error, info};
@@ -13,7 +13,7 @@ use crate::{
 	telegram_utils::{self, ConnectionConfig, RunnerFuture, TelegramConnection},
 };
 
-type UpdateStream = grammers_client::client::updates::UpdateStream;
+type UpdateStream = grammers_client::client::UpdateStream;
 pub struct TelegramMonitor {
 	config: AppConfig,
 	state: State,
@@ -91,7 +91,7 @@ impl TelegramMonitor {
 					}
 					Event::Update(result) => match *result {
 						Err(e) => {
-							error!("Error getting next update: {e}, reconnecting...");
+							error!("Error getting next update: {e:#}, reconnecting...");
 							self.state = State::Disconnected;
 							self.client = None;
 							return Ok(());
@@ -110,15 +110,15 @@ impl TelegramMonitor {
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
 				let peer = match message.peer() {
-					Ok(p) => p,
-					Err(e) => {
-						error!("Skipping message with unresolved peer: {e:?}");
+					Some(p) => p,
+					None => {
+						error!("Skipping message with unresolved peer: ");
 						return;
 					}
 				};
 
 				// Only process DMs (user peers)
-				if !matches!(peer, grammers_client::types::Peer::User(_)) {
+				if !matches!(peer, grammers_client::peer::Peer::User(_)) {
 					return;
 				}
 

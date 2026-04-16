@@ -604,7 +604,7 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
-		let response = match ask_llm::Client::new().model(ask_llm::Model::Fast).ask(&prompt).await {
+		let response = match ask_llm::Client::default().model(ask_llm::Model::Fast).ask(&prompt).await {
 			Ok(r) => r,
 			Err(e) => {
 				error!("LLM call failed for email from {}: {e:#}", message.from);

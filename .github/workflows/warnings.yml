@@ -67,11 +67,18 @@ jobs:
     - uses: actions/checkout@v4
       with:
         path: my_gh_stuff
-        repository: valeratrades/.github
+        repository: valeratrades/v_flakes
         sparse-checkout: github/workflows
         sparse-checkout-cone-mode: false
     - name: Setup nightly Rust
       uses: dtolnay/rust-toolchain@nightly
+    - name: Install mold linker
+      run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && sudo apt-get install -y mold"
     - name: Install qlty
       uses: qltysh/qlty-action/install@main
     - name: Initialize qlty

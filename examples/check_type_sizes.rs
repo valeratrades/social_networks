@@ -2,7 +2,7 @@ use std::mem::size_of;
 
 fn main() {
 	println!("Type sizes in bytes:");
-	println!("  grammers_client::Update: {}", size_of::<grammers_client::Update>());
+	println!("  grammers_client::Update: {}", size_of::<grammers_client::update::Update>());
 	println!("  grammers_tl_types::enums::Update: {}", size_of::<grammers_tl_types::enums::Update>());
 	println!("  grammers_tl_types::enums::Message: {}", size_of::<grammers_tl_types::enums::Message>());
 	println!("  grammers_tl_types::types::Message: {}", size_of::<grammers_tl_types::types::Message>());
