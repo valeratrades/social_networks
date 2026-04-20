@@ -55,9 +55,8 @@ fn main() {
 		Commands::Email(args) => email::main(config, args),
 		Commands::Health => health::main(config),
 		Commands::MigrateDb => {
-			let db = db::Database::new(&config.clickhouse);
 			let runtime = tokio::runtime::Runtime::new().unwrap();
-			runtime.block_on(async { db.migrate().await })
+			runtime.block_on(async { db::Database::try_new().await.map(|_| ()) })
 		}
 		Commands::TelegramChannelWatch(args) => telegram_channel_watch::main(config, args),
 		Commands::Twitter(args) => twitter::main(config, args),

@@ -127,9 +127,9 @@ fn check_env_vars(config: &AppConfig) {
 	let email_ok = config.email.is_some();
 	println!("  {} Email config", status_icon(email_ok));
 
-	// Check ClickHouse
-	let clickhouse_ok = !config.clickhouse.url.is_empty();
-	println!("  {} ClickHouse URL", status_icon(clickhouse_ok));
+	// Check SQLite db
+	let db_ok = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("db.sqlite3").is_some();
+	println!("  {} SQLite database", status_icon(db_ok));
 
 	// Check CLAUDE_TOKEN for email processing
 	let claude_token_ok = config.email.as_ref().is_some_and(|e| e.claude_token.is_some()) || std::env::var("CLAUDE_TOKEN").is_ok();

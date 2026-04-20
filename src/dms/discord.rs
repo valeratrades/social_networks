@@ -146,7 +146,7 @@ impl DiscordMonitor {
 		Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
 		u64,
 	)> {
-		let url = "wss://gateway.discord.gg/?v=6&encoding=json";
+		let url = "wss://gateway.discord.gg/?v=10&encoding=json";
 		let (ws_stream, _) = connect_async(url).await.context("Failed to connect to Discord WebSocket")?;
 
 		let (write, mut read) = ws_stream.split();

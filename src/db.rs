@@ -1,193 +1,61 @@
-use clickhouse::{Client, Row};
-use color_eyre::eyre::Result;
-use serde::Deserialize;
+use color_eyre::eyre::{Result, WrapErr};
+use libsql::Connection;
 use tracing::info;
 
-use crate::config::ClickHouseConfig;
-
-const MIGRATIONS: &[&str] = &[
-	// Migration 0: Create processed_emails table with message_id as primary key
-	r#"
-CREATE TABLE IF NOT EXISTS social_networks.processed_emails (
-    message_id String,
-    processed_at DateTime DEFAULT now(),
-    from_email String,
-    subject String,
-    is_human UInt8
-) ENGINE = MergeTree()
-ORDER BY message_id
-PRIMARY KEY message_id
-"#,
-];
+#[derive(Clone)]
 pub struct Database {
-	client: Client,
-	url: String,
+	conn: Connection,
 }
+
 impl Database {
-	pub fn new(config: &ClickHouseConfig) -> Self {
-		tracing::debug!(
-			"ClickHouse config: url='{}', database='{}', user='{}', password='{}'",
-			config.url,
-			config.database,
-			config.user,
-			if config.password.is_empty() { "<empty>" } else { "<set>" }
-		);
+	pub async fn try_new() -> Result<Self> {
+		let app_name = env!("CARGO_PKG_NAME");
+		let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
+		let db_path = xdg_dirs.place_state_file("db.sqlite3")?;
+		info!("Opening SQLite database at {}", db_path.display());
 
-		let client = Client::default()
-			.with_url(&config.url)
-			.with_database(&config.database)
-			.with_user(&config.user)
-			.with_password(&config.password);
+		let db = libsql::Builder::new_local(&db_path).build().await.wrap_err("failed to open SQLite database")?;
+		let conn = db.connect().wrap_err("failed to get connection")?;
 
-		Self { client, url: config.url.clone() }
+		conn.execute(
+			"CREATE TABLE IF NOT EXISTS processed_emails (
+                message_id   TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                from_email   TEXT NOT NULL,
+                subject      TEXT NOT NULL,
+                is_human     INTEGER NOT NULL
+            )",
+			(),
+		)
+		.await
+		.wrap_err("failed to create processed_emails table")?;
+
+		Ok(Self { conn })
 	}
 
-	/// Run all pending migrations
-	pub async fn migrate(&self) -> Result<()> {
-		info!("Running database migrations...");
-
-		// First ensure the database exists
-		self.ensure_database_exists().await?;
-
-		// Ensure migrations table exists
-		self.ensure_migrations_table_exists().await?;
-
-		// Get current migration version
-		let current_version = self.get_migration_version().await?;
-		info!("Current migration version: {current_version}");
-		info!("Total migrations available: {}", MIGRATIONS.len());
-
-		// Apply pending migrations
-		let mut applied = 0;
-		for (idx, migration) in MIGRATIONS.iter().enumerate() {
-			let version = idx as i32;
-			if version > current_version {
-				info!("Applying migration {version}");
-				self.client.query(migration).execute().await?;
-				self.record_migration(version as u32).await?;
-				applied += 1;
-			}
-		}
-
-		if applied > 0 {
-			info!("Applied {applied} migration(s)");
-		} else {
-			info!("No new migrations to apply");
-		}
-		info!("Migrations complete");
-		Ok(())
-	}
-
-	async fn ensure_database_exists(&self) -> Result<()> {
-		// Use a client without database set to create the database
-		let client = self.client.clone().with_database("");
-		let query = "CREATE DATABASE IF NOT EXISTS social_networks";
-
-		client.query(query).execute().await.map_err(|e| {
-			color_eyre::eyre::eyre!(
-				"Failed to connect to ClickHouse server.\n\
-				\n\
-				Possible issues:\n\
-				  1. ClickHouse server is not running\n\
-				  2. Wrong URL configured (currently: {})\n\
-				  3. Network/firewall blocking connection\n\
-				\n\
-				To fix:\n\
-				  - Start ClickHouse: sudo systemctl start clickhouse-server\n\
-				  - Check status: sudo systemctl status clickhouse-server\n\
-				  - Verify URL in config file under [clickhouse] section\n\
-				\n\
-				Original error: {e:#}",
-				self.url
-			)
-		})?;
-		Ok(())
-	}
-
-	async fn ensure_migrations_table_exists(&self) -> Result<()> {
-		let query = r#"
-CREATE TABLE IF NOT EXISTS social_networks.migrations (
-    version UInt32,
-    applied_at DateTime DEFAULT now()
-) ENGINE = MergeTree()
-ORDER BY version
-PRIMARY KEY version
-"#;
-		self.client.query(query).execute().await?;
-		Ok(())
-	}
-
-	async fn get_migration_version(&self) -> Result<i32> {
-		// Check if there are any migrations recorded
-		let count_query = "SELECT count() as count FROM social_networks.migrations";
-		let count: u64 = match self.client.query(count_query).fetch_one::<CountRow>().await {
-			Ok(row) => row.count,
-			Err(_) => 0, // Table might not exist yet or no rows
-		};
-
-		if count == 0 {
-			return Ok(-1);
-		}
-
-		// Get the latest migration version
-		let version_query = "SELECT max(version) as max_version FROM social_networks.migrations";
-		let row = self.client.query(version_query).fetch_one::<MaxVersionRow>().await?;
-
-		Ok(row.max_version as i32)
-	}
-
-	async fn record_migration(&self, version: u32) -> Result<()> {
-		let query = format!("INSERT INTO social_networks.migrations (version) VALUES ({version})");
-		self.client.query(&query).execute().await?;
-		Ok(())
-	}
-
-	/// Check if an email message has been processed
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
-		let row = self
-			.client
-			.query("SELECT count() as count FROM social_networks.processed_emails WHERE message_id = ?")
-			.bind(message_id)
-			.fetch_one::<CountRow>()
-			.await?;
-		Ok(row.count > 0)
+		let mut rows = self
+			.conn
+			.query("SELECT 1 FROM processed_emails WHERE message_id = ?1 LIMIT 1", [message_id])
+			.await
+			.wrap_err("failed to query is_email_processed")?;
+		Ok(rows.next().await.wrap_err("failed to read row")?.is_some())
 	}
 
-	/// Mark an email as processed
 	pub async fn mark_email_processed(&self, message_id: &str, from_email: &str, subject: &str, is_human: bool) -> Result<()> {
-		self.client
-			.query("INSERT INTO social_networks.processed_emails (message_id, from_email, subject, is_human) VALUES (?, ?, ?, ?)")
-			.bind(message_id)
-			.bind(from_email)
-			.bind(subject)
-			.bind(if is_human { 1u8 } else { 0u8 })
-			.execute()
-			.await?;
+		self.conn
+			.execute(
+				"INSERT OR IGNORE INTO processed_emails (message_id, from_email, subject, is_human) VALUES (?1, ?2, ?3, ?4)",
+				libsql::params![message_id, from_email, subject, is_human as i64],
+			)
+			.await
+			.wrap_err("failed to execute mark_email_processed")?;
 		Ok(())
 	}
-}
-
-#[derive(Deserialize, Row)]
-struct CountRow {
-	count: u64,
-}
-
-#[derive(Deserialize, Row)]
-struct MaxVersionRow {
-	max_version: u32,
 }
 
 impl std::fmt::Debug for Database {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("Database").finish()
-	}
-}
-
-impl Clone for Database {
-	fn clone(&self) -> Self {
-		Self {
-			client: self.client.clone(),
-			url: self.url.clone(),
-		}
 	}
 }

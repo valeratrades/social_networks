@@ -33,7 +33,6 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 
 	let email_config = config.email.context("Email config not found in config file")?;
 	let notifier = TelegramNotifier::new(config.telegram.clone());
-	let db = Database::new(&config.clickhouse);
 
 	let runtime = tokio::runtime::Runtime::new()?;
 
@@ -41,8 +40,7 @@ pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
 	info!("Monitoring email: {}", email_config.email);
 
 	runtime.block_on(async {
-		db.migrate().await.context("Failed to run database migrations")?;
-
+		let db = Database::try_new().await.context("Failed to open database")?;
 		let monitor = EmailMonitor::try_new(email_config.clone(), notifier.clone(), db.clone())?;
 
 		if args.mark_all_read {
@@ -474,8 +472,7 @@ impl EmailMonitor {
 		let rt = tokio::runtime::Handle::current();
 
 		// Check if already processed
-		let is_processed = rt.block_on(async { self.db.is_email_processed(&email.id).await })?;
-		if is_processed {
+		if rt.block_on(async { self.db.is_email_processed(&email.id).await })? {
 			debug!("Message {} already processed, skipping", email.id);
 			return Ok(());
 		}

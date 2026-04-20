@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use v_exchanges::ExchangeName;
+use v_exchanges::{ExchangeName, RetryConfig};
 
 /// Returns (stack_used, stack_remaining) in bytes
 pub fn stack_usage() -> (usize, usize) {
@@ -56,7 +56,10 @@ pub fn log_stack_critical(context: &str, stack_used: usize) {
 
 pub(crate) async fn btc_price(n_retries: u8) -> Result<u64> {
 	let mut binance_exchange = ExchangeName::Binance.init_client();
-	binance_exchange.set_max_tries(n_retries);
+	binance_exchange.set_retry_config(RetryConfig {
+		max_retries: n_retries as u32,
+		..Default::default()
+	});
 
 	let price = binance_exchange.price("BTC-USDT.P".into()).await?;
 	Ok(price as u64)
