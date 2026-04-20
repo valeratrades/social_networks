@@ -31,6 +31,7 @@
       "original": {
         "owner": "numtide",
         "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
         "type": "github"
       }
     },
@@ -84,8 +85,8 @@
       },
       "original": {
         "owner": "NixOS",
-        "ref": "nixos-unstable",
         "repo": "nixpkgs",
+        "rev": "f61125a668a320878494449750330ca58b78c557",
         "type": "github"
       }
     },
@@ -198,6 +199,7 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "rev": "7ed7e8c74be95906275805db68201e74e9904f07",
         "type": "github"
       }
     },
