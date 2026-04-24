@@ -2,7 +2,7 @@
 //!
 //! Provides structured concurrency patterns for grammers client usage.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
 use grammers_client::{Client, SignInError, client::UpdatesConfiguration};
@@ -110,7 +110,7 @@ pub fn should_reconnect_for_stack() -> bool {
 pub fn log_stack(context: &str) {
 	crate::utils::log_stack_usage(context);
 }
-async fn authenticate(client: &Client, phone: &str, api_hash: &str, session_file: &std::path::Path) -> Result<()> {
+async fn authenticate(client: &Client, phone: &str, api_hash: &str, session_file: &Path) -> Result<()> {
 	info!("Not authorized, requesting login code for {phone}");
 	let token = client.request_login_code(phone, api_hash).await?;
 	info!("Login code requested successfully, check your Telegram app");

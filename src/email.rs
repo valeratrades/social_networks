@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, pin::Pin};
+use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 use clap::Args;
 use color_eyre::eyre::{Context, ContextCompat, Result};
@@ -274,7 +274,7 @@ impl EmailMonitor {
 			.build();
 
 		let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(https);
-		let auth_wrapper = AuthWrapper(std::sync::Arc::new(auth));
+		let auth_wrapper = AuthWrapper(Arc::new(auth));
 
 		Ok(Gmail::new(client, auth_wrapper))
 	}
@@ -623,7 +623,7 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 }
 
 #[derive(Clone)]
-struct AuthWrapper(std::sync::Arc<yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>>);
+struct AuthWrapper(Arc<yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>>);
 
 impl google_gmail1::common::GetToken for AuthWrapper {
 	fn get_token<'a>(&'a self, _scopes: &'a [&str]) -> Pin<Box<dyn Future<Output = Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {

@@ -91,8 +91,11 @@
               rust
             ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
-            env.RUST_BACKTRACE = 1;
-            env.RUST_LIB_BACKTRACE = 0;
+            env = {
+              RUST_BACKTRACE = 1;
+              RUST_LIB_BACKTRACE = 0;
+              CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG = true;
+            };
           };
       }
     );
