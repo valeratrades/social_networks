@@ -4,9 +4,9 @@
     rust-overlay.url = "github:oxalica/rust-overlay/7ed7e8c74be95906275805db68201e74e9904f07";
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
+    v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v_flakes }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -20,12 +20,12 @@
           extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
         });
         #rust = pkgs.rust-bin.nightly."2025-10-10".default;
-        pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
+        pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-        rs = v-utils.rs {
+        rs = v_flakes.rs {
           inherit pkgs rust;
           cranelift = true;
           build = {
@@ -33,7 +33,7 @@
             workspace."./" = [ "git_version" "log_directives" ];
           };
         };
-        github = v-utils.github {
+        github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
           lastSupportedVersion = "nightly-2025-10-10";
@@ -41,14 +41,14 @@
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
           release.default = true;
         };
-        readme = v-utils.readme-fw {
+        readme = v_flakes.readme-fw {
           inherit pkgs pname;
           lastSupportedVersion = "nightly-1.92";
           rootDir = ./.;
-          licenses = [{ license = v-utils.files.licenses.nsfw; }];
+          licenses = [{ license = v_flakes.files.licenses.nsfw; }];
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
-        combined = v-utils.utils.combine [ rs github readme ];
+        combined = v_flakes.utils.combine [ rs github readme ];
       in
       {
         packages =
@@ -82,7 +82,7 @@
               pre-commit-check.shellHook +
               combined.shellHook +
               ''
-                cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
+                cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
             packages = [
               mold-wrapped
