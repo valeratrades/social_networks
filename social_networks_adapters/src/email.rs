@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{convert::Infallible, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use clap::Args;
 use color_eyre::eyre::{Context, ContextCompat, Result};
@@ -7,64 +7,26 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use imap::{ImapConnection, Session};
 use regex::Regex;
+use social_networks_utils::{
+	config::{AppConfig, EmailAuth, EmailConfig, OAuthAuth},
+	db::Database,
+	telegram_notifier::TelegramNotifier,
+};
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
 use v_utils::{elog, log};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
-use crate::{
-	config::{AppConfig, EmailAuth, EmailConfig, OAuthAuth},
-	db::Database,
-	telegram_notifier::TelegramNotifier,
-};
+use crate::client::{AdapterError, Client as AdapterClient};
 
-// Wrapper to make yup-oauth2 Authenticator compatible with google-apis-common GetToken
+const SURFACE: &str = "email";
 #[derive(Args)]
 pub struct EmailArgs {
 	/// Mark all unread emails as read without processing
 	#[arg(long)]
-	mark_all_read: bool,
+	pub mark_all_read: bool,
 }
-pub fn main(config: AppConfig, args: EmailArgs) -> Result<()> {
-	v_utils::clientside!(Some("email"));
 
-	// Install default crypto provider for rustls (needed for OAuth)
-	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
-	let email_config = config.email.context("Email config not found in config file")?;
-	let notifier = TelegramNotifier::new(config.telegram.clone());
-
-	let runtime = tokio::runtime::Runtime::new()?;
-
-	println!("Email: Listening...");
-	info!("Monitoring email: {}", email_config.email);
-
-	runtime.block_on(async {
-		let db = Database::try_new().await.context("Failed to open database")?;
-		let monitor = EmailMonitor::try_new(email_config.clone(), notifier.clone(), db.clone())?;
-
-		if args.mark_all_read {
-			return monitor.mark_all_as_read().await;
-		}
-
-		//LOOP: daemon - runs until process termination
-		let mut was_error = false;
-		loop {
-			if let Err(e) = monitor.run().await {
-				error!("Email monitor error: {e}");
-				error!("Retrying in 5 minutes...");
-				time::sleep(Duration::from_secs(5 * 60)).await;
-				was_error = true;
-			} else {
-				if was_error {
-					info!("Email monitor reconnected successfully");
-					was_error = false;
-				}
-				time::sleep(Duration::from_secs(60)).await;
-			}
-		}
-	})
-}
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
@@ -72,6 +34,7 @@ pub struct EmailMonitor {
 	db: Database,
 	ignore_regexes: Vec<Regex>,
 }
+
 impl EmailMonitor {
 	pub fn try_new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let ignore_regexes = config
@@ -86,6 +49,18 @@ impl EmailMonitor {
 			db,
 			ignore_regexes,
 		})
+	}
+
+	/// Try to construct from `AppConfig`. Returns `None` if email config is missing.
+	pub async fn try_from_app_config(config: AppConfig) -> Result<Option<Self>> {
+		let Some(email_config) = config.email.clone() else {
+			return Ok(None);
+		};
+		// Install default crypto provider for rustls (needed for OAuth)
+		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+		let notifier = TelegramNotifier::new(config.telegram.clone());
+		let db = Database::try_new().await.context("Failed to open database")?;
+		Ok(Some(Self::try_new(email_config, notifier, db)?))
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -312,13 +287,12 @@ impl EmailMonitor {
 			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {e:#?}"))?;
 
 			if let Some(msg_list) = result.1.messages {
-				let messages: Vec<_> = stream::iter(msg_list.iter())
-					.map(|msg| async {
-						if let Some(ref id) = msg.id {
-							hub.users().messages_get(&self.config.email, id).format("full").doit().await.ok()
-						} else {
-							None
-						}
+				let ids: Vec<String> = msg_list.into_iter().filter_map(|m| m.id).collect();
+				let email = self.config.email.clone();
+				let messages: Vec<_> = stream::iter(ids)
+					.map(|id| {
+						let email = email.clone();
+						async move { hub.users().messages_get(&email, &id).format("full").doit().await.ok() }
 					})
 					.buffer_unordered(50)
 					.collect()
@@ -515,7 +489,6 @@ impl EmailMonitor {
 	fn matches_important_pattern(&self, email: &EmailMessage) -> bool {
 		let patterns = &self.config.important_if_contains;
 
-		// Check patterns that match against any field
 		for pattern in &patterns.any {
 			if email.subject.contains(pattern) || email.body_preview.contains(pattern) || email.from.contains(pattern) {
 				debug!("Email matches important pattern '{pattern}' (any field)");
@@ -523,7 +496,6 @@ impl EmailMonitor {
 			}
 		}
 
-		// Check subject-specific patterns
 		for pattern in &patterns.subject {
 			if email.subject.contains(pattern) {
 				debug!("Email matches important pattern '{pattern}' (subject)");
@@ -531,7 +503,6 @@ impl EmailMonitor {
 			}
 		}
 
-		// Check body-specific patterns
 		for pattern in &patterns.body {
 			if email.body_preview.contains(pattern) {
 				debug!("Email matches important pattern '{pattern}' (body)");
@@ -539,7 +510,6 @@ impl EmailMonitor {
 			}
 		}
 
-		// Check address-specific patterns
 		for pattern in &patterns.address {
 			if email.from.contains(pattern) {
 				debug!("Email matches important pattern '{pattern}' (address)");
@@ -620,6 +590,55 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 
 		Ok(is_human)
 	}
+}
+
+impl AdapterClient for EmailMonitor {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		println!("Email: Listening...");
+		info!("Monitoring email: {}", self.config.email);
+
+		let mut was_error = false;
+		loop {
+			match self.run().await {
+				Ok(()) => {
+					if was_error {
+						info!("Email monitor reconnected successfully");
+						was_error = false;
+					}
+					time::sleep(Duration::from_secs(60)).await;
+				}
+				Err(e) => {
+					if let Some(detail) = classify_email_auth_error(&e) {
+						return Err(AdapterError::Auth { surface: SURFACE, detail });
+					}
+					error!("Email monitor error: {e:#}");
+					error!("Retrying in 5 minutes...");
+					time::sleep(Duration::from_secs(5 * 60)).await;
+					was_error = true;
+				}
+			}
+		}
+	}
+}
+
+/// Look at the error chain (string-matched) to decide whether this is an auth-class error.
+/// Returns `Some(detail)` for auth errors so the caller can promote to `AdapterError::Auth`.
+fn classify_email_auth_error(e: &color_eyre::eyre::Report) -> Option<String> {
+	let s = format!("{e:#}");
+	let lc = s.to_lowercase();
+	let is_auth = lc.contains("imap login failed")
+		|| lc.contains("authenticationfailed")
+		|| lc.contains("invalid_grant")
+		|| lc.contains("invalid_credentials")
+		|| lc.contains("token expired")
+		|| lc.contains("unauthorized")
+		|| lc.contains(" 401")
+		|| lc.contains(" 403");
+	if is_auth { Some(s) } else { None }
 }
 
 #[derive(Clone)]

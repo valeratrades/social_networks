@@ -830,15 +830,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1327,12 +1318,6 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
 ]
-
-[[package]]
-name = "fmt-cmp"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51f58afb8e10a573cb30dc65381cc266892c84215b17f6d29af59e11d70f383f"
 
 [[package]]
 name = "fnv"
@@ -3044,43 +3029,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oauth-credentials"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d6f9dee4cc95bd06fe0c1225a2b5680e0611627e1643ce78eb76daddd8dbccc"
-
-[[package]]
-name = "oauth1-request"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498447ee9c67221e1a558d5d49f63594c6ccaa2cdd437abec55c92e8c61887bc"
-dependencies = [
- "base64 0.22.1",
- "cfg-if",
- "digest 0.10.7",
- "fmt-cmp",
- "hmac 0.12.1",
- "oauth-credentials",
- "oauth1-request-derive",
- "percent-encoding",
- "rand 0.8.6",
- "sha1 0.10.6",
-]
-
-[[package]]
-name = "oauth1-request-derive"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dfe4c99deecc1a12b90d134256879897827028925bce89cea2f51469599dd91"
-dependencies = [
- "proc-macro-crate",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "objc2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3618,38 +3566,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn",
-]
-
-[[package]]
-name = "proc-macro-crate"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
-dependencies = [
- "toml_edit",
-]
-
-[[package]]
-name = "proc-macro-error"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
-dependencies = [
- "proc-macro2",
- "quote",
- "version_check",
 ]
 
 [[package]]
@@ -4565,31 +4481,39 @@ dependencies = [
 name = "social_networks"
 version = "0.3.5"
 dependencies = [
+ "clap",
+ "color-eyre",
+ "colored",
+ "miette",
+ "social_networks_adapters",
+ "social_networks_utils",
+ "tokio",
+ "tracing",
+ "v_utils",
+ "xdg",
+]
+
+[[package]]
+name = "social_networks_adapters"
+version = "0.3.5"
+dependencies = [
  "ask_llm",
  "base64 0.22.1",
  "clap",
  "color-eyre",
- "colored",
- "config",
- "derive-new",
  "futures",
  "futures-util",
  "google-gmail1",
  "grammers-client 0.9.0",
- "grammers-mtsender 0.9.0",
  "grammers-session 0.9.0",
  "grammers-tl-types 0.9.0",
  "hmac 0.13.0",
- "hyper 1.9.0",
  "hyper-rustls 0.27.9",
  "hyper-util",
  "imap",
  "insta",
  "jiff",
- "libsql",
  "miette",
- "oauth1-request",
- "psm",
  "quick-xml 0.39.3",
  "rand 0.10.1",
  "regex",
@@ -4598,16 +4522,35 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.11.0",
+ "social_networks_utils",
  "tg",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
+ "trait-variant",
+ "v_utils",
+ "yup-oauth2",
+]
+
+[[package]]
+name = "social_networks_utils"
+version = "0.3.5"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "grammers-client 0.9.0",
+ "grammers-mtsender 0.9.0",
+ "grammers-session 0.9.0",
+ "libsql",
+ "psm",
+ "reqwest",
+ "serde",
+ "tg",
+ "tracing",
  "v_exchanges",
  "v_utils",
  "xdg",
- "yup-oauth2",
 ]
 
 [[package]]
@@ -4723,12 +4666,6 @@ name = "supports-unicode"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
-
-[[package]]
-name = "symlink"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
 name = "syn"
@@ -5149,18 +5086,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml_edit"
-version = "0.25.11+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
-dependencies = [
- "indexmap 2.14.0",
- "toml_datetime 1.1.1+spec-1.1.0",
- "toml_parser",
- "winnow 1.0.2",
-]
-
-[[package]]
 name = "toml_parser"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5320,19 +5245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-appender"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
-dependencies = [
- "crossbeam-channel",
- "symlink",
- "thiserror 2.0.18",
- "time",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5403,6 +5315,17 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "trait-variant"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70977707304198400eb4835a78f6a9f928bf41bba420deb8fdb175cd965d77a7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

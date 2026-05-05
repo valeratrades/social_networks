@@ -54,7 +54,7 @@ pub fn log_stack_critical(context: &str, stack_used: usize) {
 	);
 }
 
-pub(crate) async fn btc_price(n_retries: u8) -> Result<u64> {
+pub async fn btc_price(n_retries: u8) -> Result<u64> {
 	let mut binance_exchange = ExchangeName::Binance.init_client();
 	binance_exchange.set_retry_config(RetryConfig {
 		max_retries: n_retries as u32,
@@ -65,7 +65,7 @@ pub(crate) async fn btc_price(n_retries: u8) -> Result<u64> {
 	Ok(price as u64)
 }
 
-pub(crate) fn format_num_with_thousands(num: u64, sep: &'static str) -> String {
+pub fn format_num_with_thousands(num: u64, sep: &'static str) -> String {
 	num.to_string()
 		.as_bytes()
 		.rchunks(3)

@@ -21,7 +21,7 @@
         });
         #rust = pkgs.rust-bin.nightly."2025-10-10".default;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
-        manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+        manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
@@ -30,7 +30,9 @@
           cranelift = true;
           build = {
             enable = true;
-            workspace."./" = [ "git_version" "log_directives" ];
+            workspace."./social_networks" = [ "git_version" "log_directives" ];
+            workspace."./social_networks_adapters" = [ ];
+            workspace."./social_networks_utils" = [ ];
           };
         };
         github = v_flakes.github {

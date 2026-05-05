@@ -1,23 +1,22 @@
 cargo-features = ["codegen-backend"]
-[package]
-name = "social_networks"
-version = "0.3.5"
-edition = "2024"
-authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
-description = "my utils for social networks managing/monitoring"
-readme = "README.md"
-license = "BlueOak-1.0.0"
-repository = "https://github.com/valeratrades/social_networks"
 
-[package.metadata.docs.rs]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+[workspace]
+members = ["social_networks", "social_networks_*"]
+resolver = "3"
 
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
+[workspace.lints.clippy]
+# Stable
+float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
+len_zero = "allow" # `.empty()` is O(1) but on &str only
+undocumented_unsafe_blocks = "warn"
+tabs_in_doc_comments = "allow"
 
-[dependencies]
+# Questionable
+# const fns, so actually more performant
+get_first = "allow"
+get_last_with_len = "allow"
+
+[workspace.dependencies]
 ask_llm = "=2.2.2"
 base64 = "=0.22.1"
 clap = { version = "=4.6.1", features = ["derive"] }
@@ -51,29 +50,19 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 sha1 = "=0.11.0"
 tg = "=0.9.5"
+thiserror = "=2.0.18"
 tokio = { version = "=1.52.1", features = ["full"] }
 tokio-tungstenite = { version = "=0.29.0", features = ["native-tls"] }
 tracing = "=0.1.44"
 tracing-appender = "=0.2.5"
 tracing-subscriber = "=0.3.23"
+trait-variant = "=0.1.2"
 v_exchanges = { version = "=0.18.0", default-features = false, features = ["binance"] }
-v_utils = { version = "=2.15.41", features = ["xdg", "cli", "tracing"] } #ga: rm path
+v_utils = { version = "=2.15.41", features = ["xdg", "cli", "tracing"] }
 xdg = { version = "=3.0.0", features = ["serde"] }
 yup-oauth2 = "=12.1.2"
-#,}}}
 
-[dev-dependencies]
+social_networks_adapters = { path = "social_networks_adapters" }
+social_networks_utils = { path = "social_networks_utils" }
+
 insta = "=1.47.2"
-
-[lints.clippy]
-# Stable
-float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
-len_zero = "allow" # `.empty()` is O(1) but on &str only
-undocumented_unsafe_blocks = "warn"
-tabs_in_doc_comments = "allow"
-
-# Questionable
-# const fns, so actually more performant
-get_first = "allow"
-get_last_with_len = "allow"
-#,}}}

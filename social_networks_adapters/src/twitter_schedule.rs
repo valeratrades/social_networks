@@ -1,5 +1,6 @@
 use std::{
 	collections::{BTreeMap, HashMap},
+	convert::Infallible,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,36 +11,71 @@ use jiff::{Timestamp, fmt::strtime};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
-use tokio::time;
-use tracing::{error, info, instrument};
-
-use crate::{
+use social_networks_utils::{
 	config::{AppConfig, TwitterPollConfig},
 	utils::{btc_price, format_num_with_thousands},
 };
+use tokio::time;
+use tracing::{error, info, instrument};
 
+use crate::client::{AdapterError, Client as AdapterClient};
+
+const SURFACE: &str = "twitter_schedule";
 type HmacSha1 = Hmac<Sha1>;
+
 #[derive(Args)]
 pub struct TwitterScheduleArgs {
 	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
 	#[arg(long)]
 	pub skip_first: bool,
 }
-pub fn main(config: AppConfig, args: TwitterScheduleArgs) -> Result<()> {
-	v_utils::clientside!(Some("twitter_schedule"));
 
-	println!("Twitter Schedule: Starting scheduled poll posting...");
+pub struct TwitterSchedule {
+	config: AppConfig,
+	skip_first: bool,
+}
 
-	let runtime = tokio::runtime::Runtime::new()?;
-	runtime.block_on(async { schedule_sentiment_poll(&config, args.skip_first).await })
+impl TwitterSchedule {
+	pub fn new(config: AppConfig, skip_first: bool) -> Self {
+		Self { config, skip_first }
+	}
+}
+
+impl AdapterClient for TwitterSchedule {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		println!("Twitter Schedule: Starting scheduled poll posting...");
+		match schedule_sentiment_poll(&self.config, self.skip_first).await {
+			Err(ScheduleError::Auth(detail)) => Err(AdapterError::Auth { surface: SURFACE, detail }),
+			Err(ScheduleError::Unhandled(detail)) => Err(AdapterError::Unhandled { surface: SURFACE, detail }),
+		}
+	}
+}
+
+enum ScheduleError {
+	Auth(String),
+	Unhandled(String),
+}
+
+impl<E: Into<color_eyre::eyre::Report>> From<E> for ScheduleError {
+	fn from(e: E) -> Self {
+		ScheduleError::Unhandled(format!("{:#}", e.into()))
+	}
 }
 
 /// Runs a scheduling loop that posts sentiment polls at regular intervals
 #[instrument(skip(config))]
-async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result<()> {
+async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result<Infallible, ScheduleError> {
 	println!("Twitter Schedule: Scheduler initialized");
 
-	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
+	let poll_config = config
+		.twitter
+		.poll
+		.as_ref()
+		.ok_or_else(|| ScheduleError::Unhandled("twitter.poll config not found".to_string()))?;
 
 	// Get the schedule interval
 	let schedule_duration = poll_config.schedule_every.duration();
@@ -77,8 +113,9 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 					success = true;
 					break;
 				}
-				Err(e) => {
-					error!("post_failed attempt={attempt}/{} error={e:?}", poll_config.num_of_retries);
+				Err(ScheduleError::Auth(detail)) => return Err(ScheduleError::Auth(detail)),
+				Err(ScheduleError::Unhandled(e)) => {
+					error!("post_failed attempt={attempt}/{} error={e}", poll_config.num_of_retries);
 					if attempt == poll_config.num_of_retries {
 						println!("✗ Failed to post poll: {e}");
 					}
@@ -101,9 +138,17 @@ async fn schedule_sentiment_poll(config: &AppConfig, skip_first: bool) -> Result
 }
 
 #[instrument(skip(config))]
-async fn post_poll(config: &AppConfig) -> Result<()> {
-	let oauth = config.twitter.oauth.as_ref().ok_or_else(|| eyre!("twitter.oauth config not found"))?;
-	let poll_config = config.twitter.poll.as_ref().ok_or_else(|| eyre!("twitter.poll config not found"))?;
+async fn post_poll(config: &AppConfig) -> Result<(), ScheduleError> {
+	let oauth = config
+		.twitter
+		.oauth
+		.as_ref()
+		.ok_or_else(|| ScheduleError::Unhandled("twitter.oauth config not found".to_string()))?;
+	let poll_config = config
+		.twitter
+		.poll
+		.as_ref()
+		.ok_or_else(|| ScheduleError::Unhandled("twitter.poll config not found".to_string()))?;
 
 	info!("account={}", oauth.acc_username);
 	println!("Posting poll from account: {}", oauth.acc_username);
@@ -129,7 +174,7 @@ async fn post_poll(config: &AppConfig) -> Result<()> {
 }
 
 #[instrument(skip_all)]
-async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, access_token_secret: &str, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse> {
+async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, access_token_secret: &str, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse, ScheduleError> {
 	let url = "https://api.twitter.com/2/tweets";
 	let method = "POST";
 
@@ -187,7 +232,11 @@ async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, acc
 	let response_text = response.text().await.context("Failed to read response body")?;
 
 	if !status.is_success() {
-		bail!("Twitter API error (status {status}): {response_text}");
+		let detail = format!("Twitter API error (status {status}): {response_text}");
+		if matches!(status.as_u16(), 401 | 403) {
+			return Err(ScheduleError::Auth(detail));
+		}
+		return Err(ScheduleError::Unhandled(detail));
 	}
 
 	let tweet_response: CreateTweetResponse = serde_json::from_str(&response_text).context("Failed to parse tweet response")?;

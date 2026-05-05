@@ -1,37 +1,45 @@
-use std::{collections::HashMap, pin::pin, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
-use color_eyre::eyre::{Context, Result};
+use clap::Args;
+use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use social_networks_utils::{config::AppConfig, telegram_notifier::TelegramNotifier};
 use tokio::{
 	sync::Mutex,
-	time::{self, Duration, Interval},
+	time::{self, Duration},
 };
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
-use tracing::{error, info};
+use tokio_tungstenite::{
+	MaybeTlsStream, WebSocketStream, connect_async,
+	tungstenite::{Message, protocol::frame::coding::CloseCode},
+};
+use tracing::{error, info, warn};
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier};
+use crate::client::{AdapterError, Client};
 
-pub struct DiscordMonitor {
+const SURFACE: &str = "discord_dms";
+#[derive(Args)]
+pub struct DmsArgs {}
+
+pub struct DiscordDms {
 	config: AppConfig,
-	state: State,
 	telegram: TelegramNotifier,
 	last_message_times: HashMap<String, Timestamp>,
 	monitored_users: Vec<String>,
 	message_counter: u64,
 	my_user_id: Option<String>,
 }
-impl DiscordMonitor {
+
+impl DiscordDms {
 	pub fn new(config: AppConfig) -> Self {
 		let telegram = TelegramNotifier::new(config.telegram.clone());
 		let monitored_users = config.dms.monitored_users_for_discord();
 
 		Self {
 			config,
-			state: State::Disconnected,
 			telegram,
 			last_message_times: HashMap::new(),
 			monitored_users,
@@ -40,101 +48,99 @@ impl DiscordMonitor {
 		}
 	}
 
-	pub async fn collect(&mut self) -> Result<()> {
-		match &mut self.state {
-			State::Disconnected => {
-				// Try to connect
-				match self.connect().await {
-					Ok((read, write, heartbeat_secs)) => {
-						info!("--Discord DM Commands-- connected to WebSocket");
-						println!("Discord DM Commands: Connected");
-						self.state = State::Connected {
-							read,
-							write,
-							heartbeat_interval: time::interval(Duration::from_secs(heartbeat_secs)),
-						};
-					}
-					Err(e) => {
-						error!("Discord connection error: {e}");
-						error!("Retrying in 5 minutes...");
-						time::sleep(Duration::from_secs(5 * 60)).await;
-					}
-				}
-				Ok(())
+	/// Run one connection lifetime: connect, then loop until the WS dies.
+	/// Returns `Ok(())` if the caller should reconnect, `Err(AdapterError::Auth)` if
+	/// retrying cannot help (datacenter banned, token revoked, etc.).
+	async fn run_session(&mut self) -> Result<(), AdapterError> {
+		let (mut read, write, heartbeat_secs) = match self.connect().await {
+			Ok(c) => c,
+			Err(e) => {
+				error!("Discord connection error: {e:#}");
+				return Ok(());
 			}
-			State::Connected { read, write, heartbeat_interval } => {
-				enum Event {
-					Heartbeat,
-					Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
+		};
+		info!("--Discord DM Commands-- connected to WebSocket");
+		println!("Discord DM Commands: Connected");
+
+		let mut heartbeat_interval = time::interval(Duration::from_secs(heartbeat_secs));
+
+		loop {
+			enum Event {
+				Heartbeat,
+				Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
+			}
+
+			let event = {
+				let heartbeat_fut = std::pin::pin!(heartbeat_interval.tick());
+				let msg_fut = std::pin::pin!(read.next());
+
+				match select(heartbeat_fut, msg_fut).await {
+					Either::Left((_tick, _)) => Event::Heartbeat,
+					Either::Right((msg, _)) => Event::Message(msg),
 				}
+			};
 
-				let event = {
-					let heartbeat_fut = pin!(heartbeat_interval.tick());
-					let msg_fut = pin!(read.next());
-
-					match select(heartbeat_fut, msg_fut).await {
-						Either::Left((_tick, _)) => Event::Heartbeat,
-						Either::Right((msg, _)) => Event::Message(msg),
+			match event {
+				Event::Heartbeat => {
+					let heartbeat = DiscordMessage {
+						op: 1,
+						d: Some(json!(null)),
+						s: None,
+						t: None,
+					};
+					let msg = match serde_json::to_string(&heartbeat) {
+						Ok(m) => m,
+						Err(e) =>
+							return Err(AdapterError::Unhandled {
+								surface: SURFACE,
+								detail: format!("heartbeat serialization: {e}"),
+							}),
+					};
+					if write.lock().await.send(Message::Text(msg.into())).await.is_err() {
+						error!("Failed to send Discord heartbeat, reconnecting...");
+						return Ok(());
 					}
-				};
+				}
+				Event::Message(Some(Ok(Message::Text(text)))) =>
+					if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
+						self.message_counter += 1;
 
-				match event {
-					Event::Heartbeat => {
-						let heartbeat = DiscordMessage {
-							op: 1,
-							d: Some(json!(null)),
-							s: None,
-							t: None,
-						};
-						let msg = serde_json::to_string(&heartbeat)?;
-						if write.lock().await.send(Message::Text(msg.into())).await.is_err() {
-							error!("Failed to send heartbeat, reconnecting...");
-							self.state = State::Disconnected;
-						}
-					}
-					Event::Message(Some(Ok(Message::Text(text)))) => {
-						if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
-							self.message_counter += 1;
-
-							match event.op {
-								11 => {
-									// Heartbeat ACK
-									let now_zoned = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
-									let now = strtime::format("%m/%d/%y-%H", &now_zoned).unwrap();
-									info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {} messages", self.message_counter);
-									self.message_counter = 0;
-								}
-								0 => {
-									// Dispatch event
-									if let Some(d) = &event.d {
-										let event_type = event.t.as_deref();
-										let result = match event_type {
-											Some("READY") => self.handle_ready(d),
-											Some("CALL_CREATE") => self.handle_call_create(d).await,
-											_ => self.handle_message(d).await,
-										};
-										if let Err(e) = result {
-											error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
-										}
-									}
-								}
-								_ => {}
+						match event.op {
+							11 => {
+								let now_zoned = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+								let now = strtime::format("%m/%d/%y-%H", &now_zoned).unwrap();
+								info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {} messages", self.message_counter);
+								self.message_counter = 0;
 							}
+							0 =>
+								if let Some(d) = &event.d {
+									let event_type = event.t.as_deref();
+									let result = match event_type {
+										Some("READY") => self.handle_ready(d),
+										Some("CALL_CREATE") => self.handle_call_create(d).await,
+										_ => self.handle_message(d).await,
+									};
+									if let Err(e) = result {
+										error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
+									}
+								},
+							_ => {}
 						}
-					}
-					Event::Message(Some(Ok(_))) => {
-						// Non-text message, ignore
-					}
-					Event::Message(Some(Err(e))) => {
-						error!("WebSocket error: {e}, reconnecting...");
-						self.state = State::Disconnected;
-					}
-					Event::Message(None) => {
-						error!("WebSocket closed, reconnecting...");
-						self.state = State::Disconnected;
-					}
+					},
+				Event::Message(Some(Ok(Message::Close(frame)))) => {
+					return classify_close(frame);
 				}
-				Ok(())
+				Event::Message(Some(Ok(_))) => {
+					// Non-text non-close message (Ping/Pong/Binary), ignore
+				}
+				Event::Message(Some(Err(e))) => {
+					error!("Discord WebSocket error: {e}, reconnecting...");
+					return Ok(());
+				}
+				Event::Message(None) => {
+					error!("Discord WebSocket closed (no frame), reconnecting...");
+					return Ok(());
+				}
 			}
 		}
 	}
@@ -147,12 +153,11 @@ impl DiscordMonitor {
 		u64,
 	)> {
 		let url = "wss://gateway.discord.gg/?v=10&encoding=json";
-		let (ws_stream, _) = connect_async(url).await.context("Failed to connect to Discord WebSocket")?;
+		let (ws_stream, _) = connect_async(url).await?;
 
 		let (write, mut read) = ws_stream.split();
 		let write = Arc::new(Mutex::new(write));
 
-		// Receive the initial hello message
 		let hello_msg = read.next().await.ok_or_else(|| color_eyre::eyre::eyre!("No hello message"))??;
 		let hello: DiscordMessage = serde_json::from_str(&hello_msg.to_string())?;
 
@@ -165,7 +170,6 @@ impl DiscordMonitor {
 
 		let heartbeat_secs = heartbeat_interval / 1000;
 
-		// Send identify payload
 		let identify = DiscordMessage {
 			op: 2,
 			d: Some(json!({
@@ -224,7 +228,6 @@ impl DiscordMonitor {
 			let is_monitored_user = self.monitored_users.contains(&author.to_string());
 			let is_my_message = author == self.config.dms.discord.my_username;
 
-			// Determine if we should notify for /ping
 			if has_ping && !is_my_message {
 				let mut should_notify_ping = false;
 
@@ -278,6 +281,56 @@ impl DiscordMonitor {
 	}
 }
 
+impl Client for DiscordDms {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		let mut attempt: u32 = 0;
+		loop {
+			match self.run_session().await {
+				Ok(()) => {
+					let delay = reconnect_delay(attempt);
+					warn!("Discord reconnecting in {:.1}s (attempt {attempt})", delay.as_secs_f64());
+					time::sleep(delay).await;
+					attempt = attempt.saturating_add(1);
+				}
+				Err(e) => return Err(e),
+			}
+		}
+	}
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0);
+	Duration::from_secs_f64(delay_secs)
+}
+
+/// Map a Discord WS close frame to either a recoverable reconnect (`Ok(())`) or a fatal
+/// auth-class error. Codes 4004/4010-4014 are documented as fatal in the Discord
+/// gateway docs (invalid token, invalid intent, datacenter blocked, etc.).
+fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame::CloseFrame>) -> Result<(), AdapterError> {
+	let Some(frame) = frame else {
+		error!("Discord WS closed with no frame, reconnecting...");
+		return Ok(());
+	};
+	let code: u16 = match frame.code {
+		CloseCode::Library(n) => n,
+		other => u16::from(other),
+	};
+	match code {
+		4004 | 4010 | 4011 | 4012 | 4013 | 4014 => Err(AdapterError::Auth {
+			surface: SURFACE,
+			detail: format!("Discord WS close code {code}: {}", frame.reason),
+		}),
+		_ => {
+			error!("Discord WS closed with code {code}: {}, reconnecting...", frame.reason);
+			Ok(())
+		}
+	}
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct DiscordMessage {
 	op: u8,
@@ -286,13 +339,4 @@ struct DiscordMessage {
 	s: Option<u64>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	t: Option<String>,
-}
-
-enum State {
-	Disconnected,
-	Connected {
-		read: SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>,
-		write: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
-		heartbeat_interval: Interval,
-	},
 }
