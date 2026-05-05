@@ -4,7 +4,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay/7ed7e8c74be95906275805db68201e74e9904f07";
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v_flakes.url = "github:valeratrades/v_flakes/257142a54b071bb8a8b2e031d69e70f416518a5f";
+    v_flakes.url = "github:valeratrades/v_flakes/75323c0575c75f9b040671626e50f7ba15a65091";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v_flakes }:
     flake-utils.lib.eachDefaultSystem (
@@ -41,7 +41,10 @@
           lastSupportedVersion = "nightly-2025-10-10";
           jobs.default = true;
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
-          release.default = true;
+          release = {
+            default = true;
+            cargoTomlPath = "./social_networks/Cargo.toml";
+          };
         };
         readme = v_flakes.readme-fw {
           inherit pkgs pname;
