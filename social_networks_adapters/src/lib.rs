@@ -4,6 +4,7 @@ pub mod discord;
 pub mod email;
 pub mod telegram_channel_watch;
 pub mod telegram_dms;
+pub mod telegram_notifier;
 pub mod twitter;
 pub mod twitter_schedule;
 pub mod youtube;

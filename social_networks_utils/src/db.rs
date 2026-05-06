@@ -9,8 +9,7 @@ pub struct Database {
 
 impl Database {
 	pub async fn try_new() -> Result<Self> {
-		let app_name = env!("CARGO_PKG_NAME");
-		let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);
+		let xdg_dirs = xdg::BaseDirectories::with_prefix("social_networks");
 		let db_path = xdg_dirs.place_state_file("db.sqlite3")?;
 		info!("Opening SQLite database at {}", db_path.display());
 

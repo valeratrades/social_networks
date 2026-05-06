@@ -1,15 +1,14 @@
+mod config;
 mod health;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{ContextCompat, Result};
+use color_eyre::eyre::Result;
+use config::{AppConfig, LiveSettings, SettingsFlags};
 use social_networks_adapters::{
 	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, discord::DmsArgs, email::EmailArgs,
 	telegram_channel_watch::TelegramArgs, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
-use social_networks_utils::{
-	config::{AppConfig, LiveSettings, SettingsFlags},
-	db::Database,
-};
+use social_networks_utils::db::Database;
 use v_utils::utils::exit_on_error;
 
 #[derive(Parser)]
@@ -54,8 +53,8 @@ fn main() {
 		}
 		Commands::Dms(_) => run_async(|| async {
 			v_utils::clientside!(Some("dms"));
-			let mut discord = DiscordDms::new(config.clone());
-			let mut telegram = TelegramDms::new(config);
+			let mut discord = DiscordDms::new(config.dms.clone(), config.telegram.clone());
+			let mut telegram = TelegramDms::new(config.telegram, config.dms);
 			let err = tokio::select! {
 				e = discord.listen() => e.unwrap_err(),
 				e = telegram.listen() => e.unwrap_err(),
@@ -65,11 +64,12 @@ fn main() {
 		}),
 		Commands::Email(args) => run_async(|| async {
 			v_utils::clientside!(Some("email"));
-			let mut monitor = EmailMonitor::try_from_app_config(config)
-				.await
-				.map_err(adapter_from_eyre)?
-				.context("Email config not found in config file")
+			let email_config = config
+				.email
+				.clone()
+				.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
 				.map_err(adapter_from_eyre)?;
+			let mut monitor = EmailMonitor::try_from_configs(email_config, config.telegram).await.map_err(adapter_from_eyre)?;
 			if args.mark_all_read {
 				return monitor.mark_all_as_read().await.map_err(adapter_from_eyre);
 			}
@@ -79,28 +79,28 @@ fn main() {
 		}),
 		Commands::TelegramChannelWatch(_) => run_async(|| async {
 			v_utils::clientside!(Some("telegram_channel_watch"));
-			let mut adapter = TelegramChannelWatch::new(config);
+			let mut adapter = TelegramChannelWatch::new(config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::Twitter(_) => run_async(|| async {
 			v_utils::clientside!(Some("twitter"));
-			let mut adapter = TwitterMonitor::new(config);
+			let mut adapter = TwitterMonitor::new(config.twitter, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::TwitterSchedule(args) => run_async(|| async {
 			v_utils::clientside!(Some("twitter_schedule"));
-			let mut adapter = TwitterSchedule::new(config, args.skip_first);
+			let mut adapter = TwitterSchedule::new(config.twitter, args.skip_first);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::Youtube(_) => run_async(|| async {
 			v_utils::clientside!(Some("youtube"));
-			let mut adapter = YoutubeMonitor::new(config);
+			let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)

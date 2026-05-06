@@ -7,17 +7,18 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use imap::{ImapConnection, Session};
 use regex::Regex;
-use social_networks_utils::{
-	config::{AppConfig, EmailAuth, EmailConfig, OAuthAuth},
-	db::Database,
-	telegram_notifier::TelegramNotifier,
-};
+use serde::Deserialize;
+use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
-use v_utils::{elog, log};
+use v_utils::{elog, log, macros::MyConfigPrimitives};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
-use crate::client::{AdapterError, Client as AdapterClient};
+use crate::{
+	client::{AdapterError, Client as AdapterClient},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
+};
 
 const SURFACE: &str = "email";
 #[derive(Args)]
@@ -25,6 +26,66 @@ pub struct EmailArgs {
 	/// Mark all unread emails as read without processing
 	#[arg(long)]
 	pub mark_all_read: bool,
+}
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct EmailConfig {
+	/// Gmail email address to monitor
+	pub email: String,
+	/// Authentication method (IMAP or OAuth)
+	#[primitives(skip)]
+	pub auth: EmailAuth,
+	/// Regex patterns to match against sender email to ignore (skip processing entirely)
+	#[serde(default)]
+	#[primitives(skip)]
+	pub ignore_patterns: Vec<String>,
+	/// Patterns that mark an email as alert-worthy without LLM evaluation
+	#[serde(default)]
+	#[primitives(skip)]
+	pub important_if_contains: ImportantIfContains,
+	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
+	#[serde(default)]
+	pub claude_token: Option<String>,
+}
+
+/// Patterns to check for marking email as alert-worthy.
+/// If any pattern matches, the email is forwarded without LLM check.
+/// Top-level `any` matches against all fields (subject, body, address).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ImportantIfContains {
+	/// Patterns to match against any field (subject, body, address)
+	#[serde(default)]
+	pub any: Vec<String>,
+	/// Patterns to match against subject/title only
+	#[serde(default)]
+	pub subject: Vec<String>,
+	/// Patterns to match against body only
+	#[serde(default)]
+	pub body: Vec<String>,
+	/// Patterns to match against sender address only
+	#[serde(default)]
+	pub address: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailAuth {
+	Imap(ImapAuth),
+	Oauth(OAuthAuth),
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct ImapAuth {
+	pub pass: String,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct OAuthAuth {
+	pub client_id: String,
+	pub client_secret: String,
+	/// Path to store auth tokens (default: ~/.local/state/social_networks/gmail_tokens.json)
+	#[serde(default = "__default_email_token_path")]
+	#[primitives(skip)]
+	pub token_path: String,
 }
 
 #[derive(Clone)]
@@ -34,7 +95,6 @@ pub struct EmailMonitor {
 	db: Database,
 	ignore_regexes: Vec<Regex>,
 }
-
 impl EmailMonitor {
 	pub fn try_new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let ignore_regexes = config
@@ -51,16 +111,12 @@ impl EmailMonitor {
 		})
 	}
 
-	/// Try to construct from `AppConfig`. Returns `None` if email config is missing.
-	pub async fn try_from_app_config(config: AppConfig) -> Result<Option<Self>> {
-		let Some(email_config) = config.email.clone() else {
-			return Ok(None);
-		};
+	pub async fn try_from_configs(email_config: EmailConfig, telegram_config: TelegramConfig) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-		let notifier = TelegramNotifier::new(config.telegram.clone());
+		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Ok(Some(Self::try_new(email_config, notifier, db)?))
+		Self::try_new(email_config, notifier, db)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -590,6 +646,11 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 
 		Ok(is_human)
 	}
+}
+
+fn __default_email_token_path() -> String {
+	let xdg_dirs = xdg::BaseDirectories::with_prefix("social_networks");
+	xdg_dirs.place_state_file("gmail_tokens.json").unwrap().display().to_string()
 }
 
 impl AdapterClient for EmailMonitor {

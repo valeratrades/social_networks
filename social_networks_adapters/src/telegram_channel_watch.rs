@@ -7,16 +7,13 @@ use grammers_client::{Client, update::Update};
 use grammers_session::types::PeerRef;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
-use social_networks_utils::{
-	config::{AppConfig, TelegramDestination},
-	telegram_utils::{self, ConnectionConfig, TelegramConnection},
-};
+use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info};
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
-	telegram_dms::{classify_invocation_auth, classify_telegram_auth_error},
+	telegram_dms::{TelegramConfig, TelegramDestination, classify_invocation_auth, classify_telegram_auth_error},
 };
 
 const SURFACE: &str = "telegram_channel_watch";
@@ -24,12 +21,12 @@ const SURFACE: &str = "telegram_channel_watch";
 pub struct TelegramArgs {}
 
 pub struct TelegramChannelWatch {
-	config: AppConfig,
+	telegram_config: TelegramConfig,
 }
 
 impl TelegramChannelWatch {
-	pub fn new(config: AppConfig) -> Self {
-		Self { config }
+	pub fn new(telegram_config: TelegramConfig) -> Self {
+		Self { telegram_config }
 	}
 }
 
@@ -42,7 +39,7 @@ impl AdapterClient for TelegramChannelWatch {
 		println!("Starting Telegram Channel Watch...");
 		let mut attempt: u32 = 0;
 		loop {
-			match run_telegram_monitor(&self.config).await {
+			match run_telegram_monitor(&self.telegram_config).await {
 				Err(ChannelWatchError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
 				Err(ChannelWatchError::Recoverable(e)) => {
 					let delay = reconnect_delay(attempt);
@@ -76,8 +73,10 @@ fn reconnect_delay(attempt: u32) -> Duration {
 	Duration::from_secs_f64(delay_secs)
 }
 
-async fn run_telegram_monitor(config: &AppConfig) -> Result<Infallible, ChannelWatchError> {
-	let status_file = v_utils::xdg_state_file!("telegram_status.json");
+async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infallible, ChannelWatchError> {
+	let status_file = xdg::BaseDirectories::with_prefix("social_networks")
+		.place_state_file("telegram_status.json")
+		.map_err(color_eyre::eyre::Report::from)?;
 	let status_drop: StatusDrop = if status_file.exists() {
 		let content = std::fs::read_to_string(&status_file).map_err(color_eyre::eyre::Report::from)?;
 		let status: StatusDrop = serde_json::from_str(&content).map_err(color_eyre::eyre::Report::from)?;
@@ -89,10 +88,10 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<Infallible, ChannelW
 	};
 
 	let TelegramConnection { client, mut updates, mut runner } = telegram_utils::connect(ConnectionConfig {
-		username: &config.telegram.username,
-		phone: &config.telegram.phone,
-		api_id: config.telegram.api_id,
-		api_hash: &config.telegram.api_hash,
+		username: &telegram_config.username,
+		phone: &telegram_config.phone,
+		api_id: telegram_config.api_id,
+		api_hash: &telegram_config.api_hash,
 		session_suffix: "",
 	})
 	.await
@@ -107,9 +106,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<Infallible, ChannelW
 	println!("Telegram started");
 	info!("--Telegram-- connected and authorized");
 
-	info!("Resolving {} poll channels", config.telegram.poll_channels.len());
+	info!("Resolving {} poll channels", telegram_config.poll_channels.len());
 	let mut poll_peer_ids = Vec::new();
-	for channel in &config.telegram.poll_channels {
+	for channel in &telegram_config.poll_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				poll_peer_ids.push(peer.id());
@@ -121,9 +120,9 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<Infallible, ChannelW
 		}
 	}
 
-	info!("Resolving {} info channels", config.telegram.info_channels.len());
+	info!("Resolving {} info channels", telegram_config.info_channels.len());
 	let mut info_peer_ids = Vec::new();
-	for channel in &config.telegram.info_channels {
+	for channel in &telegram_config.info_channels {
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				info_peer_ids.push(peer.id());
@@ -135,7 +134,7 @@ async fn run_telegram_monitor(config: &AppConfig) -> Result<Infallible, ChannelW
 		}
 	}
 
-	let output_username = match &config.telegram.channel_output {
+	let output_username = match &telegram_config.channel_output {
 		TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
 		_ => {
 			return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!(

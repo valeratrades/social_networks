@@ -42,6 +42,7 @@ tokio-tungstenite.workspace = true
 tracing.workspace = true
 trait-variant.workspace = true
 v_utils.workspace = true
+xdg.workspace = true
 yup-oauth2.workspace = true
 
 [dev-dependencies]

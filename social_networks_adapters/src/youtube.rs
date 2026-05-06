@@ -5,23 +5,35 @@ use color_eyre::eyre::{Context, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
-use social_networks_utils::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
+use social_networks_utils::utils::btc_price;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
+use v_utils::macros::MyConfigPrimitives;
 
-use crate::client::{AdapterError, Client};
+use crate::{
+	client::{AdapterError, Client},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
+};
 
 const SURFACE: &str = "youtube";
 #[derive(Args)]
 pub struct YoutubeArgs {}
 
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct YoutubeConfig {
+	#[primitives(skip)]
+	pub channels: HashMap<String, String>,
+}
+
 pub struct YoutubeMonitor {
-	config: AppConfig,
+	youtube_config: YoutubeConfig,
+	telegram_config: TelegramConfig,
 }
 
 impl YoutubeMonitor {
-	pub fn new(config: AppConfig) -> Self {
-		Self { config }
+	pub fn new(youtube_config: YoutubeConfig, telegram_config: TelegramConfig) -> Self {
+		Self { youtube_config, telegram_config }
 	}
 }
 
@@ -32,10 +44,10 @@ impl Client for YoutubeMonitor {
 
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		println!("YouTube: Listening...");
-		info!("Monitoring channels: {:?}", self.config.youtube.channels.keys());
+		info!("Monitoring channels: {:?}", self.youtube_config.channels.keys());
 
 		loop {
-			match run_youtube_monitor(&self.config).await {
+			match run_youtube_monitor(&self.youtube_config, &self.telegram_config).await {
 				Err(YoutubeError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
 				Err(YoutubeError::Recoverable(e)) => {
 					error!("YouTube monitor error: {e:#}");
@@ -75,12 +87,14 @@ struct LastUploadedTitles {
 	channels: HashMap<String, String>,
 }
 
-#[instrument(skip(config))]
-async fn run_youtube_monitor(config: &AppConfig) -> Result<Infallible, YoutubeError> {
+#[instrument(skip(youtube_config, telegram_config))]
+async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig) -> Result<Infallible, YoutubeError> {
 	let client = reqwest::Client::new();
-	let telegram = TelegramNotifier::new(config.telegram.clone());
+	let telegram = TelegramNotifier::new(telegram_config.clone());
 
-	let state_file = v_utils::xdg_state_file!("youtube_last_uploaded.json");
+	let state_file = xdg::BaseDirectories::with_prefix("social_networks")
+		.place_state_file("youtube_last_uploaded.json")
+		.map_err(color_eyre::eyre::Report::from)?;
 	let mut last_uploaded: LastUploadedTitles = if state_file.exists() {
 		let content = std::fs::read_to_string(&state_file)?;
 		serde_json::from_str(&content)?
@@ -91,7 +105,7 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<Infallible, YoutubeEr
 	info!("--YouTube-- monitor started");
 
 	loop {
-		for (channel_name, channel_id) in &config.youtube.channels {
+		for (channel_name, channel_id) in &youtube_config.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram).await {
 				Ok(_) => debug!("Checked channel: {channel_name}"),
 				Err(YoutubeError::Auth(detail)) => return Err(YoutubeError::Auth(detail)),

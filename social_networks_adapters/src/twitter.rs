@@ -4,23 +4,49 @@ use clap::Args;
 use color_eyre::eyre::{Context, Result};
 use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
-use social_networks_utils::{config::AppConfig, telegram_notifier::TelegramNotifier};
 use tokio::time::{self, Duration};
 use tracing::{error, info};
+use v_utils::macros::MyConfigPrimitives;
 
-use crate::client::{AdapterError, Client};
+use crate::{
+	client::{AdapterError, Client},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
+	twitter_schedule::TwitterPollConfig,
+};
 
 const SURFACE: &str = "twitter";
 #[derive(Args)]
 pub struct TwitterArgs {}
 
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct TwitterConfig {
+	pub bearer_token: String,
+	pub everytime_polls_list: String,
+	pub sometimes_polls_list: String,
+	#[primitives(skip)]
+	pub oauth: Option<TwitterOauthConfig>,
+	#[primitives(skip)]
+	pub poll: Option<TwitterPollConfig>,
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct TwitterOauthConfig {
+	pub acc_username: String,
+	pub api_key: String,
+	pub api_key_secret: String,
+	pub access_token: String,
+	pub access_token_secret: String,
+}
+
 pub struct TwitterMonitor {
-	config: AppConfig,
+	twitter_config: TwitterConfig,
+	telegram_config: TelegramConfig,
 }
 
 impl TwitterMonitor {
-	pub fn new(config: AppConfig) -> Self {
-		Self { config }
+	pub fn new(twitter_config: TwitterConfig, telegram_config: TelegramConfig) -> Self {
+		Self { twitter_config, telegram_config }
 	}
 }
 
@@ -32,7 +58,7 @@ impl Client for TwitterMonitor {
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		println!("Twitter: Listening...");
 		loop {
-			match run_twitter_monitor(&self.config).await {
+			match run_twitter_monitor(&self.twitter_config, &self.telegram_config).await {
 				Err(TwitterError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
 				Err(TwitterError::Recoverable(e)) => {
 					error!("Twitter monitor error: {e}");
@@ -70,12 +96,14 @@ async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest
 	Err(TwitterError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
 }
 
-async fn run_twitter_monitor(config: &AppConfig) -> Result<Infallible, TwitterError> {
+async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &TelegramConfig) -> Result<Infallible, TwitterError> {
 	let client = reqwest::Client::new();
-	let telegram = TelegramNotifier::new(config.telegram.clone());
+	let telegram = TelegramNotifier::new(telegram_config.clone());
 
 	// Load or create parsed tweets state
-	let state_file = v_utils::xdg_state_file!("twitter_parsed.json");
+	let state_file = xdg::BaseDirectories::with_prefix("social_networks")
+		.place_state_file("twitter_parsed.json")
+		.map_err(color_eyre::eyre::Report::from)?;
 	let mut parsed_state: ParsedTweets = if state_file.exists() {
 		let content = std::fs::read_to_string(&state_file)?;
 		serde_json::from_str(&content)?
@@ -93,8 +121,8 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<Infallible, TwitterEr
 		// Process everytime polls list
 		match process_list(
 			&client,
-			config,
-			&config.twitter.everytime_polls_list,
+			twitter_config,
+			&twitter_config.everytime_polls_list,
 			&telegram,
 			&mut user_last_tweets,
 			&mut parsed_state.poll_tweets,
@@ -109,8 +137,8 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<Infallible, TwitterEr
 		// Process sometimes polls list
 		match process_list(
 			&client,
-			config,
-			&config.twitter.sometimes_polls_list,
+			twitter_config,
+			&twitter_config.sometimes_polls_list,
 			&telegram,
 			&mut user_last_tweets,
 			&mut parsed_state.maybe_poll_tweets,
@@ -136,7 +164,7 @@ async fn run_twitter_monitor(config: &AppConfig) -> Result<Infallible, TwitterEr
 
 async fn process_list(
 	client: &reqwest::Client,
-	config: &AppConfig,
+	twitter_config: &TwitterConfig,
 	list_id: &str,
 	telegram: &TelegramNotifier,
 	user_last_tweets: &mut HashMap<String, String>,
@@ -146,7 +174,7 @@ async fn process_list(
 	let url = format!("https://api.twitter.com/2/lists/{list_id}/members");
 	let response = client
 		.get(&url)
-		.header("Authorization", format!("Bearer {}", config.twitter.bearer_token))
+		.header("Authorization", format!("Bearer {}", twitter_config.bearer_token))
 		.header("Content-Type", "application/json")
 		.send()
 		.await
@@ -164,7 +192,7 @@ async fn process_list(
 
 		let parsed_id = parsed_tweets[user_idx].clone();
 
-		match check_for_updates(client, config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx).await {
+		match check_for_updates(client, twitter_config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx).await {
 			Ok(()) => {}
 			Err(TwitterError::Auth(d)) => return Err(TwitterError::Auth(d)),
 			Err(TwitterError::Recoverable(e)) => error!("Error checking updates for user {}: {e}", member.name),
@@ -177,7 +205,7 @@ async fn process_list(
 #[allow(clippy::too_many_arguments)]
 async fn check_for_updates(
 	client: &reqwest::Client,
-	config: &AppConfig,
+	twitter_config: &TwitterConfig,
 	member: &TwitterApiUser,
 	parsed_id: &str,
 	telegram: &TelegramNotifier,
@@ -189,7 +217,7 @@ async fn check_for_updates(
 	let url = format!("https://api.twitter.com/2/users/{}/tweets", member.id);
 	let response = client
 		.get(&url)
-		.header("Authorization", format!("Bearer {}", config.twitter.bearer_token))
+		.header("Authorization", format!("Bearer {}", twitter_config.bearer_token))
 		.header("Content-Type", "application/json")
 		.send()
 		.await
@@ -214,7 +242,7 @@ async fn check_for_updates(
 	let response = client
 		.get(&url)
 		.query(&[("expansions", "attachments.poll_ids")])
-		.header("Authorization", format!("Bearer {}", config.twitter.bearer_token))
+		.header("Authorization", format!("Bearer {}", twitter_config.bearer_token))
 		.header("Content-Type", "application/json")
 		.send()
 		.await

@@ -7,7 +7,6 @@ use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use social_networks_utils::{config::AppConfig, telegram_notifier::TelegramNotifier};
 use tokio::{
 	sync::Mutex,
 	time::{self, Duration},
@@ -17,15 +16,116 @@ use tokio_tungstenite::{
 	tungstenite::{Message, protocol::frame::coding::CloseCode},
 };
 use tracing::{error, info, warn};
+use v_utils::macros::MyConfigPrimitives;
 
-use crate::client::{AdapterError, Client};
+use crate::{
+	client::{AdapterError, Client},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
+};
 
 const SURFACE: &str = "discord_dms";
 #[derive(Args)]
 pub struct DmsArgs {}
 
+/// Configuration for DM monitoring (ping, monitored users) across Discord and Telegram.
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct DmsConfig {
+	/// Users to monitor across all platforms. Can be either:
+	/// - A plain string (applies to all platforms)
+	/// - An object like {telegram = "username"} or {discord = "username"}
+	#[serde(default)]
+	#[primitives(skip)]
+	pub monitored_users: Vec<MonitoredUser>,
+	#[serde(default)]
+	#[primitives(skip)]
+	pub discord: DiscordConfig,
+}
+
+impl DmsConfig {
+	/// Get list of usernames to monitor for Discord
+	pub fn monitored_users_for_discord(&self) -> Vec<String> {
+		self.monitored_users
+			.iter()
+			.filter_map(|u| match u {
+				MonitoredUser::All(username) => Some(username.clone()),
+				MonitoredUser::Discord(username) => Some(username.clone()),
+				MonitoredUser::Telegram(_) => None,
+			})
+			.collect()
+	}
+
+	/// Get list of usernames to monitor for Telegram
+	pub fn monitored_users_for_telegram(&self) -> Vec<String> {
+		self.monitored_users
+			.iter()
+			.filter_map(|u| match u {
+				MonitoredUser::All(username) => Some(username.clone()),
+				MonitoredUser::Telegram(username) => Some(username.clone()),
+				MonitoredUser::Discord(_) => None,
+			})
+			.collect()
+	}
+}
+
+/// A monitored user can be either global (all platforms) or platform-specific
+#[derive(Clone, Debug)]
+pub enum MonitoredUser {
+	/// Applies to all platforms
+	All(String),
+	/// Discord-specific
+	Discord(String),
+	/// Telegram-specific
+	Telegram(String),
+}
+
+impl<'de> Deserialize<'de> for MonitoredUser {
+	fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>, {
+		use serde::de::{MapAccess, Visitor};
+
+		struct MonitoredUserVisitor;
+
+		impl<'de> Visitor<'de> for MonitoredUserVisitor {
+			type Value = MonitoredUser;
+
+			fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+				formatter.write_str("a string or an object with 'telegram' or 'discord' key")
+			}
+
+			fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+			where
+				E: serde::de::Error, {
+				Ok(MonitoredUser::All(v.to_string()))
+			}
+
+			fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
+			where
+				M: MapAccess<'de>, {
+				let key: String = map.next_key()?.ok_or_else(|| serde::de::Error::custom("expected a key"))?;
+				let value: String = map.next_value()?;
+
+				match key.as_str() {
+					"telegram" => Ok(MonitoredUser::Telegram(value)),
+					"discord" => Ok(MonitoredUser::Discord(value)),
+					other => Err(serde::de::Error::custom(format!("unknown platform: {other}"))),
+				}
+			}
+		}
+
+		deserializer.deserialize_any(MonitoredUserVisitor)
+	}
+}
+
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct DiscordConfig {
+	pub user_token: String,
+	pub my_username: String,
+}
+
 pub struct DiscordDms {
-	config: AppConfig,
+	dms_config: DmsConfig,
 	telegram: TelegramNotifier,
 	last_message_times: HashMap<String, Timestamp>,
 	monitored_users: Vec<String>,
@@ -34,12 +134,12 @@ pub struct DiscordDms {
 }
 
 impl DiscordDms {
-	pub fn new(config: AppConfig) -> Self {
-		let telegram = TelegramNotifier::new(config.telegram.clone());
-		let monitored_users = config.dms.monitored_users_for_discord();
+	pub fn new(dms_config: DmsConfig, telegram_config: TelegramConfig) -> Self {
+		let telegram = TelegramNotifier::new(telegram_config);
+		let monitored_users = dms_config.monitored_users_for_discord();
 
 		Self {
-			config,
+			dms_config,
 			telegram,
 			last_message_times: HashMap::new(),
 			monitored_users,
@@ -173,7 +273,7 @@ impl DiscordDms {
 		let identify = DiscordMessage {
 			op: 2,
 			d: Some(json!({
-				"token": self.config.dms.discord.user_token,
+				"token": self.dms_config.discord.user_token,
 				"properties": {
 					"$os": "linux",
 					"$browser": "rust",
@@ -226,7 +326,7 @@ impl DiscordDms {
 
 			let has_ping = content.contains("/ping");
 			let is_monitored_user = self.monitored_users.contains(&author.to_string());
-			let is_my_message = author == self.config.dms.discord.my_username;
+			let is_my_message = author == self.dms_config.discord.my_username;
 
 			if has_ping && !is_my_message {
 				let mut should_notify_ping = false;
@@ -235,14 +335,14 @@ impl DiscordDms {
 					should_notify_ping = true;
 				} else {
 					let event_str = serde_json::to_string(data)?;
-					let has_mention = event_str.contains(&self.config.dms.discord.my_username);
+					let has_mention = event_str.contains(&self.dms_config.discord.my_username);
 
 					let is_reply_to_me = data
 						.get("referenced_message")
 						.and_then(|m| m.get("author"))
 						.and_then(|a| a.get("username"))
 						.and_then(|u| u.as_str())
-						.map(|u| u == self.config.dms.discord.my_username)
+						.map(|u| u == self.dms_config.discord.my_username)
 						.unwrap_or(false);
 
 					if has_mention || is_reply_to_me {

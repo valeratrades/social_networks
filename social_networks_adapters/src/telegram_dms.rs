@@ -5,34 +5,53 @@ use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use grammers_client::update::Update;
 use jiff::Timestamp;
-use social_networks_utils::{
-	config::AppConfig,
-	telegram_notifier::TelegramNotifier,
-	telegram_utils::{self, ConnectionConfig, TelegramConnection},
-};
+use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
+pub use tg::TelegramDestination;
 use tokio::time::{self, Duration};
 use tracing::{error, info};
+use v_utils::macros::MyConfigPrimitives;
 
-use crate::client::{AdapterError, Client as AdapterClient};
+use crate::{
+	client::{AdapterError, Client as AdapterClient},
+	discord::DmsConfig,
+	telegram_notifier::TelegramNotifier,
+};
 
 const SURFACE: &str = "telegram_dms";
 #[derive(Args)]
 pub struct DmsArgs {}
 
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct TelegramConfig {
+	pub bot_token: String,
+	#[private_value]
+	pub channel_alerts: TelegramDestination,
+	#[private_value]
+	pub channel_output: TelegramDestination,
+	pub api_id: i32,
+	pub api_hash: String,
+	pub phone: String,
+	pub username: String,
+	#[primitives(skip)]
+	pub poll_channels: Vec<String>,
+	#[primitives(skip)]
+	pub info_channels: Vec<String>,
+}
+
 pub struct TelegramDms {
-	config: AppConfig,
+	telegram_config: TelegramConfig,
 	telegram_notifier: TelegramNotifier,
 	last_message_times: HashMap<i64, Timestamp>,
 	monitored_users: Vec<String>,
 }
 
 impl TelegramDms {
-	pub fn new(config: AppConfig) -> Self {
-		let telegram_notifier = TelegramNotifier::new(config.telegram.clone());
-		let monitored_users = config.dms.monitored_users_for_telegram();
+	pub fn new(telegram_config: TelegramConfig, dms_config: DmsConfig) -> Self {
+		let telegram_notifier = TelegramNotifier::new(telegram_config.clone());
+		let monitored_users = dms_config.monitored_users_for_telegram();
 
 		Self {
-			config,
+			telegram_config,
 			telegram_notifier,
 			last_message_times: HashMap::new(),
 			monitored_users,
@@ -41,10 +60,10 @@ impl TelegramDms {
 
 	async fn connect(&self) -> Result<TelegramConnection> {
 		telegram_utils::connect(ConnectionConfig {
-			username: &self.config.telegram.username,
-			phone: &self.config.telegram.phone,
-			api_id: self.config.telegram.api_id,
-			api_hash: &self.config.telegram.api_hash,
+			username: &self.telegram_config.username,
+			phone: &self.telegram_config.phone,
+			api_id: self.telegram_config.api_id,
+			api_hash: &self.telegram_config.api_hash,
 			session_suffix: "_dm",
 		})
 		.await

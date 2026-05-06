@@ -2,7 +2,7 @@ use color_eyre::eyre::{Result, bail};
 use reqwest::Client;
 use tracing::instrument;
 
-use crate::config::{TelegramConfig, TelegramDestination};
+use crate::telegram_dms::{TelegramConfig, TelegramDestination};
 
 #[derive(Clone, Debug)]
 pub struct TelegramNotifier {

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use color_eyre::Result;
 use colored::Colorize;
-use social_networks_utils::config::AppConfig;
+
+use crate::config::AppConfig;
 
 const SIZE_THRESHOLD_GB: f64 = 10.0;
 /// All services: (subcommand, display_name)
