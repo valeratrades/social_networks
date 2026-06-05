@@ -1,5 +1,7 @@
-use social_networks_adapters::{discord::DmsConfig, email::EmailConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{email::EmailConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
+
+use crate::dms::DmsConfig;
 
 #[derive(Clone, Debug, Default, LiveSettings, MyConfigPrimitives, Settings)]
 pub struct AppConfig {

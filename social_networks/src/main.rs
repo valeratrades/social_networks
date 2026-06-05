@@ -1,12 +1,15 @@
+#![feature(default_field_values)]
 mod config;
+mod dms;
 mod health;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use config::{AppConfig, LiveSettings, SettingsFlags};
+use dms::DmsArgs;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, discord::DmsArgs, email::EmailArgs,
-	telegram_channel_watch::TelegramArgs, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
+	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
+	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
 use v_utils::utils::exit_on_error;
@@ -53,11 +56,14 @@ fn main() {
 		}
 		Commands::Dms(_) => run_async(|| async {
 			v_utils::clientside!(Some("dms"));
-			let mut discord = DiscordDms::new(config.dms.clone(), config.telegram.clone());
-			let mut telegram = TelegramDms::new(config.telegram, config.dms);
+			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+			let notifier = TelegramNotifier::new(config.telegram.clone());
+			let mut discord = DiscordDms::new(config.dms.discord.clone(), tx.clone());
+			let mut telegram = TelegramDms::new(config.telegram, tx);
 			let err = tokio::select! {
 				e = discord.listen() => e.unwrap_err(),
 				e = telegram.listen() => e.unwrap_err(),
+				() = dms::run(rx, config.dms, notifier) => unreachable!("dms::run only returns when both adapters drop their senders"),
 			};
 			alert(&err).await;
 			Err::<(), AdapterError>(err)

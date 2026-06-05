@@ -1,25 +1,24 @@
-use std::{collections::HashMap, convert::Infallible};
+use std::convert::Infallible;
 
-use clap::Args;
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use grammers_client::update::Update;
-use jiff::Timestamp;
+use grammers_tl_types as tl;
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 pub use tg::TelegramDestination;
-use tokio::time::{self, Duration};
+use tokio::{
+	sync::mpsc::UnboundedSender,
+	time::{self, Duration},
+};
 use tracing::{error, info};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
-	discord::DmsConfig,
-	telegram_notifier::TelegramNotifier,
+	dm_event::DmEvent,
 };
 
 const SURFACE: &str = "telegram_dms";
-#[derive(Args)]
-pub struct DmsArgs {}
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TelegramConfig {
@@ -40,22 +39,12 @@ pub struct TelegramConfig {
 
 pub struct TelegramDms {
 	telegram_config: TelegramConfig,
-	telegram_notifier: TelegramNotifier,
-	last_message_times: HashMap<i64, Timestamp>,
-	monitored_users: Vec<String>,
+	tx: UnboundedSender<DmEvent>,
 }
 
 impl TelegramDms {
-	pub fn new(telegram_config: TelegramConfig, dms_config: DmsConfig) -> Self {
-		let telegram_notifier = TelegramNotifier::new(telegram_config.clone());
-		let monitored_users = dms_config.monitored_users_for_telegram();
-
-		Self {
-			telegram_config,
-			telegram_notifier,
-			last_message_times: HashMap::new(),
-			monitored_users,
-		}
+	pub fn new(telegram_config: TelegramConfig, tx: UnboundedSender<DmEvent>) -> Self {
+		Self { telegram_config, tx }
 	}
 
 	async fn connect(&self) -> Result<TelegramConnection> {
@@ -125,67 +114,46 @@ impl TelegramDms {
 						error!("Error getting next update: {s}, reconnecting...");
 						return Ok(());
 					}
-					Ok(update) => self.handle_update(update).await,
+					Ok(update) => self.handle_update(update),
 				},
 			}
 		}
 	}
 
-	async fn handle_update(&mut self, update: Update) {
+	fn handle_update(&mut self, update: Update) {
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
-				let peer = match message.peer() {
-					Some(p) => p,
-					None => {
-						error!("Skipping message with unresolved peer: ");
-						return;
-					}
+				let Some(peer) = message.peer() else {
+					error!("Skipping message with unresolved peer");
+					return;
 				};
-
 				if !matches!(peer, grammers_client::peer::Peer::User(_)) {
 					return;
 				}
+				let Some(sender) = message.sender() else { return };
+				let username = sender.username().unwrap_or("unknown").to_string();
+				let chat_id = peer.id().bot_api_dialog_id().to_string();
+				let text = message.text().to_string();
 
-				let text = message.text();
-				let sender = match message.sender() {
-					Some(s) => s,
-					None => return,
-				};
-				let username = sender.username().unwrap_or("unknown");
-				let chat_id = peer.id().bot_api_dialog_id();
-				let now = Timestamp::now();
-
-				let has_ping = text.contains("/ping");
-				let is_monitored_user = self.monitored_users.contains(&username.to_string());
-
-				if has_ping {
-					if let Err(e) = self.telegram_notifier.send_ping_notification(username, "Telegram").await {
-						error!("Error sending ping notification: {e}");
-					} else {
-						info!("Successfully sent ping notification for user: {username}");
-					}
-				} else if is_monitored_user {
-					let last_message_time = self.last_message_times.get(&chat_id).copied();
-
-					let should_notify = if let Some(last_time) = last_message_time {
-						let duration_since_last = now.duration_since(last_time);
-						duration_since_last.as_secs() >= 15 * 60
-					} else {
-						true
-					};
-
-					if should_notify {
-						println!("Telegram message from monitored user {username}");
-						if let Err(e) = self.telegram_notifier.send_monitored_user_message(username, "Telegram").await {
-							error!("Error sending monitored user notification: {e}");
-						} else {
-							info!("Successfully sent monitored user notification for: {username}");
-						}
-					}
-
-					self.last_message_times.insert(chat_id, now);
-				}
+				let _ = self.tx.send(DmEvent::Message {
+					platform: "Telegram",
+					sender: username,
+					text,
+					chat_id,
+					is_dm: true,
+					mentions_me: false,
+					is_reply_to_me: false,
+				});
 			}
+			// Incoming voice/video call: server sends `phoneCallRequested` to the callee.
+			// Outgoing calls surface as `Waiting`, so matching `Requested` naturally filters to calls TO me.
+			Update::Raw(raw) =>
+				if let tl::enums::Update::PhoneCall(tl::types::UpdatePhoneCall {
+					phone_call: tl::enums::PhoneCall::Requested(_),
+				}) = &raw.raw
+				{
+					let _ = self.tx.send(DmEvent::IncomingCall { platform: "Telegram" });
+				},
 			_ => {}
 		}
 	}

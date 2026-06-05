@@ -1,6 +1,5 @@
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
-use clap::Args;
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
@@ -8,7 +7,7 @@ use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
-	sync::Mutex,
+	sync::{Mutex, mpsc::UnboundedSender},
 	time::{self, Duration},
 };
 use tokio_tungstenite::{
@@ -20,103 +19,10 @@ use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
 	client::{AdapterError, Client},
-	telegram_dms::TelegramConfig,
-	telegram_notifier::TelegramNotifier,
+	dm_event::DmEvent,
 };
 
 const SURFACE: &str = "discord_dms";
-#[derive(Args)]
-pub struct DmsArgs {}
-
-/// Configuration for DM monitoring (ping, monitored users) across Discord and Telegram.
-#[derive(Clone, Debug, Default, MyConfigPrimitives)]
-pub struct DmsConfig {
-	/// Users to monitor across all platforms. Can be either:
-	/// - A plain string (applies to all platforms)
-	/// - An object like {telegram = "username"} or {discord = "username"}
-	#[serde(default)]
-	#[primitives(skip)]
-	pub monitored_users: Vec<MonitoredUser>,
-	#[serde(default)]
-	#[primitives(skip)]
-	pub discord: DiscordConfig,
-}
-
-impl DmsConfig {
-	/// Get list of usernames to monitor for Discord
-	pub fn monitored_users_for_discord(&self) -> Vec<String> {
-		self.monitored_users
-			.iter()
-			.filter_map(|u| match u {
-				MonitoredUser::All(username) => Some(username.clone()),
-				MonitoredUser::Discord(username) => Some(username.clone()),
-				MonitoredUser::Telegram(_) => None,
-			})
-			.collect()
-	}
-
-	/// Get list of usernames to monitor for Telegram
-	pub fn monitored_users_for_telegram(&self) -> Vec<String> {
-		self.monitored_users
-			.iter()
-			.filter_map(|u| match u {
-				MonitoredUser::All(username) => Some(username.clone()),
-				MonitoredUser::Telegram(username) => Some(username.clone()),
-				MonitoredUser::Discord(_) => None,
-			})
-			.collect()
-	}
-}
-
-/// A monitored user can be either global (all platforms) or platform-specific
-#[derive(Clone, Debug)]
-pub enum MonitoredUser {
-	/// Applies to all platforms
-	All(String),
-	/// Discord-specific
-	Discord(String),
-	/// Telegram-specific
-	Telegram(String),
-}
-
-impl<'de> Deserialize<'de> for MonitoredUser {
-	fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-	where
-		D: serde::Deserializer<'de>, {
-		use serde::de::{MapAccess, Visitor};
-
-		struct MonitoredUserVisitor;
-
-		impl<'de> Visitor<'de> for MonitoredUserVisitor {
-			type Value = MonitoredUser;
-
-			fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-				formatter.write_str("a string or an object with 'telegram' or 'discord' key")
-			}
-
-			fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
-			where
-				E: serde::de::Error, {
-				Ok(MonitoredUser::All(v.to_string()))
-			}
-
-			fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-			where
-				M: MapAccess<'de>, {
-				let key: String = map.next_key()?.ok_or_else(|| serde::de::Error::custom("expected a key"))?;
-				let value: String = map.next_value()?;
-
-				match key.as_str() {
-					"telegram" => Ok(MonitoredUser::Telegram(value)),
-					"discord" => Ok(MonitoredUser::Discord(value)),
-					other => Err(serde::de::Error::custom(format!("unknown platform: {other}"))),
-				}
-			}
-		}
-
-		deserializer.deserialize_any(MonitoredUserVisitor)
-	}
-}
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct DiscordConfig {
@@ -125,24 +31,17 @@ pub struct DiscordConfig {
 }
 
 pub struct DiscordDms {
-	dms_config: DmsConfig,
-	telegram: TelegramNotifier,
-	last_message_times: HashMap<String, Timestamp>,
-	monitored_users: Vec<String>,
+	discord_config: DiscordConfig,
+	tx: UnboundedSender<DmEvent>,
 	message_counter: u64,
 	my_user_id: Option<String>,
 }
 
 impl DiscordDms {
-	pub fn new(dms_config: DmsConfig, telegram_config: TelegramConfig) -> Self {
-		let telegram = TelegramNotifier::new(telegram_config);
-		let monitored_users = dms_config.monitored_users_for_discord();
-
+	pub fn new(discord_config: DiscordConfig, tx: UnboundedSender<DmEvent>) -> Self {
 		Self {
-			dms_config,
-			telegram,
-			last_message_times: HashMap::new(),
-			monitored_users,
+			discord_config,
+			tx,
 			message_counter: 0,
 			my_user_id: None,
 		}
@@ -217,8 +116,8 @@ impl DiscordDms {
 									let event_type = event.t.as_deref();
 									let result = match event_type {
 										Some("READY") => self.handle_ready(d),
-										Some("CALL_CREATE") => self.handle_call_create(d).await,
-										_ => self.handle_message(d).await,
+										Some("CALL_CREATE") => self.handle_call_create(d),
+										_ => self.handle_message(d),
 									};
 									if let Err(e) = result {
 										error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
@@ -273,7 +172,7 @@ impl DiscordDms {
 		let identify = DiscordMessage {
 			op: 2,
 			d: Some(json!({
-				"token": self.dms_config.discord.user_token,
+				"token": self.discord_config.user_token,
 				"properties": {
 					"$os": "linux",
 					"$browser": "rust",
@@ -301,81 +200,61 @@ impl DiscordDms {
 		Ok(())
 	}
 
-	async fn handle_call_create(&self, data: &serde_json::Value) -> Result<()> {
+	fn handle_call_create(&self, data: &serde_json::Value) -> Result<()> {
 		let my_id = self.my_user_id.as_deref().ok_or_else(|| color_eyre::eyre::eyre!("my_user_id not set"))?;
 		let ringing = data.get("ringing").and_then(|r| r.as_array());
 		if let Some(ringing) = ringing
 			&& ringing.iter().any(|id| id.as_str() == Some(my_id))
 		{
-			let channel_id = data.get("channel_id").and_then(|c| c.as_str()).unwrap_or("unknown");
-			println!("Incoming Discord call on channel {channel_id}");
-			self.telegram.send_call_notification("Discord").await?;
-			info!("Sent call notification for channel: {channel_id}");
+			let _ = self.tx.send(DmEvent::IncomingCall { platform: "Discord" });
 		}
 		Ok(())
 	}
 
-	async fn handle_message(&mut self, data: &serde_json::Value) -> Result<()> {
+	fn handle_message(&self, data: &serde_json::Value) -> Result<()> {
 		let author = data.get("author").and_then(|a| a.get("username")).and_then(|u| u.as_str());
 		let content = data.get("content").and_then(|c| c.as_str());
 		let channel_id = data.get("channel_id").and_then(|c| c.as_str());
 
-		if let (Some(author), Some(content), Some(channel_id)) = (author, content, channel_id) {
-			let is_dm = data.get("guild_id").is_none();
-			let now = Timestamp::now();
+		let (Some(author), Some(content), Some(channel_id)) = (author, content, channel_id) else {
+			return Ok(());
+		};
 
-			let has_ping = content.contains("/ping");
-			let is_monitored_user = self.monitored_users.contains(&author.to_string());
-			let is_my_message = author == self.dms_config.discord.my_username;
-
-			if has_ping && !is_my_message {
-				let mut should_notify_ping = false;
-
-				if is_dm {
-					should_notify_ping = true;
-				} else {
-					let event_str = serde_json::to_string(data)?;
-					let has_mention = event_str.contains(&self.dms_config.discord.my_username);
-
-					let is_reply_to_me = data
-						.get("referenced_message")
-						.and_then(|m| m.get("author"))
-						.and_then(|a| a.get("username"))
-						.and_then(|u| u.as_str())
-						.map(|u| u == self.dms_config.discord.my_username)
-						.unwrap_or(false);
-
-					if has_mention || is_reply_to_me {
-						should_notify_ping = true;
-					}
-				}
-
-				if should_notify_ping {
-					println!("Discord ping from {author}: {content}");
-					self.telegram.send_ping_notification(author, "Discord").await?;
-					info!("Successfully sent ping notification for user: {author}");
-				}
-			} else if is_monitored_user && is_dm && !has_ping {
-				let last_message_time = self.last_message_times.get(channel_id).copied();
-
-				let should_notify = if let Some(last_time) = last_message_time {
-					let duration_since_last = now.duration_since(last_time);
-					duration_since_last.as_secs() >= 15 * 60
-				} else {
-					true
-				};
-
-				if should_notify {
-					println!("Discord message from monitored user {author}: {content}");
-					self.telegram.send_monitored_user_message(author, "Discord").await?;
-					info!("Successfully sent monitored user notification for: {author}");
-				}
-
-				self.last_message_times.insert(channel_id.to_string(), now);
-			} else {
-				self.last_message_times.insert(channel_id.to_string(), now);
-			}
+		// Discord WS echoes our own outgoing messages back to us; drop those at the transport boundary,
+		// mirroring Telegram's `!message.outgoing()` filter.
+		if author == self.discord_config.my_username {
+			return Ok(());
 		}
+
+		let is_dm = data.get("guild_id").is_none();
+
+		// Mention detection: Discord's payload has structured `mentions` arrays, but the historical
+		// implementation used a substring scan of the whole JSON (catches role mentions, raw `@name`,
+		// etc.). Preserve that behavior.
+		let mentions_me = if is_dm {
+			false
+		} else {
+			let event_str = serde_json::to_string(data)?;
+			event_str.contains(&self.discord_config.my_username)
+		};
+
+		let is_reply_to_me = data
+			.get("referenced_message")
+			.and_then(|m| m.get("author"))
+			.and_then(|a| a.get("username"))
+			.and_then(|u| u.as_str())
+			.map(|u| u == self.discord_config.my_username)
+			.unwrap_or(false);
+
+		let _ = self.tx.send(DmEvent::Message {
+			platform: "Discord",
+			sender: author.to_string(),
+			text: content.to_string(),
+			chat_id: channel_id.to_string(),
+			is_dm,
+			mentions_me,
+			is_reply_to_me,
+		});
 
 		Ok(())
 	}
