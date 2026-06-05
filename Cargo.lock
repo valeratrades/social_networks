@@ -1533,8 +1533,7 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 [[package]]
 name = "glass_pumpkin"
 version = "1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f09b0eef9941bda7cc263c23c3977d437a9aa19abb6a58ed0234d145d9c024bc"
+source = "git+https://github.com/mikelodder7/glass_pumpkin?rev=b57e78d7d96f2b782e6a9adc78a7cbba8288207d#b57e78d7d96f2b782e6a9adc78a7cbba8288207d"
 dependencies = [
  "getrandom 0.4.2",
  "num-bigint",

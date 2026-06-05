@@ -2,7 +2,6 @@ cargo-features = ["codegen-backend"]
 
 [workspace]
 members = ["social_networks", "social_networks_*"]
-default-members = ["social_networks"]
 resolver = "3"
 
 [workspace.lints.clippy]
@@ -63,7 +62,14 @@ v_utils = { version = "=2.15.48", features = ["xdg", "cli", "tracing"] }
 xdg = { version = "=3.0.0", features = ["serde"] }
 yup-oauth2 = "=12.1.2"
 
-social_networks_adapters = { path = "social_networks_adapters", version = "=0.3.7" }
-social_networks_utils = { path = "social_networks_utils", version = "=0.3.7" }
+social_networks_adapters = { path = "social_networks_adapters", version = "0.3.7" }
+social_networks_utils = { path = "social_networks_utils", version = "0.3.7" }
 
 insta = "=1.47.2"
+
+# grammers-crypto 0.9.0 requires `glass_pumpkin ^1.10.0`, but 1.10.0 was yanked from crates.io
+# (upstream moved straight to 2.0.0-rc0, leaving no selectable version for that req). This pins
+# glass_pumpkin to the exact tree that was published as 1.10.0 so `cargo update` can resolve it.
+# Drop once grammers-crypto relaxes the req / publishes against a non-yanked glass_pumpkin.
+[patch.crates-io]
+glass_pumpkin = { git = "https://github.com/mikelodder7/glass_pumpkin", rev = "b57e78d7d96f2b782e6a9adc78a7cbba8288207d" }

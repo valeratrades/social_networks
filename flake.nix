@@ -41,6 +41,9 @@
           lastSupportedVersion = "nightly-2025-10-10";
           jobs.default = true;
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
+          # `cargo docs-rs` can't pick a member in a multi-crate workspace; scope it to the bin crate (mirrors v_exchanges).
+          jobs.warnings.exclude = [ "rust-doc" ];
+          jobs.warnings.augment = [{ name = "rust-doc"; args = { package = pname; }; }];
           release = {
             default = true;
             cargoTomlPath = "./social_networks/Cargo.toml";
