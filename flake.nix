@@ -4,7 +4,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay/7ed7e8c74be95906275805db68201e74e9904f07";
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    v_flakes.url = "github:valeratrades/v_flakes/257142a54b071bb8a8b2e031d69e70f416518a5f";
+    v_flakes.url = "github:valeratrades/v_flakes/553e1f62d2eac0d7f9898ac8a9aafa6de5e68a92";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v_flakes }:
     flake-utils.lib.eachDefaultSystem (
@@ -21,7 +21,7 @@
         });
         #rust = pkgs.rust-bin.nightly."2025-10-10".default;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
-        manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+        manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
@@ -30,7 +30,9 @@
           cranelift = true;
           build = {
             enable = true;
-            workspace."./" = [ "git_version" "log_directives" ];
+            workspace."./social_networks" = [ "git_version" "log_directives" ];
+            workspace."./social_networks_adapters" = [ ];
+            workspace."./social_networks_utils" = [ ];
           };
         };
         github = v_flakes.github {
@@ -39,7 +41,10 @@
           lastSupportedVersion = "nightly-2025-10-10";
           jobs.default = true;
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
-          release.default = true;
+          release = {
+            default = true;
+            cargoTomlPath = "./social_networks/Cargo.toml";
+          };
         };
         readme = v_flakes.readme-fw {
           inherit pkgs pname;

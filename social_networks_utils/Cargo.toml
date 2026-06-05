@@ -1,0 +1,29 @@
+cargo-features = ["codegen-backend"]
+
+[package]
+name = "social_networks_utils"
+version = "0.3.7"
+edition = "2024"
+authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+description = "shared primitives for social_networks"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/social_networks"
+
+[dependencies]
+clap.workspace = true
+color-eyre.workspace = true
+grammers-client.workspace = true
+grammers-mtsender.workspace = true
+grammers-session.workspace = true
+libsql.workspace = true
+psm.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+tg.workspace = true
+tracing.workspace = true
+v_exchanges.workspace = true
+v_utils.workspace = true
+xdg.workspace = true
+
+[lints]
+workspace = true

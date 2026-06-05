@@ -66,7 +66,7 @@ for future reference: $BTC ~''${btc_price}
 
   email = {
     email = "valeratrades@gmail.com";
-    ignore_patterns = [ "Alex Hormozi" ];
+    ignore_patterns = [ "Alex Hormozi" "imperiumlabs" ];
     claude_token = { env = "CLAUDE_TOKEN"; };
     important_if_contains = {
       any = [];

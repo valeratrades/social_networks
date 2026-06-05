@@ -1,33 +1,85 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::Infallible};
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
+use social_networks_utils::utils::btc_price;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
+use v_utils::macros::MyConfigPrimitives;
 
-use crate::{config::AppConfig, telegram_notifier::TelegramNotifier, utils::btc_price};
+use crate::{
+	client::{AdapterError, Client},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
+};
 
+const SURFACE: &str = "youtube";
 #[derive(Args)]
 pub struct YoutubeArgs {}
-pub fn main(config: AppConfig, _args: YoutubeArgs) -> Result<()> {
-	v_utils::clientside!(Some("youtube"));
 
-	println!("YouTube: Listening...");
-	info!("Monitoring channels: {:?}", config.youtube.channels.keys());
+#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+pub struct YoutubeConfig {
+	#[primitives(skip)]
+	pub channels: HashMap<String, String>,
+}
 
-	let runtime = tokio::runtime::Runtime::new()?;
-	runtime.block_on(async {
+pub struct YoutubeMonitor {
+	youtube_config: YoutubeConfig,
+	telegram_config: TelegramConfig,
+}
+
+impl YoutubeMonitor {
+	pub fn new(youtube_config: YoutubeConfig, telegram_config: TelegramConfig) -> Self {
+		Self { youtube_config, telegram_config }
+	}
+}
+
+impl Client for YoutubeMonitor {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		println!("YouTube: Listening...");
+		info!("Monitoring channels: {:?}", self.youtube_config.channels.keys());
+
 		loop {
-			if let Err(e) = run_youtube_monitor(&config).await {
-				error!("YouTube monitor error: {e}");
-				error!("Reconnecting in 5 minutes...");
-				time::sleep(Duration::from_secs(5 * 60)).await;
+			match run_youtube_monitor(&self.youtube_config, &self.telegram_config).await {
+				Err(YoutubeError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
+				Err(YoutubeError::Recoverable(e)) => {
+					error!("YouTube monitor error: {e:#}");
+					error!("Reconnecting in 5 minutes...");
+					time::sleep(Duration::from_secs(5 * 60)).await;
+				}
 			}
 		}
-	})
+	}
+}
+
+enum YoutubeError {
+	Auth(String),
+	Recoverable(color_eyre::eyre::Report),
+}
+
+impl<E: Into<color_eyre::eyre::Report>> From<E> for YoutubeError {
+	fn from(e: E) -> Self {
+		YoutubeError::Recoverable(e.into())
+	}
+}
+
+async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, YoutubeError> {
+	let status = response.status();
+	if status.is_success() {
+		return Ok(response);
+	}
+	let body = response.text().await.unwrap_or_default();
+	if matches!(status.as_u16(), 401 | 403) {
+		return Err(YoutubeError::Auth(format!("{op}: {status}: {body}")));
+	}
+	Err(YoutubeError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -35,13 +87,14 @@ struct LastUploadedTitles {
 	channels: HashMap<String, String>,
 }
 
-#[instrument(skip(config))]
-async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
+#[instrument(skip(youtube_config, telegram_config))]
+async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig) -> Result<Infallible, YoutubeError> {
 	let client = reqwest::Client::new();
-	let telegram = TelegramNotifier::new(config.telegram.clone());
+	let telegram = TelegramNotifier::new(telegram_config.clone());
 
-	// Load or create last uploaded titles state
-	let state_file = v_utils::xdg_state_file!("youtube_last_uploaded.json");
+	let state_file = xdg::BaseDirectories::with_prefix("social_networks")
+		.place_state_file("youtube_last_uploaded.json")
+		.map_err(color_eyre::eyre::Report::from)?;
 	let mut last_uploaded: LastUploadedTitles = if state_file.exists() {
 		let content = std::fs::read_to_string(&state_file)?;
 		serde_json::from_str(&content)?
@@ -51,40 +104,37 @@ async fn run_youtube_monitor(config: &AppConfig) -> Result<()> {
 
 	info!("--YouTube-- monitor started");
 
-	//LOOP: daemon - runs until process termination
 	loop {
-		for (channel_name, channel_id) in &config.youtube.channels {
+		for (channel_name, channel_id) in &youtube_config.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram).await {
 				Ok(_) => debug!("Checked channel: {channel_name}"),
-				Err(e) => error!("Error checking channel {channel_name}: {e}"),
+				Err(YoutubeError::Auth(detail)) => return Err(YoutubeError::Auth(detail)),
+				Err(YoutubeError::Recoverable(e)) => error!("Error checking channel {channel_name}: {e:#}"),
 			}
 		}
 
-		// Save state
 		let state_json = serde_json::to_string(&last_uploaded)?;
 		std::fs::write(&state_file, state_json)?;
 
-		// Sleep for 60 seconds
 		time::sleep(Duration::from_secs(60)).await;
 	}
 }
 
 #[instrument(skip(client, last_uploaded, telegram))]
-async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name: &str, last_uploaded: &mut LastUploadedTitles, telegram: &TelegramNotifier) -> Result<()> {
+async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name: &str, last_uploaded: &mut LastUploadedTitles, telegram: &TelegramNotifier) -> Result<(), YoutubeError> {
 	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
 
 	let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed")?;
+	let response = ok_or_classify(response, "youtube_rss").await?;
 
-	let xml_content = response.text().await?;
+	let xml_content = response.text().await.map_err(color_eyre::eyre::Report::from)?;
 
 	let (video_id, title, published) = parse_youtube_rss(&xml_content)?;
 
-	// Check if it's a new video (published within last 15 minutes)
 	let now = Timestamp::now();
 	let time_since_upload: SignedDuration = now.duration_since(published);
 
 	if time_since_upload < SignedDuration::from_mins(15) {
-		// Check if we've already notified about this video
 		if let Some(last_title) = last_uploaded.channels.get(channel_name)
 			&& last_title == &title
 		{
@@ -94,18 +144,15 @@ async fn check_channel(client: &reqwest::Client, channel_id: &str, channel_name:
 		println!("YouTube: [{channel_name}] uploaded: {title}");
 		info!("New video from {channel_name}: {title:?}");
 
-		// Get sentiment analysis
 		let sentiment = analyze_sentiment(&title).await.unwrap_or_else(|e| {
 			error!("Failed to analyze sentiment: {e}");
 			"unclear".to_string()
 		});
 
-		// Send notification
 		if let Err(e) = telegram.send_youtube_notification(channel_name, &title, &sentiment, &video_id).await {
 			error!("Failed to send YouTube notification: {e}");
 		}
 
-		// Update last uploaded
 		last_uploaded.channels.insert(channel_name.to_string(), title.to_string());
 	}
 
@@ -149,10 +196,9 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 					&& title.is_some()
 					&& let Some(dt_str) = published
 				{
-					// YouTube returns ISO 8601 with offset (e.g., "2025-12-31T08:37:07+00:00")
 					let published_dt: Timestamp = dt_str.parse()?;
 
-					#[allow(clippy::unnecessary_unwrap)] // actually leads to borrowship issues
+					#[allow(clippy::unnecessary_unwrap)]
 					return Ok((video_id.unwrap(), title.unwrap(), published_dt));
 				}
 			}
@@ -165,7 +211,6 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 }
 
 async fn analyze_sentiment(title: &str) -> Result<String> {
-	// Get current BTC price for context
 	let btc_price = btc_price(3).await.unwrap_or(0);
 
 	let prompt = format!(
@@ -177,7 +222,6 @@ async fn analyze_sentiment(title: &str) -> Result<String> {
 
 	let response = ask_llm::oneshot(&prompt).await?;
 
-	// Extract first word (bullish/bearish/unclear)
 	let sentiment = response.text.split_whitespace().next().unwrap_or("unclear").to_lowercase();
 
 	Ok(sentiment)

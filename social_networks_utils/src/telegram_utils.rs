@@ -42,7 +42,7 @@ pub struct ConnectionConfig<'a> {
 /// The caller should use `select` to poll the runner alongside their main logic.
 pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection> {
 	let session_filename = format!("{}{}.session", config.username, config.session_suffix);
-	let session_file = v_utils::xdg_state_file!(&session_filename);
+	let session_file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file(&session_filename)?;
 	info!("Using session file: {}", session_file.display());
 
 	info!("Opening session database");
