@@ -86,6 +86,28 @@ impl<'de> Deserialize<'de> for MonitoredUser {
 	}
 }
 
+impl serde::Serialize for MonitoredUser {
+	fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+	where
+		S: serde::Serializer, {
+		use serde::ser::SerializeMap as _;
+
+		match self {
+			MonitoredUser::All(u) => serializer.serialize_str(u),
+			MonitoredUser::Discord(u) => {
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("discord", u)?;
+				map.end()
+			}
+			MonitoredUser::Telegram(u) => {
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("telegram", u)?;
+				map.end()
+			}
+		}
+	}
+}
+
 /// Consume DM events forever, applying notification rules. Returns when the event
 /// stream is closed (both adapters dropped their senders), which only happens on
 /// shutdown.

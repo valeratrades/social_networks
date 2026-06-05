@@ -7,7 +7,7 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use imap::{ImapConnection, Session};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
@@ -50,7 +50,7 @@ pub struct EmailConfig {
 /// Patterns to check for marking email as alert-worthy.
 /// If any pattern matches, the email is forwarded without LLM check.
 /// Top-level `any` matches against all fields (subject, body, address).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ImportantIfContains {
 	/// Patterns to match against any field (subject, body, address)
 	#[serde(default)]
@@ -66,7 +66,7 @@ pub struct ImportantIfContains {
 	pub address: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmailAuth {
 	Imap(ImapAuth),

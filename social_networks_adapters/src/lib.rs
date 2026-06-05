@@ -1,3 +1,4 @@
+#![allow(unused_features)]
 #![feature(default_field_values)]
 pub mod client;
 pub mod discord;

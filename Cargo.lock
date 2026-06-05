@@ -429,6 +429,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bufstream"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2391,6 +2400,7 @@ checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
 dependencies = [
  "console",
  "once_cell",
+ "regex",
  "similar",
  "tempfile",
 ]
@@ -2430,9 +2440,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.24"
+version = "0.2.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
+checksum = "4603d3033e49e2b0e31229fcab20a5d40089c607d975cd9c80551dc69eed9102"
 dependencies = [
  "jiff-static",
  "jiff-tzdb-platform",
@@ -2440,14 +2450,14 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-link",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.24"
+version = "0.2.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
+checksum = "782d32378dddf207193ac91cefb848ad41abb58195c95168e1291227a0832b47"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3502,7 +3512,7 @@ checksum = "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
 dependencies = [
  "base64 0.22.1",
  "indexmap 2.14.0",
- "quick-xml",
+ "quick-xml 0.39.3",
  "serde",
  "time",
 ]
@@ -3616,6 +3626,15 @@ name = "quick-xml"
 version = "0.39.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "721da970c312655cde9b4ffe0547f20a8494866a4af5ff51f18b7c633d0c870b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.40.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
 ]
@@ -3854,9 +3873,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "reqwest"
-version = "0.13.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
+checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -4277,9 +4296,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",
@@ -4311,11 +4330,12 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.19.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05839ce67618e14a09b286535c0d9c94e85ef25469b0e13cb4f844e5593eb19"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
 dependencies = [
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "hex",
  "indexmap 1.9.3",
@@ -4330,9 +4350,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.19.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf2ebbe86054f9b45bc3881e865683ccfaccce97b9b4cb53f3039d67f355a334"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -4511,7 +4531,7 @@ dependencies = [
  "insta",
  "jiff",
  "miette",
- "quick-xml",
+ "quick-xml 0.40.1",
  "rand 0.10.1",
  "regex",
  "reqwest",
@@ -4930,9 +4950,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.1"
+version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67dee974fe86fd92cc45b7a95fdd2f99a36a6d7b0d431a231178d3d670bbcc6"
+checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
  "bytes",
  "libc",
@@ -5485,40 +5505,18 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges"
-version = "0.18.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a993bcdb807c6366e830320c0e3d742e1a27a398732f59bafb71e2f611d784de"
+checksum = "65607829f144eefd4f04b34f45eef1b2fefcaca2d884c75d385ea46623b127a2"
 dependencies = [
- "ahash",
- "arrayvec",
- "async-trait",
- "cfg-if",
- "derive-new",
- "derive_more",
- "enum_dispatch",
- "eyre",
- "jiff",
- "miette",
- "secrecy",
- "serde",
- "serde_json",
- "serde_with",
- "smart-default",
- "strum",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "v_exchanges_adapters",
- "v_exchanges_core",
- "v_utils",
+ "v_exchanges_methods",
 ]
 
 [[package]]
 name = "v_exchanges_adapters"
-version = "0.18.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c499fdec3c8330995b690f88995e596341d6aceef1257208fb6524c39e87b09"
+checksum = "65472baa159fbee24a176e4333eb6dd8fee57210c614a828ce9b835c6c617bfc"
 dependencies = [
  "ahash",
  "base64 0.22.1",
@@ -5544,9 +5542,9 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_api_generics"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7419e0f79070602221241bfced23e291d3736e78e55ef15b2050df8a63f53541"
+checksum = "c61cd7d120cb2e2e0ffad3050dd0556067d96d41fd882d8dbe4a079c520b0d78"
 dependencies = [
  "ahash",
  "bytes",
@@ -5574,19 +5572,52 @@ dependencies = [
 
 [[package]]
 name = "v_exchanges_core"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af6723b39c7fe2f07101a71ae58de1787a1d4c265c95305d9f8bd687c893b2a6"
+checksum = "55d3a02cf238c51a27d4699da52a6d9a4b6f03c0a3546baac4e0d3789aa4b5f4"
 dependencies = [
  "ahash",
  "derive-new",
+ "jiff",
+]
+
+[[package]]
+name = "v_exchanges_methods"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46f46c4d1d1ed89bc40d900cfe352b1155ef85530e53dbe6f353def64c778236"
+dependencies = [
+ "ahash",
+ "arrayvec",
+ "async-trait",
+ "cfg-if",
+ "derive-new",
+ "derive_more",
+ "enum_dispatch",
+ "eyre",
+ "futures-util",
+ "jiff",
+ "miette",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smart-default",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "v_exchanges_adapters",
+ "v_exchanges_core",
+ "v_utils",
 ]
 
 [[package]]
 name = "v_utils"
-version = "2.15.41"
+version = "2.15.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c12bc270ea91e72c2725a332cedcf7057d4f826a8767f049d8efe1ac2945048d"
+checksum = "1c726d156df3b6b77934017eba990f4d3406934700259a895d5f9a9400bfd733"
 dependencies = [
  "ahash",
  "bon",
@@ -5626,9 +5657,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.11.41"
+version = "2.11.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16da74b6c82f527519c61e9d06340dcb23ce2b16dd407b502227c98807e6fe74"
+checksum = "43480285ac1915ebe279fb3a0734d749b2c3f78979d64487d40d04f77d514c87"
 dependencies = [
  "eyre",
  "heck 0.5.0",

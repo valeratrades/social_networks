@@ -1,3 +1,4 @@
+#![allow(unused_features)]
 #![feature(default_field_values)]
 mod config;
 mod dms;
