@@ -33,13 +33,13 @@ pub enum AdapterError {
 	Unhandled { surface: &'static str, detail: String },
 }
 
-/// Send a high-importance/high-urgency notification via the `v_notify` CLI.
+/// Send a max-importance (`error`) notification via the `v_notify` CLI.
 /// Failures to spawn `v_notify` are logged but never escalated: a broken alerting path
 /// must not also kill the surfaces that are still working.
 pub async fn alert(err: &AdapterError) {
 	let text = format!("[social_networks] {err}");
 	error!("{text}");
-	match tokio::process::Command::new("v_notify").args(["send", "-i", "5", "-u", "5"]).arg(&text).status().await {
+	match tokio::process::Command::new("v_notify").args(["-l", "error"]).arg(&text).status().await {
 		Ok(s) if s.success() => {}
 		Ok(s) => error!("v_notify exited with {s}"),
 		Err(e) => error!("failed to spawn v_notify: {e}"),
