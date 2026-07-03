@@ -13,6 +13,10 @@ repository = "https://github.com/valeratrades/social_networks"
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
+# keep single-crate-style tags: release workflows trigger on `v[0-9]+.*` and binstall pkg-url expects `v{version}`
+[package.metadata.release]
+tag-name = "v{{version}}"
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"

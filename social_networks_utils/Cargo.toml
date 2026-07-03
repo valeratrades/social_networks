@@ -9,6 +9,10 @@ description = "shared primitives for social_networks"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
 
+# only the bin crate tags releases
+[package.metadata.release]
+tag = false
+
 [dependencies]
 clap.workspace = true
 color-eyre.workspace = true

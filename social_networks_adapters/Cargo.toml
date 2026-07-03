@@ -9,6 +9,10 @@ description = "long-running social network surface adapters for social_networks"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
 
+# only the bin crate tags releases
+[package.metadata.release]
+tag = false
+
 [dependencies]
 ask_llm.workspace = true
 base64.workspace = true
