@@ -65,8 +65,8 @@ v_utils = { version = "=2.15.48", features = ["xdg", "cli", "tracing"] }
 xdg = { version = "=3.0.0", features = ["serde"] }
 yup-oauth2 = "=12.1.2"
 
-social_networks_adapters = { path = "social_networks_adapters", version = "0.3.7" }
-social_networks_utils = { path = "social_networks_utils", version = "0.3.7" }
+social_networks_adapters = { path = "social_networks_adapters", version = "0.3.8" }
+social_networks_utils = { path = "social_networks_utils", version = "0.3.8" }
 
 insta = "=1.47.2"
 
