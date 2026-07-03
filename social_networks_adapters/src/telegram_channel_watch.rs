@@ -173,6 +173,7 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 	let mut message_counter = 0u64;
 	let mut last_status_update = Timestamp::default();
 
+	//LOOP: daemon - runs until process termination
 	loop {
 		if telegram_utils::should_reconnect_for_stack() {
 			return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("Stack usage critical, forcing reconnect")));

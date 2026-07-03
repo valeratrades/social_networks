@@ -19,7 +19,6 @@ libsql.workspace = true
 psm.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-tg.workspace = true
 tracing.workspace = true
 v_exchanges.workspace = true
 v_utils.workspace = true

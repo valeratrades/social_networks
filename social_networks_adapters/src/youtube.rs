@@ -104,6 +104,7 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 
 	info!("--YouTube-- monitor started");
 
+	//LOOP: daemon - runs until process termination
 	loop {
 		for (channel_name, channel_id) in &youtube_config.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram).await {
