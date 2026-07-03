@@ -112,7 +112,10 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				poll_peer_ids.push(peer.id());
-				info!("Resolved poll channel: {channel} -> {}", peer.id().bot_api_dialog_id());
+				info!(
+					"Resolved poll channel: {channel} -> {}",
+					peer.id().bot_api_dialog_id().expect("resolve_username never returns self")
+				);
 			}
 			None => {
 				error!("Could not resolve poll channel: {channel}");
@@ -126,7 +129,10 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
 			Some(peer) => {
 				info_peer_ids.push(peer.id());
-				info!("Resolved info channel: {channel} -> {}", peer.id().bot_api_dialog_id());
+				info!(
+					"Resolved info channel: {channel} -> {}",
+					peer.id().bot_api_dialog_id().expect("resolve_username never returns self")
+				);
 			}
 			None => {
 				error!("Could not resolve info channel: {channel}");
@@ -146,8 +152,8 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 	info!("Resolving output channel: {output_username}");
 	let watch_chat = match client.resolve_username(output_username).await? {
 		Some(peer) => {
-			info!("Output channel resolved: {}", peer.id().bot_api_dialog_id());
-			match peer.to_ref().await {
+			info!("Output channel resolved: {}", peer.id().bot_api_dialog_id().expect("resolve_username never returns self"));
+			match peer.to_ref().await.map_err(|e| color_eyre::eyre::eyre!(e))? {
 				Some(r) => r,
 				None =>
 					return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!(
@@ -249,7 +255,7 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 
 async fn handle_poll_message(client: &Client, message: &grammers_client::update::Message, watch_chat: PeerRef) -> Result<()> {
 	if message.media().is_some() {
-		let source_ref = match message.peer_ref().await {
+		let source_ref = match message.peer_ref().await.map_err(|e| color_eyre::eyre::eyre!(e))? {
 			Some(r) => r,
 			None => {
 				error!("Cannot forward poll message - unresolved peer");
@@ -282,7 +288,7 @@ async fn handle_info_message(client: &Client, message: &grammers_client::update:
 	let text = message.text();
 	let text_lower = text.to_lowercase();
 	if key_words.iter().any(|word| text_lower.contains(word)) {
-		let source_ref = match message.peer_ref().await {
+		let source_ref = match message.peer_ref().await.map_err(|e| color_eyre::eyre::eyre!(e))? {
 			Some(r) => r,
 			None => {
 				error!("Cannot forward info message - unresolved peer");

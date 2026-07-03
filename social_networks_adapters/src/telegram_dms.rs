@@ -132,7 +132,7 @@ impl TelegramDms {
 				}
 				let Some(sender) = message.sender() else { return };
 				let username = sender.username().unwrap_or("unknown").to_string();
-				let chat_id = peer.id().bot_api_dialog_id().to_string();
+				let chat_id = peer.id().bot_api_dialog_id().expect("incoming DM peer is never self").to_string();
 				let text = message.text().to_string();
 
 				let _ = self.tx.send(DmEvent::Message {

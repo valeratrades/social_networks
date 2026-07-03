@@ -25,30 +25,30 @@ base64 = "=0.22.1"
 clap = { version = "=4.6.1", features = ["derive"] }
 color-eyre = "=0.6.5"
 colored = "=3.1.1"
-config = "=0.15.23"
+config = "=0.15.25"
 derive-new = "=0.7.0"
 futures = "=0.3.32"
 futures-util = "=0.3.32"
 google-gmail1 = "=7.0.0"
-grammers-client = "=0.9.0"
-grammers-mtsender = "=0.9.0"
-grammers-session = "=0.9.0"
-grammers-tl-types = "=0.9.0"
+grammers-client = "=0.10.0"
+grammers-mtsender = "=0.10.0"
+grammers-session = "=0.10.0"
+grammers-tl-types = "=0.10.0"
 hmac = "=0.13.0"
 hyper = "=1.10.1"
 hyper-rustls = "=0.27.9"
 hyper-util = { version = "=0.1.20", features = ["client", "client-legacy", "http1"] }
 imap = "=3.0.0-alpha.15"
-jiff = { version = "=0.2.28", features = ["serde"] }
+jiff = { version = "=0.2.31", features = ["serde"] }
 libsql = "=0.9.30"
 miette = { version = "=7.6.0", features = ["fancy", "syntect-highlighter", "serde"] }
 oauth1-request = "=0.6.1"
 psm = "=0.1.31"
-quick-xml = "=0.40.1"
-rand = "=0.10.1"
-regex = "=1.12.3"
+quick-xml = "=0.41.0"
+rand = "=0.10.2"
+regex = "=1.12.4"
 reqwest = { version = "=0.13.4", features = ["json", "multipart", "query", "form"] }
-rustls = { version = "=0.23.40", features = ["aws-lc-rs"] }
+rustls = { version = "=0.23.41", features = ["aws-lc-rs"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha1 = "=0.11.0"
@@ -60,15 +60,15 @@ tracing = "=0.1.44"
 tracing-appender = "=0.2.5"
 tracing-subscriber = "=0.3.23"
 trait-variant = "=0.1.2"
-v_exchanges = { version = "=0.18.1", default-features = false, features = ["binance"] }
-v_utils = { version = "=2.15.48", features = ["xdg", "cli", "tracing"] }
+v_exchanges = { version = "=0.18.5", default-features = false, features = ["binance"] }
+v_utils = { version = "=2.15.54", features = ["xdg", "cli", "tracing"] }
 xdg = { version = "=3.0.0", features = ["serde"] }
 yup-oauth2 = "=12.1.2"
 
 social_networks_adapters = { path = "social_networks_adapters", version = "0.3.8" }
 social_networks_utils = { path = "social_networks_utils", version = "0.3.8" }
 
-insta = "=1.47.2"
+insta = "=1.48.0"
 
 # grammers-crypto 0.9.0 requires `glass_pumpkin ^1.10.0`, but 1.10.0 was yanked from crates.io
 # (upstream moved straight to 2.0.0-rc0, leaving no selectable version for that req). This pins

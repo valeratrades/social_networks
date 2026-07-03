@@ -91,7 +91,8 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 				..Default::default()
 			},
 		)
-		.await;
+		.await
+		.map_err(|e| color_eyre::eyre::eyre!(e))?;
 
 	Ok(TelegramConnection { client, updates, runner })
 }

@@ -1,17 +1,14 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/f61125a668a320878494449750330ca58b78c557";
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
-    pre-commit-hooks.inputs.nixpkgs.follows = "nixpkgs";
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
-    v_flakes.inputs.nixpkgs.follows = "nixpkgs";
   };
-  outputs = { self, nixpkgs, flake-utils, pre-commit-hooks, v_flakes }:
+  outputs = { self, flake-utils, pre-commit-hooks, v_flakes }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs {
+        pkgs = import v_flakes.default_nixpkgs {
           inherit system;
           allowUnfree = true;
         };
