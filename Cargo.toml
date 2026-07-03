@@ -16,6 +16,9 @@ tabs_in_doc_comments = "allow"
 get_first = "allow"
 get_last_with_len = "allow"
 
+[workspace.lints.rust]
+unused_features = "allow"
+
 [workspace.dependencies]
 ask_llm = "=2.2.2"
 base64 = "=0.22.1"

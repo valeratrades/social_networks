@@ -4,7 +4,7 @@
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
     pre-commit-hooks.inputs.nixpkgs.follows = "nixpkgs";
-    v_flakes.url = "github:valeratrades/v_flakes/553e1f62d2eac0d7f9898ac8a9aafa6de5e68a92";
+    v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
     v_flakes.inputs.nixpkgs.follows = "nixpkgs";
   };
   outputs = { self, nixpkgs, flake-utils, pre-commit-hooks, v_flakes }:
@@ -52,7 +52,7 @@
           licenses = [{ license = v_flakes.files.licenses.nsfw; }];
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
-        combined = v_flakes.utils.combine [ rs github readme ];
+        combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
       in
       {
         packages =
