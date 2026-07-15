@@ -48,7 +48,7 @@
       text = ''
 Sentiment check: $BTC, how are we feeling?
 
-for future reference: $BTC ~''${btc_price}
+// for future ref: BTC ~''${btc_price}
 - [ ] Bullish
 - [ ] Neutral
 - [ ] Bearish

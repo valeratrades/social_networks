@@ -29,6 +29,7 @@ hyper-rustls.workspace = true
 hyper-util.workspace = true
 imap.workspace = true
 jiff.workspace = true
+mail-parser.workspace = true
 miette.workspace = true
 quick-xml.workspace = true
 rand.workspace = true

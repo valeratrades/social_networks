@@ -176,7 +176,7 @@ impl EmailMonitor {
 	}
 
 	fn process_message_imap(&self, session: &mut Session<Box<dyn ImapConnection>>, uid: u32) -> Result<()> {
-		let messages = session.uid_fetch(uid.to_string(), "(UID ENVELOPE BODY.PEEK[TEXT]<0.500>)").context("Failed to fetch message")?;
+		let messages = session.uid_fetch(uid.to_string(), "(UID ENVELOPE BODY.PEEK[])").context("Failed to fetch message")?;
 
 		let message = messages.iter().next().context("Message not found")?;
 		let envelope = message.envelope().context("No envelope")?;
@@ -205,7 +205,7 @@ impl EmailMonitor {
 
 		let date = envelope.date.as_ref().map(|d| String::from_utf8_lossy(d).to_string()).unwrap_or_else(|| "Unknown".to_string());
 
-		let body_preview: String = message.text().map(|t| String::from_utf8_lossy(t).chars().take(500).collect()).unwrap_or_default();
+		let body_preview: String = message.body().map(decode_body_preview).unwrap_or_default();
 
 		let email_msg = EmailMessage {
 			id: format!("imap-{uid}"),
@@ -646,6 +646,34 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 
 		Ok(is_human)
 	}
+}
+
+/// Parse a raw RFC822 message and return a decoded, human-readable body preview.
+/// Prefers the text/plain part; falls back to tag-stripped HTML. Truncated to 500 chars.
+fn decode_body_preview(raw: &[u8]) -> String {
+	let Some(parsed) = mail_parser::MessageParser::default().parse(raw) else {
+		return String::new();
+	};
+	let text = parsed
+		.body_text(0)
+		.map(|t| t.into_owned())
+		.or_else(|| parsed.body_html(0).map(|h| strip_html_tags(&h)))
+		.unwrap_or_default();
+	text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(500).collect()
+}
+
+fn strip_html_tags(html: &str) -> String {
+	let mut out = String::with_capacity(html.len());
+	let mut in_tag = false;
+	for c in html.chars() {
+		match c {
+			'<' => in_tag = true,
+			'>' => in_tag = false,
+			_ if !in_tag => out.push(c),
+			_ => {}
+		}
+	}
+	out
 }
 
 fn __default_email_token_path() -> String {
