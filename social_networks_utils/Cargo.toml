@@ -2,7 +2,7 @@ cargo-features = ["codegen-backend"]
 
 [package]
 name = "social_networks_utils"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "shared primitives for social_networks"
