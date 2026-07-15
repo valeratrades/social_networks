@@ -117,7 +117,10 @@ impl DiscordDms {
 									let result = match event_type {
 										Some("READY") => self.handle_ready(d),
 										Some("CALL_CREATE") => self.handle_call_create(d),
-										_ => self.handle_message(d),
+										// Only MESSAGE_CREATE: Discord also fires MESSAGE_UPDATE with identical content
+										// when it unfurls links/embeds, which would double-notify.
+										Some("MESSAGE_CREATE") => self.handle_message(d),
+										_ => Ok(()),
 									};
 									if let Err(e) = result {
 										error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
