@@ -50,8 +50,25 @@
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
         };
         combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
+
+        # `nix run .#publish -- major|minor|patch` → cargo-release: bump the bin
+        # crate, commit, tag `v{version}`, push, publish to crates.io. The tag push
+        # triggers release-*.yml (attaches per-target binaries) and bumps the
+        # crates.io version binstall resolves against — both keyed on `v{version}`.
+        # --no-verify: the release CI already does a full cross-platform build.
+        runPublish = pkgs.writeShellApplication {
+          name = "publish";
+          runtimeInputs = [ pkgs.cargo-release pkgs.git rust ];
+          text = ''
+            part="''${1:-}"
+            case "$part" in major|minor|patch) ;; *) echo "usage: nix run .#publish -- major|minor|patch" >&2; exit 1 ;; esac
+            exec cargo release "$part" --execute --no-confirm --no-verify
+          '';
+        };
       in
       {
+        apps.publish = { type = "app"; program = "${runPublish}/bin/publish"; };
+
         packages =
           let
             rustc = rust;
