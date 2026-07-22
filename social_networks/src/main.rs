@@ -9,7 +9,7 @@ use color_eyre::eyre::Result;
 use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::DmsArgs;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
+	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs, install_panic_alert,
 	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
@@ -55,7 +55,7 @@ fn main() {
 			let runtime = tokio::runtime::Runtime::new().unwrap();
 			runtime.block_on(async { Database::try_new().await.map(|_| ()) })
 		}
-		Commands::Dms(_) => run_async(|| async {
+		Commands::Dms(_) => run_async("dms", || async {
 			v_utils::clientside!(Some("dms"));
 			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 			let notifier = TelegramNotifier::new(config.telegram.clone());
@@ -69,7 +69,7 @@ fn main() {
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::Email(args) => run_async(|| async {
+		Commands::Email(args) => run_async("email", || async {
 			v_utils::clientside!(Some("email"));
 			let email_config = config
 				.email
@@ -84,28 +84,28 @@ fn main() {
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::TelegramChannelWatch(_) => run_async(|| async {
+		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
 			v_utils::clientside!(Some("telegram_channel_watch"));
 			let mut adapter = TelegramChannelWatch::new(config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::Twitter(_) => run_async(|| async {
+		Commands::Twitter(_) => run_async("twitter", || async {
 			v_utils::clientside!(Some("twitter"));
 			let mut adapter = TwitterMonitor::new(config.twitter, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::TwitterSchedule(args) => run_async(|| async {
+		Commands::TwitterSchedule(args) => run_async("twitter_schedule", || async {
 			v_utils::clientside!(Some("twitter_schedule"));
 			let mut adapter = TwitterSchedule::new(config.twitter, args.skip_first);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::Youtube(_) => run_async(|| async {
+		Commands::Youtube(_) => run_async("youtube", || async {
 			v_utils::clientside!(Some("youtube"));
 			let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
@@ -119,11 +119,12 @@ fn main() {
 
 /// Build a multi-thread runtime with a 8 MiB worker stack (telegram TL types are deep)
 /// and run the given async block to completion.
-fn run_async<F, Fut, T, E>(f: F) -> Result<T>
+fn run_async<F, Fut, T, E>(surface: &'static str, f: F) -> Result<T>
 where
 	F: FnOnce() -> Fut,
 	Fut: std::future::Future<Output = Result<T, E>>,
 	E: Into<color_eyre::eyre::Report>, {
+	install_panic_alert(surface);
 	let runtime = tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
 		.thread_stack_size(8 * 1024 * 1024)

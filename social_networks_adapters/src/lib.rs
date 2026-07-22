@@ -11,7 +11,7 @@ pub mod twitter;
 pub mod twitter_schedule;
 pub mod youtube;
 
-pub use client::{AdapterError, Client, alert};
+pub use client::{AdapterError, Client, alert, install_panic_alert};
 pub use discord::DiscordDms;
 pub use dm_event::DmEvent;
 pub use email::EmailMonitor;

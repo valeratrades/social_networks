@@ -45,3 +45,22 @@ pub async fn alert(err: &AdapterError) {
 		Err(e) => error!("failed to spawn v_notify: {e}"),
 	}
 }
+
+/// Report any panic to `v_notify` before the process unwinds, then defer to the
+/// default hook (backtrace to stderr). Covers panics the graceful `alert` path
+/// misses: inside `listen`, `dms::run`, `unreachable!`, and spawned tasks.
+pub fn install_panic_alert(surface: &'static str) {
+	let default = std::panic::take_hook();
+	std::panic::set_hook(Box::new(move |info| {
+		let text = format!("[social_networks] {surface} panicked: {info}");
+		error!("{text}");
+		// sync spawn: we are already unwinding, cannot await. A broken v_notify
+		// must not preempt the default hook, so we only log its failure.
+		match std::process::Command::new("v_notify").args(["-l", "error"]).arg(&text).status() {
+			Ok(s) if s.success() => {}
+			Ok(s) => error!("v_notify exited with {s}"),
+			Err(e) => error!("failed to spawn v_notify: {e}"),
+		}
+		default(info);
+	}));
+}
