@@ -690,13 +690,14 @@ impl AdapterClient for EmailMonitor {
 		println!("Email: Listening...");
 		info!("Monitoring email: {}", self.config.email);
 
-		let mut was_error = false;
+		let mut failures = 0u32;
 		loop {
 			match self.run().await {
 				Ok(()) => {
-					if was_error {
-						info!("Email monitor reconnected successfully");
-						was_error = false;
+					if failures > 0 {
+						println!("Email: reconnected after {failures} failed attempts ({} min down)", failures * 5);
+						info!(failures, "Email monitor reconnected");
+						failures = 0;
 					}
 					time::sleep(Duration::from_secs(60)).await;
 				}
@@ -704,10 +705,10 @@ impl AdapterClient for EmailMonitor {
 					if let Some(detail) = classify_email_auth_error(&e) {
 						return Err(AdapterError::Auth { surface: SURFACE, detail });
 					}
-					error!("Email monitor error: {e:#}");
+					failures += 1;
+					error!("Email monitor error (attempt {failures}): {e:#}");
 					error!("Retrying in 5 minutes...");
 					time::sleep(Duration::from_secs(5 * 60)).await;
-					was_error = true;
 				}
 			}
 		}
