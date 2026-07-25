@@ -4593,6 +4593,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "tracing-subscriber",
  "trait-variant",
  "v_utils",
  "xdg",

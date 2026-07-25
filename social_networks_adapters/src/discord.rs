@@ -3,7 +3,7 @@ use std::{convert::Infallible, sync::Arc};
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
-use jiff::{Timestamp, fmt::strtime};
+use jiff::{SignedDuration, Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
@@ -15,14 +15,20 @@ use tokio_tungstenite::{
 	tungstenite::{Message, protocol::frame::coding::CloseCode},
 };
 use tracing::{error, info, warn};
-use v_utils::macros::MyConfigPrimitives;
+use v_utils::{macros::MyConfigPrimitives, trades::Timeframe};
 
 use crate::{
 	client::{AdapterError, Client},
 	dm_event::DmEvent,
+	telegram_notifier::TelegramNotifier,
 };
 
 const SURFACE: &str = "discord_dms";
+const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+/// A session shorter than this counts as a failed connect, so backoff keeps growing.
+const STABLE_SESSION: SignedDuration = SignedDuration::from_secs(60);
+const FLAP_WINDOW: SignedDuration = SignedDuration::from_hours(1);
+const FLAP_THRESHOLD: usize = 5;
 
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct DiscordConfig {
@@ -35,16 +41,80 @@ pub struct DiscordDms {
 	tx: UnboundedSender<DmEvent>,
 	message_counter: u64,
 	my_user_id: Option<String>,
+	notifier: TelegramNotifier,
+	horizon: SignedDuration,
+	/// `None` on cold start: a fresh process has no known gap, and backfilling here
+	/// would re-beep every deploy.
+	last_session_end: Option<Timestamp>,
+	disconnects: Vec<Timestamp>,
+	http: reqwest::Client,
 }
 
 impl DiscordDms {
-	pub fn new(discord_config: DiscordConfig, tx: UnboundedSender<DmEvent>) -> Self {
+	pub fn new(discord_config: DiscordConfig, tx: UnboundedSender<DmEvent>, notifier: TelegramNotifier, notification_horizon: Timeframe) -> Self {
+		let horizon = notification_horizon.signed_duration();
+		assert!(horizon > SignedDuration::ZERO, "dms.notification_horizon must be positive");
 		Self {
 			discord_config,
 			tx,
 			message_counter: 0,
 			my_user_id: None,
+			notifier,
+			horizon,
+			last_session_end: None,
+			disconnects: Vec::new(),
+			http: reqwest::Client::new(),
 		}
+	}
+
+	/// Replay DMs that arrived while the gateway was down. Snowflakes encode creation time,
+	/// so a cutoff timestamp is the only state needed — no message ids to persist.
+	///
+	/// `pub` only for `examples/discord_backfill.rs`, which is the sole way to exercise this
+	/// path without staging a real disconnect.
+	pub async fn backfill(&self, cutoff: Timestamp) -> Result<()> {
+		let after = snowflake_at(cutoff);
+		let channels: Vec<serde_json::Value> = self
+			.http
+			.get("https://discord.com/api/v10/users/@me/channels")
+			// user tokens take no `Bot ` prefix
+			.header("authorization", &self.discord_config.user_token)
+			.send()
+			.await?
+			.error_for_status()?
+			.json()
+			.await?;
+
+		for channel in &channels {
+			let Some(id) = channel.get("id").and_then(|v| v.as_str()) else {
+				continue;
+			};
+			// free filter off the channel list: idle DMs cost zero extra requests
+			let last_message = channel
+				.get("last_message_id")
+				.and_then(|v| v.as_str())
+				.map(|s| s.parse::<u64>().expect("discord snowflakes are numeric strings"));
+			if last_message.is_none_or(|l| l <= after) {
+				continue;
+			}
+
+			let messages: Vec<serde_json::Value> = self
+				.http
+				.get(format!("https://discord.com/api/v10/channels/{id}/messages"))
+				.query(&[("limit", "50".to_string()), ("after", after.to_string())])
+				.header("authorization", &self.discord_config.user_token)
+				.send()
+				.await?
+				.error_for_status()?
+				.json()
+				.await?;
+
+			info!("Backfilling {} messages from channel {id}", messages.len());
+			for message in messages.iter().rev() {
+				self.handle_message(message)?;
+			}
+		}
+		Ok(())
 	}
 
 	/// Run one connection lifetime: connect, then loop until the WS dies.
@@ -60,6 +130,13 @@ impl DiscordDms {
 		};
 		info!("--Discord DM Commands-- connected to WebSocket");
 		println!("Discord DM Commands: Connected");
+
+		if let Some(last_end) = self.last_session_end {
+			let cutoff = backfill_cutoff(last_end, Timestamp::now(), self.horizon);
+			if let Err(e) = self.backfill(cutoff).await {
+				error!("Discord backfill failed: {e:#}");
+			}
+		}
 
 		let mut heartbeat_interval = time::interval(Duration::from_secs(heartbeat_secs));
 
@@ -271,17 +348,41 @@ impl Client for DiscordDms {
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		let mut attempt: u32 = 0;
 		loop {
-			match self.run_session().await {
-				Ok(()) => {
-					let delay = reconnect_delay(attempt);
-					warn!("Discord reconnecting in {:.1}s (attempt {attempt})", delay.as_secs_f64());
-					time::sleep(delay).await;
-					attempt = attempt.saturating_add(1);
-				}
-				Err(e) => return Err(e),
+			let started = Timestamp::now();
+			let outcome = self.run_session().await;
+			let ended = Timestamp::now();
+			self.last_session_end = Some(ended);
+			outcome?;
+
+			if ended.duration_since(started) > STABLE_SESSION {
+				attempt = 0;
 			}
+
+			self.disconnects.push(ended);
+			self.disconnects.retain(|t| ended.duration_since(*t) < FLAP_WINDOW);
+			if self.disconnects.len() >= FLAP_THRESHOLD {
+				let detail = format!("{} disconnects within the last hour", self.disconnects.len());
+				self.notifier.report_recoverable(SURFACE, &detail).await;
+				self.disconnects.clear();
+			}
+
+			let delay = reconnect_delay(attempt);
+			warn!("Discord reconnecting in {:.1}s (attempt {attempt})", delay.as_secs_f64());
+			time::sleep(delay).await;
+			attempt = attempt.saturating_add(1);
 		}
 	}
+}
+
+fn snowflake_at(ts: Timestamp) -> u64 {
+	let ms = ts.as_millisecond() - DISCORD_EPOCH_MS;
+	assert!(ms > 0, "cutoff predates Discord epoch");
+	(ms as u64) << 22
+}
+
+/// Bounded by the horizon so a multi-day outage doesn't bombard on reconnect.
+fn backfill_cutoff(last_session_end: Timestamp, now: Timestamp, horizon: SignedDuration) -> Timestamp {
+	last_session_end.max(now - horizon)
 }
 
 fn reconnect_delay(attempt: u32) -> Duration {
@@ -310,6 +411,28 @@ fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame:
 			error!("Discord WS closed with code {code}: {}, reconnecting...", frame.reason);
 			Ok(())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn snowflake_matches_discord() {
+		// snowflake 1367859374448050318 encodes 2025-05-02T13:44:48.466Z
+		let ts: Timestamp = "2025-05-02T13:44:48.466Z".parse().unwrap();
+		assert_eq!(snowflake_at(ts), 1367859374448050318u64 & !((1 << 22) - 1));
+	}
+
+	#[test]
+	fn cutoff_clamps_to_horizon() {
+		let now: Timestamp = "2025-05-02T12:00:00Z".parse().unwrap();
+		let horizon = SignedDuration::from_hours(12);
+		let long_outage: Timestamp = "2025-04-30T12:00:00Z".parse().unwrap();
+		assert_eq!(backfill_cutoff(long_outage, now, horizon), now - horizon);
+		let blip = now - SignedDuration::from_mins(2);
+		assert_eq!(backfill_cutoff(blip, now, horizon), blip);
 	}
 }
 

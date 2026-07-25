@@ -1,8 +1,8 @@
 use color_eyre::eyre::{Result, bail};
 use reqwest::Client;
-use tracing::instrument;
+use tracing::{error, instrument};
 
-use crate::telegram_dms::{TelegramConfig, TelegramDestination};
+use crate::telegram_dms::TelegramConfig;
 
 #[derive(Clone, Debug)]
 pub struct TelegramNotifier {
@@ -40,22 +40,34 @@ impl TelegramNotifier {
 		self.send_message_to_output(&message).await
 	}
 
+	/// A module reporting "still alive, but something is wrong". Send failures are swallowed
+	/// with an `error!`, same policy as [`crate::client::alert`]: a broken alerting path must
+	/// not kill surfaces that still work.
+	#[instrument(skip_all)]
+	pub async fn report_recoverable(&self, surface: &str, detail: &str) {
+		let text = format!("[social_networks] {surface}: {detail}");
+		error!("{text}");
+		if let Err(e) = self.send_message(&text, vec![("chat_id", self.config.owner_chat_id.to_string())]).await {
+			error!("failed to deliver recoverable report: {e:#}");
+		}
+	}
+
 	#[instrument(skip_all)]
 	pub async fn send_message_to_alerts(&self, text: &str) -> Result<()> {
-		self.send_message(text, &self.config.channel_alerts).await
+		self.send_message(text, self.config.channel_alerts.destination_params()).await
 	}
 
 	#[instrument(skip_all)]
 	async fn send_message_to_output(&self, text: &str) -> Result<()> {
-		self.send_message(text, &self.config.channel_output).await
+		self.send_message(text, self.config.channel_output.destination_params()).await
 	}
 
 	#[instrument(skip_all)]
-	async fn send_message(&self, text: &str, destination: &TelegramDestination) -> Result<()> {
+	async fn send_message(&self, text: &str, chat_params: Vec<(&str, String)>) -> Result<()> {
 		let url = format!("https://api.telegram.org/bot{}/sendMessage", self.config.bot_token);
 
 		let mut params = vec![("text", text.to_string())];
-		params.extend(destination.destination_params());
+		params.extend(chat_params);
 		tracing::debug!(?params);
 
 		let response = self.client.post(&url).form(&params).send().await?;

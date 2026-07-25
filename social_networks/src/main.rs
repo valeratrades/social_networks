@@ -58,8 +58,9 @@ fn main() {
 		Commands::Dms(_) => run_async("dms", || async {
 			v_utils::clientside!(Some("dms"));
 			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+			assert!(config.telegram.owner_chat_id != 0, "telegram.owner_chat_id must be set");
 			let notifier = TelegramNotifier::new(config.telegram.clone());
-			let mut discord = DiscordDms::new(config.dms.discord.clone(), tx.clone());
+			let mut discord = DiscordDms::new(config.dms.discord.clone(), tx.clone(), notifier.clone(), config.dms.notification_horizon);
 			let mut telegram = TelegramDms::new(config.telegram, tx);
 			let err = tokio::select! {
 				e = discord.listen() => e.unwrap_err(),

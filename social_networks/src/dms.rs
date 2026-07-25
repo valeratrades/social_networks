@@ -5,7 +5,10 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use social_networks_adapters::{DmEvent, discord::DiscordConfig, telegram_notifier::TelegramNotifier};
 use tracing::{error, info};
-use v_utils::macros::MyConfigPrimitives;
+use v_utils::{
+	macros::MyConfigPrimitives,
+	trades::{Timeframe, TimeframeDesignator},
+};
 
 const MONITORED_USER_THROTTLE_SECS: i64 = 15 * 60;
 /// CLI args for the `dms` subcommand. Empty today, kept as a placeholder so the
@@ -28,8 +31,10 @@ pub struct DmsConfig {
 	#[serde(default)]
 	#[primitives(skip)]
 	pub discord: DiscordConfig,
+	/// How far back a reconnect may replay missed DMs.
+	#[serde(default = "__default_notification_horizon")]
+	pub notification_horizon: Timeframe,
 }
-
 impl DmsConfig {
 	fn monitored_matches(&self, platform: &str, username: &str) -> bool {
 		self.monitored_users.iter().any(|u| match u {
@@ -46,6 +51,69 @@ pub enum MonitoredUser {
 	All(String),
 	Discord(String),
 	Telegram(String),
+}
+/// Consume DM events forever, applying notification rules. Returns when the event
+/// stream is closed (both adapters dropped their senders), which only happens on
+/// shutdown.
+pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, config: DmsConfig, notifier: TelegramNotifier) {
+	// Throttle map for monitored-user notifications, keyed by (platform, chat_id).
+	let mut last_seen: HashMap<(&'static str, String), Timestamp> = HashMap::new();
+
+	while let Some(event) = events.recv().await {
+		match event {
+			DmEvent::IncomingCall { platform } => {
+				println!("Incoming call on {platform}");
+				if let Err(e) = notifier.send_call_notification(platform).await {
+					error!("Error sending call notification: {e}");
+				} else {
+					info!("Successfully sent call notification ({platform})");
+				}
+			}
+			DmEvent::Message {
+				platform,
+				sender,
+				text,
+				chat_id,
+				is_dm,
+				mentions_me,
+				is_reply_to_me,
+			} => {
+				let has_ping = text.contains("/ping");
+				let addressed_to_me = is_dm || mentions_me || is_reply_to_me;
+
+				if has_ping && addressed_to_me {
+					println!("{platform} ping from {sender}: {text}");
+					if let Err(e) = notifier.send_ping_notification(&sender, platform).await {
+						error!("Error sending ping notification: {e}");
+					} else {
+						info!("Successfully sent ping notification for user: {sender}");
+					}
+					continue;
+				}
+
+				if is_dm && !has_ping && config.monitored_matches(platform, &sender) {
+					let now = Timestamp::now();
+					let key = (platform, chat_id);
+					let should_notify = match last_seen.get(&key) {
+						None => true,
+						Some(prev) => now.duration_since(*prev).as_secs() >= MONITORED_USER_THROTTLE_SECS,
+					};
+					if should_notify {
+						println!("{platform} message from monitored user {sender}: {text}");
+						if let Err(e) = notifier.send_monitored_user_message(&sender, platform).await {
+							error!("Error sending monitored user notification: {e}");
+						} else {
+							info!("Successfully sent monitored user notification for: {sender}");
+						}
+					}
+					last_seen.insert(key, now);
+				}
+			}
+		}
+	}
+}
+fn __default_notification_horizon() -> Timeframe {
+	Timeframe::from_naive(12, TimeframeDesignator::Hours)
 }
 
 impl<'de> Deserialize<'de> for MonitoredUser {
@@ -103,67 +171,6 @@ impl serde::Serialize for MonitoredUser {
 				let mut map = serializer.serialize_map(Some(1))?;
 				map.serialize_entry("telegram", u)?;
 				map.end()
-			}
-		}
-	}
-}
-
-/// Consume DM events forever, applying notification rules. Returns when the event
-/// stream is closed (both adapters dropped their senders), which only happens on
-/// shutdown.
-pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, config: DmsConfig, notifier: TelegramNotifier) {
-	// Throttle map for monitored-user notifications, keyed by (platform, chat_id).
-	let mut last_seen: HashMap<(&'static str, String), Timestamp> = HashMap::new();
-
-	while let Some(event) = events.recv().await {
-		match event {
-			DmEvent::IncomingCall { platform } => {
-				println!("Incoming call on {platform}");
-				if let Err(e) = notifier.send_call_notification(platform).await {
-					error!("Error sending call notification: {e}");
-				} else {
-					info!("Successfully sent call notification ({platform})");
-				}
-			}
-			DmEvent::Message {
-				platform,
-				sender,
-				text,
-				chat_id,
-				is_dm,
-				mentions_me,
-				is_reply_to_me,
-			} => {
-				let has_ping = text.contains("/ping");
-				let addressed_to_me = is_dm || mentions_me || is_reply_to_me;
-
-				if has_ping && addressed_to_me {
-					println!("{platform} ping from {sender}: {text}");
-					if let Err(e) = notifier.send_ping_notification(&sender, platform).await {
-						error!("Error sending ping notification: {e}");
-					} else {
-						info!("Successfully sent ping notification for user: {sender}");
-					}
-					continue;
-				}
-
-				if is_dm && !has_ping && config.monitored_matches(platform, &sender) {
-					let now = Timestamp::now();
-					let key = (platform, chat_id);
-					let should_notify = match last_seen.get(&key) {
-						None => true,
-						Some(prev) => now.duration_since(*prev).as_secs() >= MONITORED_USER_THROTTLE_SECS,
-					};
-					if should_notify {
-						println!("{platform} message from monitored user {sender}: {text}");
-						if let Err(e) = notifier.send_monitored_user_message(&sender, platform).await {
-							error!("Error sending monitored user notification: {e}");
-						} else {
-							info!("Successfully sent monitored user notification for: {sender}");
-						}
-					}
-					last_seen.insert(key, now);
-				}
 			}
 		}
 	}
