@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Result, bail, eyre};
 use reqwest::Client;
 use tracing::{error, instrument};
 
@@ -40,16 +40,37 @@ impl TelegramNotifier {
 		self.send_message_to_output(&message).await
 	}
 
-	/// A module reporting "still alive, but something is wrong". Send failures are swallowed
+	/// A module reporting "still alive, but something is wrong". Delivery failures are swallowed
 	/// with an `error!`, same policy as [`crate::client::alert`]: a broken alerting path must
 	/// not kill surfaces that still work.
 	#[instrument(skip_all)]
 	pub async fn report_recoverable(&self, surface: &str, detail: &str) {
 		let text = format!("[social_networks] {surface}: {detail}");
 		error!("{text}");
-		if let Err(e) = self.send_message(&text, vec![("chat_id", self.config.owner_chat_id.to_string())]).await {
+		let delivered = match self.owner_chat_id().await {
+			Ok(chat_id) => self.send_message(&text, vec![("chat_id", chat_id.to_string())]).await,
+			Err(e) => Err(e),
+		};
+		if let Err(e) = delivered {
 			error!("failed to deliver recoverable report: {e:#}");
 		}
+	}
+
+	/// The Bot API refuses to resolve a *user* `@name` (`getChat` answers "chat not found"), and
+	/// a user's private chat id is their user id, so we lift it off any update they authored.
+	/// Requires the owner to have messaged the bot within its ~24h update retention.
+	async fn owner_chat_id(&self) -> Result<i64> {
+		let url = format!("https://api.telegram.org/bot{}/getUpdates", self.config.bot_token);
+		let response: serde_json::Value = self.client.get(&url).send().await?.json().await?;
+		let updates = response.get("result").and_then(|r| r.as_array()).ok_or_else(|| eyre!("getUpdates returned {response}"))?;
+
+		let owner = self.config.username.trim_start_matches('@');
+		updates
+			.iter()
+			.filter_map(|u| u.get("message")?.get("from"))
+			.find(|from| from.get("username").and_then(|u| u.as_str()) == Some(owner))
+			.and_then(|from| from.get("id").and_then(|id| id.as_i64()))
+			.ok_or_else(|| eyre!("no update from @{owner} in the bot's retention window; message the bot once so it learns the chat id"))
 	}
 
 	#[instrument(skip_all)]

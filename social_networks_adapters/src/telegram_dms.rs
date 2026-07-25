@@ -27,8 +27,6 @@ pub struct TelegramConfig {
 	pub channel_alerts: TelegramDestination,
 	#[private_value]
 	pub channel_output: TelegramDestination,
-	/// Raw numeric id: the Bot API cannot DM by `@name`.
-	pub owner_chat_id: i64,
 	pub api_id: i32,
 	pub api_hash: String,
 	pub phone: String,
