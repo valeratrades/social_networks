@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
-use v_utils::{elog, log, macros::MyConfigPrimitives};
+use v_utils::{log, macros::MyConfigPrimitives};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
 use crate::{
@@ -34,34 +34,52 @@ pub struct EmailConfig {
 	/// Authentication method (IMAP or OAuth)
 	#[primitives(skip)]
 	pub auth: EmailAuth,
-	/// Regex patterns to match against sender email to ignore (skip processing entirely)
 	#[serde(default)]
 	#[primitives(skip)]
-	pub ignore_patterns: Vec<String>,
-	/// Patterns that mark an email as alert-worthy without LLM evaluation
-	#[serde(default)]
-	#[primitives(skip)]
-	pub important_if_contains: ImportantIfContains,
+	pub rules: Rules,
 	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
 	#[serde(default)]
 	pub claude_token: Option<String>,
 }
 
-/// Patterns to check for marking email as alert-worthy.
-/// If any pattern matches, the email is forwarded without LLM check.
-/// Top-level `any` matches against all fields (subject, body, address).
+/// The definitive decision for an email, whatever heuristic produced it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+	/// notify, leave unread
+	Important,
+	/// no notify, leave unread
+	ReadLater,
+	/// no notify, mark read
+	Discard,
+}
+impl Action {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Important => "important",
+			Self::ReadLater => "read_later",
+			Self::Discard => "discard",
+		}
+	}
+}
+
+/// Regex patterns, checked in field order: Important > ReadLater > Discard. Unmatched → LLM.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ImportantIfContains {
-	/// Patterns to match against any field (subject, body, address)
+pub struct Rules {
 	#[serde(default)]
-	pub any: Vec<String>,
-	/// Patterns to match against subject/title only
+	pub important: Match,
+	#[serde(default)]
+	pub read_later: Match,
+	#[serde(default)]
+	pub discard: Match,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Match {
 	#[serde(default)]
 	pub subject: Vec<String>,
-	/// Patterns to match against body only
 	#[serde(default)]
 	pub body: Vec<String>,
-	/// Patterns to match against sender address only
 	#[serde(default)]
 	pub address: Vec<String>,
 }
@@ -72,12 +90,10 @@ pub enum EmailAuth {
 	Imap(ImapAuth),
 	Oauth(OAuthAuth),
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct ImapAuth {
 	pub pass: String,
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct OAuthAuth {
 	pub client_id: String,
@@ -87,28 +103,17 @@ pub struct OAuthAuth {
 	#[primitives(skip)]
 	pub token_path: String,
 }
-
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
 	notifier: TelegramNotifier,
 	db: Database,
-	ignore_regexes: Vec<Regex>,
+	rules: CompiledRules,
 }
 impl EmailMonitor {
 	pub fn try_new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
-		let ignore_regexes = config
-			.ignore_patterns
-			.iter()
-			.map(|pattern| Regex::new(pattern).context(format!("Invalid ignore pattern: {pattern}")))
-			.collect::<Result<Vec<_>>>()?;
-
-		Ok(Self {
-			config,
-			notifier,
-			db,
-			ignore_regexes,
-		})
+		let rules = CompiledRules::try_new(&config.rules)?;
+		Ok(Self { config, notifier, db, rules })
 	}
 
 	pub async fn try_from_configs(email_config: EmailConfig, telegram_config: TelegramConfig) -> Result<Self> {
@@ -406,37 +411,13 @@ impl EmailMonitor {
 			extra_headers,
 		};
 
-		// Check if already processed
-		if self.db.is_email_processed(&email_msg.id).await? {
-			debug!("Message {} already processed, skipping", email_msg.id);
-			return Ok(());
+		let Some(action) = self.triage(&email_msg).await? else { return Ok(()) };
+		match action {
+			Action::Important => self.forward_to_telegram(&email_msg).await?,
+			Action::ReadLater => {}
+			Action::Discard => self.mark_as_read_oauth(hub, message_id).await?,
 		}
-
-		// Check ignore patterns
-		if self.should_ignore(&email_msg.from) {
-			debug!("Ignoring email from: {} (matches ignore pattern)", email_msg.from);
-			self.mark_as_read_oauth(hub, message_id).await?;
-			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, false).await?;
-			return Ok(());
-		}
-
-		// Determine if alert-worthy: either matches important pattern OR is from human (LLM check)
-		let alert_worthy = if self.matches_important_pattern(&email_msg) {
-			log!("Email matches important pattern, marking as alert-worthy: {}", email_msg.from);
-			true
-		} else {
-			self.eval_is_human(&email_msg).await?
-		};
-
-		if alert_worthy {
-			self.forward_to_telegram(&email_msg.from, &email_msg.subject, &email_msg.body_preview).await?;
-			log!("Forwarded alert-worthy email from: {}", email_msg.from);
-			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, alert_worthy).await?;
-		} else {
-			self.mark_as_read_oauth(hub, message_id).await?;
-			elog!("Marked non-alert email as read: {}", email_msg.from);
-			self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, alert_worthy).await?;
-		}
+		self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, action.as_str()).await?;
 
 		Ok(())
 	}
@@ -501,90 +482,42 @@ impl EmailMonitor {
 		F: FnOnce(&str) -> Result<()>, {
 		let rt = tokio::runtime::Handle::current();
 
-		// Check if already processed
-		if rt.block_on(async { self.db.is_email_processed(&email.id).await })? {
+		let Some(action) = rt.block_on(async { self.triage(email).await })? else { return Ok(()) };
+		match action {
+			Action::Important => rt.block_on(async { self.forward_to_telegram(email).await })?,
+			Action::ReadLater => {}
+			Action::Discard => mark_as_read(&email.id)?,
+		}
+		rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, action.as_str()).await })?;
+
+		Ok(())
+	}
+
+	/// `None` = already processed this message before.
+	async fn triage(&self, email: &EmailMessage) -> Result<Option<Action>> {
+		if self.db.is_email_processed(&email.id).await? {
 			debug!("Message {} already processed, skipping", email.id);
-			return Ok(());
+			return Ok(None);
 		}
-
-		// Check ignore patterns
-		if self.should_ignore(&email.from) {
-			debug!("Ignoring email from: {} (matches ignore pattern)", email.from);
-			mark_as_read(&email.id)?;
-			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, false).await })?;
-			return Ok(());
-		}
-
-		// Determine if alert-worthy: either matches important pattern OR is from human (LLM check)
-		let alert_worthy = if self.matches_important_pattern(email) {
-			log!("Email matches important pattern, marking as alert-worthy: {}", email.from);
-			true
-		} else {
-			rt.block_on(async { self.eval_is_human(email).await })?
+		let action = match self.rules.decide(email) {
+			Some(a) => {
+				log!("Email from {} matched rule: {a:?}", email.from);
+				a
+			}
+			None => self.llm_classify(email).await?,
 		};
-
-		if alert_worthy {
-			rt.block_on(async { self.forward_to_telegram(&email.from, &email.subject, &email.body_preview).await })?;
-			log!("Forwarded alert-worthy email from: {}", email.from);
-			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, alert_worthy).await })?;
-		} else {
-			mark_as_read(&email.id)?;
-			elog!("Marked non-alert email as read: {}", email.from);
-			rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, alert_worthy).await })?;
-		}
-
-		Ok(())
+		Ok(Some(action))
 	}
 
-	fn should_ignore(&self, from: &str) -> bool {
-		self.ignore_regexes.iter().any(|regex| regex.is_match(from))
-	}
-
-	/// Check if email matches any of the configured important patterns.
-	/// Returns true if email should be marked as alert-worthy without LLM evaluation.
-	fn matches_important_pattern(&self, email: &EmailMessage) -> bool {
-		let patterns = &self.config.important_if_contains;
-
-		for pattern in &patterns.any {
-			if email.subject.contains(pattern) || email.body_preview.contains(pattern) || email.from.contains(pattern) {
-				debug!("Email matches important pattern '{pattern}' (any field)");
-				return true;
-			}
-		}
-
-		for pattern in &patterns.subject {
-			if email.subject.contains(pattern) {
-				debug!("Email matches important pattern '{pattern}' (subject)");
-				return true;
-			}
-		}
-
-		for pattern in &patterns.body {
-			if email.body_preview.contains(pattern) {
-				debug!("Email matches important pattern '{pattern}' (body)");
-				return true;
-			}
-		}
-
-		for pattern in &patterns.address {
-			if email.from.contains(pattern) {
-				debug!("Email matches important pattern '{pattern}' (address)");
-				return true;
-			}
-		}
-
-		false
-	}
-
-	#[instrument(skip(self, body))]
-	async fn forward_to_telegram(&self, from: &str, subject: &str, body: &str) -> Result<()> {
-		let text = format!("📧 New Email\n\nFrom: {from}\nSubject: {subject}\n\n{body}");
+	#[instrument(skip(self, email))]
+	async fn forward_to_telegram(&self, email: &EmailMessage) -> Result<()> {
+		let text = format!("📧 New Email\n\nFrom: {}\nSubject: {}\n\n{}", email.from, email.subject, email.body_preview);
 		self.notifier.send_message_to_alerts(&text).await?;
-		info!("Forwarded email from {from} to Telegram");
+		info!("Forwarded email from {} to Telegram", email.from);
 		Ok(())
 	}
 
-	async fn eval_is_human(&self, message: &EmailMessage) -> Result<bool> {
+	async fn llm_classify(&self, message: &EmailMessage) -> Result<Action> {
 		if let Some(ref token) = self.config.claude_token {
 			// SAFETY: This is only called from the single-threaded main task, and is setting an env var
 			// that is only read by the ask_llm crate during the subsequent API call in this same function.
@@ -635,16 +568,64 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 			}
 		};
 
-		let is_human = response.text.trim().to_lowercase().starts_with("yes");
+		let action = if response.text.trim().to_lowercase().starts_with("yes") {
+			Action::Important
+		} else {
+			Action::Discard
+		};
 
-		debug!(
-			"LLM evaluation for email from {}: {} (cost: {:.4} cents)",
-			message.from,
-			if is_human { "HUMAN" } else { "AUTOMATED" },
-			response.cost_cents
-		);
+		debug!("LLM evaluation for email from {}: {action:?} (cost: {:.4} cents)", message.from, response.cost_cents);
 
-		Ok(is_human)
+		Ok(action)
+	}
+}
+
+#[derive(Clone, Debug)]
+struct CompiledMatch {
+	subject: Vec<Regex>,
+	body: Vec<Regex>,
+	address: Vec<Regex>,
+}
+impl CompiledMatch {
+	fn try_new(m: &Match) -> Result<Self> {
+		let compile = |patterns: &Vec<String>| patterns.iter().map(|p| Regex::new(p).context(format!("Invalid pattern: {p}"))).collect::<Result<Vec<_>>>();
+		Ok(Self {
+			subject: compile(&m.subject)?,
+			body: compile(&m.body)?,
+			address: compile(&m.address)?,
+		})
+	}
+
+	fn matches(&self, email: &EmailMessage) -> bool {
+		self.subject.iter().any(|r| r.is_match(&email.subject)) || self.body.iter().any(|r| r.is_match(&email.body_preview)) || self.address.iter().any(|r| r.is_match(&email.from))
+	}
+}
+
+#[derive(Clone, Debug)]
+struct CompiledRules {
+	important: CompiledMatch,
+	read_later: CompiledMatch,
+	discard: CompiledMatch,
+}
+impl CompiledRules {
+	fn try_new(rules: &Rules) -> Result<Self> {
+		Ok(Self {
+			important: CompiledMatch::try_new(&rules.important)?,
+			read_later: CompiledMatch::try_new(&rules.read_later)?,
+			discard: CompiledMatch::try_new(&rules.discard)?,
+		})
+	}
+
+	fn decide(&self, email: &EmailMessage) -> Option<Action> {
+		if self.important.matches(email) {
+			Some(Action::Important)
+		} else if self.read_later.matches(email) {
+			Some(Action::ReadLater)
+		} else if self.discard.matches(email) {
+			Some(Action::Discard)
+		} else {
+			None
+		}
 	}
 }
 
@@ -781,7 +762,7 @@ impl std::fmt::Debug for EmailMonitor {
 }
 
 /// Parsed email message (used for both IMAP and OAuth paths)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct EmailMessage {
 	id: String,
 	from: String,
@@ -791,4 +772,41 @@ struct EmailMessage {
 	reply_to: Option<String>,
 	list_unsubscribe: Option<String>,
 	extra_headers: String,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn rules_precedence_and_field_routing() {
+		let rules = CompiledRules::try_new(&Rules {
+			important: Match {
+				address: vec![r"@equilibretechnologies\.com".into()],
+				subject: vec!["Appointment booked".into()],
+				body: vec![],
+			},
+			read_later: Match {
+				address: vec!["Alex Hormozi".into()],
+				..Default::default()
+			},
+			discard: Match {
+				address: vec!["imperiumlabs".into()],
+				..Default::default()
+			},
+		})
+		.unwrap();
+
+		let email = |from: &str, subject: &str| EmailMessage {
+			from: from.into(),
+			subject: subject.into(),
+			..Default::default()
+		};
+
+		assert_eq!(rules.decide(&email("bob@equilibretechnologies.com", "hi")), Some(Action::Important));
+		assert_eq!(rules.decide(&email("Alex Hormozi <a@acq.com>", "hi")), Some(Action::ReadLater));
+		assert_eq!(rules.decide(&email("Alex Hormozi <a@acq.com>", "Appointment booked")), Some(Action::Important));
+		assert_eq!(rules.decide(&email("noreply@imperiumlabs.io", "hi")), Some(Action::Discard));
+		assert_eq!(rules.decide(&email("stranger@example.com", "hi")), None);
+	}
 }

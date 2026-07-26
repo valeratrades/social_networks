@@ -60,16 +60,18 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 
 [email]
 email = "valeratrades@gmail.com"
-ignore_patterns = [
-  "Alex Hormozi",
-]
 claude_token = { env = "CLAUDE_TOKEN" }
 
-[email.important_if_contains]
-any = []
+# regex; checked in order important > read_later > discard, unmatched -> LLM
+[email.rules.important]
+address = ["@equilibretechnologies\\.com"]
 subject = ["Appointment booked"]
-body = []
-address = []
+
+[email.rules.read_later]
+address = ["Alex Hormozi"]
+
+[email.rules.discard]
+address = ["imperiumlabs"]
 
 [email.auth.imap]
 pass = { env = "GOOGLE_MAIN_MAIL_PASS" }

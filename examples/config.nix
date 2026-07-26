@@ -66,13 +66,19 @@ Sentiment check: $BTC, how are we feeling?
 
   email = {
     email = "valeratrades@gmail.com";
-    ignore_patterns = [ "Alex Hormozi" "imperiumlabs" ];
     claude_token = { env = "CLAUDE_TOKEN"; };
-    important_if_contains = {
-      any = [];
-      subject = [ "Appointment booked" ];
-      body = [];
-      address = [];
+    # regex; checked in order important > read_later > discard, unmatched -> LLM
+    rules = {
+      important = {
+        address = [ "@equilibretechnologies\\.com" ];
+        subject = [ "Appointment booked" ];
+      };
+      read_later = {
+        address = [ "Alex Hormozi" ];
+      };
+      discard = {
+        address = [ "imperiumlabs" ];
+      };
     };
     auth = {
       imap = {

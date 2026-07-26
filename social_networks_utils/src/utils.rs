@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use v_exchanges::{ExchangeName, RetryConfig};
+use v_exchanges::{ExchangeInit as _, ExchangeName, RetryConfig};
 
 /// Returns (stack_used, stack_remaining) in bytes
 pub fn stack_usage() -> (usize, usize) {

@@ -22,14 +22,53 @@ impl Database {
                 processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                 from_email   TEXT NOT NULL,
                 subject      TEXT NOT NULL,
-                is_human     INTEGER NOT NULL
+                action       TEXT NOT NULL
             )",
 			(),
 		)
 		.await
 		.wrap_err("failed to create processed_emails table")?;
 
-		Ok(Self { conn })
+		let this = Self { conn };
+		this.migrate_is_human_to_action().await?;
+		Ok(this)
+	}
+
+	/// Pre-`action` DBs carried a boolean `is_human`. Dropping the table instead would re-notify the whole unread inbox.
+	async fn migrate_is_human_to_action(&self) -> Result<()> {
+		let mut rows = self
+			.conn
+			.query("SELECT name FROM pragma_table_info('processed_emails') WHERE name IN ('is_human', 'action')", ())
+			.await
+			.wrap_err("failed to inspect processed_emails schema")?;
+		let mut has_is_human = false;
+		let mut has_action = false;
+		while let Some(row) = rows.next().await.wrap_err("failed to read schema row")? {
+			match row.get_str(0).wrap_err("failed to read column name")? {
+				"is_human" => has_is_human = true,
+				"action" => has_action = true,
+				other => unreachable!("query filters to is_human/action, got {other}"),
+			}
+		}
+		if !has_is_human {
+			return Ok(());
+		}
+		info!("Migrating processed_emails.is_human -> action");
+		if !has_action {
+			self.conn
+				.execute("ALTER TABLE processed_emails ADD COLUMN action TEXT NOT NULL DEFAULT 'discard'", ())
+				.await
+				.wrap_err("failed to add action column")?;
+		}
+		self.conn
+			.execute("UPDATE processed_emails SET action = CASE is_human WHEN 1 THEN 'important' ELSE 'discard' END", ())
+			.await
+			.wrap_err("failed to backfill action column")?;
+		self.conn
+			.execute("ALTER TABLE processed_emails DROP COLUMN is_human", ())
+			.await
+			.wrap_err("failed to drop is_human column")?;
+		Ok(())
 	}
 
 	pub async fn is_email_processed(&self, message_id: &str) -> Result<bool> {
@@ -41,11 +80,11 @@ impl Database {
 		Ok(rows.next().await.wrap_err("failed to read row")?.is_some())
 	}
 
-	pub async fn mark_email_processed(&self, message_id: &str, from_email: &str, subject: &str, is_human: bool) -> Result<()> {
+	pub async fn mark_email_processed(&self, message_id: &str, from_email: &str, subject: &str, action: &str) -> Result<()> {
 		self.conn
 			.execute(
-				"INSERT OR IGNORE INTO processed_emails (message_id, from_email, subject, is_human) VALUES (?1, ?2, ?3, ?4)",
-				libsql::params![message_id, from_email, subject, is_human as i64],
+				"INSERT OR IGNORE INTO processed_emails (message_id, from_email, subject, action) VALUES (?1, ?2, ?3, ?4)",
+				libsql::params![message_id, from_email, subject, action],
 			)
 			.await
 			.wrap_err("failed to execute mark_email_processed")?;
