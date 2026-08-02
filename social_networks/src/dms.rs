@@ -10,7 +10,7 @@ use v_utils::{
 	trades::{Timeframe, TimeframeDesignator},
 };
 
-const MONITORED_USER_THROTTLE_SECS: i64 = 15 * 60;
+const SAME_SOURCE_THROTTLE_SECS: i64 = 15 * 60;
 /// CLI args for the `dms` subcommand. Empty today, kept as a placeholder so the
 /// subcommand can grow flags without changing the command surface.
 #[derive(Args)]
@@ -58,15 +58,29 @@ pub enum MonitoredUser {
 pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, config: DmsConfig, notifier: TelegramNotifier) {
 	// Throttle map for monitored-user notifications, keyed by (platform, chat_id).
 	let mut last_seen: HashMap<(&'static str, String), Timestamp> = HashMap::new();
+	// Separate from `last_seen`: a Discord call and a Discord message share a channel id, and a
+	// message must not mute the call that follows it.
+	let mut last_called: HashMap<(&'static str, String), Timestamp> = HashMap::new();
 
 	while let Some(event) = events.recv().await {
 		match event {
-			DmEvent::IncomingCall { platform } => {
-				println!("Incoming call on {platform}");
-				if let Err(e) = notifier.send_call_notification(platform).await {
+			DmEvent::IncomingCall { platform, caller } => {
+				let now = Timestamp::now();
+				let key = (platform, caller.clone());
+				let should_notify = match last_called.get(&key) {
+					None => true,
+					Some(prev) => now.duration_since(*prev).as_secs() >= SAME_SOURCE_THROTTLE_SECS,
+				};
+				last_called.insert(key, now);
+				if !should_notify {
+					continue;
+				}
+
+				println!("{platform} call from {caller}");
+				if let Err(e) = notifier.send_call_notification(&caller, platform).await {
 					error!("Error sending call notification: {e}");
 				} else {
-					info!("Successfully sent call notification ({platform})");
+					info!("Successfully sent call notification for: {caller} ({platform})");
 				}
 			}
 			DmEvent::Message {
@@ -96,7 +110,7 @@ pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, conf
 					let key = (platform, chat_id);
 					let should_notify = match last_seen.get(&key) {
 						None => true,
-						Some(prev) => now.duration_since(*prev).as_secs() >= MONITORED_USER_THROTTLE_SECS,
+						Some(prev) => now.duration_since(*prev).as_secs() >= SAME_SOURCE_THROTTLE_SECS,
 					};
 					if should_notify {
 						println!("{platform} message from monitored user {sender}: {text}");

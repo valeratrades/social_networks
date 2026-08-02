@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use color_eyre::eyre::Result;
 use futures::future::{Either, select};
 use grammers_client::update::Update;
+use grammers_session::{Session as _, storages::SqliteSession};
 use grammers_tl_types as tl;
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 pub use tg::TelegramDestination;
@@ -61,7 +62,12 @@ impl TelegramDms {
 	/// Run a single connect+listen cycle. Returns `Ok(())` on a recoverable disconnect,
 	/// `Err(AdapterError::Auth)` on auth-class failures.
 	async fn run_session(&mut self) -> Result<(), AdapterError> {
-		let TelegramConnection { client, updates, mut runner } = match self.connect().await {
+		let TelegramConnection {
+			client,
+			updates,
+			mut runner,
+			session,
+		} = match self.connect().await {
 			Ok(c) => c,
 			Err(e) => {
 				if let Some(detail) = classify_telegram_auth_error(&e) {
@@ -75,7 +81,6 @@ impl TelegramDms {
 		info!("--Telegram DM Commands-- connected and authorized");
 		println!("Telegram DM Commands: Connected");
 
-		let _ = client; // hold for the lifetime of the session
 		let mut updates = Box::new(updates);
 
 		loop {
@@ -114,13 +119,13 @@ impl TelegramDms {
 						error!("Error getting next update: {s}, reconnecting...");
 						return Ok(());
 					}
-					Ok(update) => self.handle_update(update),
+					Ok(update) => self.handle_update(&client, &session, update).await,
 				},
 			}
 		}
 	}
 
-	fn handle_update(&mut self, update: Update) {
+	async fn handle_update(&mut self, client: &grammers_client::Client, session: &SqliteSession, update: Update) {
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
 				let Some(peer) = message.peer() else {
@@ -132,6 +137,17 @@ impl TelegramDms {
 				}
 				let Some(sender) = message.sender() else { return };
 				let username = sender.username().unwrap_or("unknown").to_string();
+
+				// A call that already ended lands in the dialog as a service message. This is the
+				// only path that sees calls placed while we were disconnected.
+				if matches!(message.action(), Some(tl::enums::MessageAction::PhoneCall(_))) {
+					let _ = self.tx.send(DmEvent::IncomingCall {
+						platform: "Telegram",
+						caller: username,
+					});
+					return;
+				}
+
 				let chat_id = peer.id().bot_api_dialog_id().expect("incoming DM peer is never self").to_string();
 				let text = message.text().to_string();
 
@@ -145,16 +161,43 @@ impl TelegramDms {
 					is_reply_to_me: false,
 				});
 			}
-			// Incoming voice/video call: server sends `phoneCallRequested` to the callee.
+			// Call still ringing: the server sends `phoneCallRequested` to the callee.
 			// Outgoing calls surface as `Waiting`, so matching `Requested` naturally filters to calls TO me.
 			Update::Raw(raw) =>
 				if let tl::enums::Update::PhoneCall(tl::types::UpdatePhoneCall {
-					phone_call: tl::enums::PhoneCall::Requested(_),
+					phone_call: tl::enums::PhoneCall::Requested(call),
 				}) = &raw.raw
 				{
-					let _ = self.tx.send(DmEvent::IncomingCall { platform: "Telegram" });
+					let caller = resolve_caller(client, session, call.admin_id).await;
+					let _ = self.tx.send(DmEvent::IncomingCall { platform: "Telegram", caller });
 				},
 			_ => {}
+		}
+	}
+}
+
+/// `phoneCallRequested` carries only the caller's id. Resolving it to the same username the
+/// service-message path reports is what lets the consumer collapse the two into one alert.
+/// Losing the name is not worth losing the alert on a call that is ringing right now, so every
+/// failure degrades to the bare id rather than dropping the event.
+async fn resolve_caller(client: &grammers_client::Client, session: &SqliteSession, admin_id: i64) -> String {
+	let peer_id = grammers_session::types::PeerId::user(admin_id).expect("`admin_id` of an incoming call is a user");
+	let peer_ref = match session.peer_ref(peer_id).await {
+		Ok(Some(r)) => r,
+		Ok(None) => {
+			error!("Caller {admin_id} is not in the peer cache");
+			return admin_id.to_string();
+		}
+		Err(e) => {
+			error!("Peer cache lookup failed for caller {admin_id}: {e}");
+			return admin_id.to_string();
+		}
+	};
+	match client.resolve_peer(peer_ref).await {
+		Ok(peer) => peer.username().unwrap_or("unknown").to_string(),
+		Err(e) => {
+			error!("Could not resolve caller {admin_id}: {e}");
+			admin_id.to_string()
 		}
 	}
 }

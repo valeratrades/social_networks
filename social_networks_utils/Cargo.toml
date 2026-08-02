@@ -16,6 +16,7 @@ tag = false
 [dependencies]
 clap.workspace = true
 color-eyre.workspace = true
+futures.workspace = true
 grammers-client.workspace = true
 grammers-mtsender.workspace = true
 grammers-session.workspace = true

@@ -5,6 +5,7 @@
 use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
+use futures::future::{Either, select};
 use grammers_client::{Client, SignInError, client::UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
@@ -19,6 +20,9 @@ pub struct TelegramConnection {
 	pub client: Client,
 	pub updates: grammers_client::client::UpdateStream,
 	pub runner: RunnerFuture,
+	/// `Client` keeps its session private, but updates that carry a bare peer id can only be
+	/// named by looking that id up in the cache the dialog prefetch below warms.
+	pub session: Arc<SqliteSession>,
 }
 
 /// Configuration for establishing a Telegram connection.
@@ -65,36 +69,45 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 	let pool = SenderPool::new(Arc::clone(&session), config.api_id);
 	let SenderPool { runner, handle, updates } = pool;
 	let client = Client::new(handle);
-	let runner: RunnerFuture = Box::pin(runner.run());
-	info!("Connected to Telegram");
+	let mut runner: RunnerFuture = Box::pin(runner.run());
 
-	if !client.is_authorized().await? {
-		authenticate(&client, config.phone, config.api_hash, &session_file).await?;
-	}
+	// The pool opens no socket until its runner is polled, so every RPC in the handshake
+	// deadlocks unless the runner is driven alongside it.
+	let handshake = async {
+		if !client.is_authorized().await? {
+			authenticate(&client, config.phone, config.api_hash, &session_file).await?;
+		}
+		info!("Connected to Telegram");
 
-	// Pre-fetch all dialogs to warm the peer cache with access hashes.
-	// This prevents "missing its hash" warnings when receiving updates for channels.
-	info!("Pre-fetching dialogs to warm peer cache...");
-	let mut dialog_count = 0;
-	let mut dialogs = client.iter_dialogs();
-	while let Some(dialog) = dialogs.next().await? {
-		dialog_count += 1;
-		debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
-	}
-	info!("Cached {dialog_count} dialogs");
+		// Pre-fetch all dialogs to warm the peer cache with access hashes.
+		// This prevents "missing its hash" warnings when receiving updates for channels.
+		info!("Pre-fetching dialogs to warm peer cache...");
+		let mut dialog_count = 0;
+		let mut dialogs = client.iter_dialogs();
+		while let Some(dialog) = dialogs.next().await? {
+			dialog_count += 1;
+			debug!("Cached dialog: {} ({})", dialog.peer().name().unwrap_or_default(), dialog.peer().id());
+		}
+		info!("Cached {dialog_count} dialogs");
 
-	let updates = client
-		.stream_updates(
-			updates,
-			UpdatesConfiguration {
-				catch_up: false,
-				..Default::default()
-			},
-		)
-		.await
-		.map_err(|e| color_eyre::eyre::eyre!(e))?;
+		client
+			.stream_updates(
+				updates,
+				UpdatesConfiguration {
+					catch_up: false,
+					..Default::default()
+				},
+			)
+			.await
+			.map_err(|e| color_eyre::eyre::eyre!(e))
+	};
 
-	Ok(TelegramConnection { client, updates, runner })
+	let updates = match select(std::pin::pin!(handshake), runner.as_mut()).await {
+		Either::Left((result, _)) => result?,
+		Either::Right(((), _)) => bail!("MTProto runner exited during connect"),
+	};
+
+	Ok(TelegramConnection { client, updates, runner, session })
 }
 
 /// Check stack usage and return true if we should force a reconnect.

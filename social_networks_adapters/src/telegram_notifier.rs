@@ -20,8 +20,8 @@ impl TelegramNotifier {
 		self.send_message_to_alerts(&text).await
 	}
 
-	pub async fn send_call_notification(&self, platform: &str) -> Result<()> {
-		let text = format!("Incoming call on {platform}");
+	pub async fn send_call_notification(&self, caller: &str, platform: &str) -> Result<()> {
+		let text = format!("Call from: {caller}, {platform}");
 		self.send_message_to_alerts(&text).await
 	}
 

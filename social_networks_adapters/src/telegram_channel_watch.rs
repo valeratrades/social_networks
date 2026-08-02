@@ -87,7 +87,9 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 		StatusDrop::default()
 	};
 
-	let TelegramConnection { client, mut updates, mut runner } = telegram_utils::connect(ConnectionConfig {
+	let TelegramConnection {
+		client, mut updates, mut runner, ..
+	} = telegram_utils::connect(ConnectionConfig {
 		username: &telegram_config.username,
 		phone: &telegram_config.phone,
 		api_id: telegram_config.api_id,

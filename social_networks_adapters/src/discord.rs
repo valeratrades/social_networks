@@ -286,7 +286,15 @@ impl DiscordDms {
 		if let Some(ringing) = ringing
 			&& ringing.iter().any(|id| id.as_str() == Some(my_id))
 		{
-			let _ = self.tx.send(DmEvent::IncomingCall { platform: "Discord" });
+			// CALL_CREATE names no caller; the DM channel is one-to-one, so it identifies them.
+			let channel_id = data
+				.get("channel_id")
+				.and_then(|c| c.as_str())
+				.ok_or_else(|| color_eyre::eyre::eyre!("CALL_CREATE missing channel_id"))?;
+			let _ = self.tx.send(DmEvent::IncomingCall {
+				platform: "Discord",
+				caller: channel_id.to_string(),
+			});
 		}
 		Ok(())
 	}

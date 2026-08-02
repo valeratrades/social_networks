@@ -21,5 +21,9 @@ pub enum DmEvent {
 	},
 	IncomingCall {
 		platform: &'static str,
+		/// Identifies the caller: a username where the adapter can name them, otherwise a
+		/// per-platform id. Doubles as the throttle key, so a ringing call and the service
+		/// message it leaves behind collapse into one notification.
+		caller: String,
 	},
 }
