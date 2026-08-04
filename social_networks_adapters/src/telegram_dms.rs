@@ -119,7 +119,15 @@ impl TelegramDms {
 						error!("Error getting next update: {s}, reconnecting...");
 						return Ok(());
 					}
-					Ok(update) => self.handle_update(&client, &session, update).await,
+					// Resolving a caller costs an RPC, which the runner has to answer: awaiting the
+					// handler on its own hangs the adapter on the first incoming call, forever.
+					Ok(update) => {
+						let handle_fut = std::pin::pin!(self.handle_update(&client, &session, update));
+						if let Either::Right(((), _)) = select(handle_fut, runner.as_mut()).await {
+							error!("MTProto runner exited unexpectedly, reconnecting...");
+							return Ok(());
+						}
+					}
 				},
 			}
 		}

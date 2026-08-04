@@ -71,10 +71,12 @@ pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, conf
 					None => true,
 					Some(prev) => now.duration_since(*prev).as_secs() >= SAME_SOURCE_THROTTLE_SECS,
 				};
-				last_called.insert(key, now);
+				// Only stamping on notify keeps this a fixed window: the ringing update and the
+				// ended-call service message that follows it must not push the window forward.
 				if !should_notify {
 					continue;
 				}
+				last_called.insert(key, now);
 
 				println!("{platform} call from {caller}");
 				if let Err(e) = notifier.send_call_notification(&caller, platform).await {
