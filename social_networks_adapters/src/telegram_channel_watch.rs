@@ -215,40 +215,49 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 				Ok(update) => {
 					message_counter += 1;
 
-					match update {
-						Update::NewMessage(message) if !message.outgoing() => {
-							let peer = match message.peer() {
-								Some(p) => p,
-								None => {
-									error!("Skipping message with unresolved peer");
-									continue;
-								}
-							};
-							let peer_id = peer.id();
+					// Forwarding and profile updates are RPCs the runner has to answer; awaiting them
+					// on their own hangs the watcher on the first matching message.
+					let work = async {
+						'update: {
+							match update {
+								Update::NewMessage(message) if !message.outgoing() => {
+									let peer = match message.peer() {
+										Some(p) => p,
+										None => {
+											error!("Skipping message with unresolved peer");
+											break 'update;
+										}
+									};
+									let peer_id = peer.id();
 
-							if poll_peer_ids.contains(&peer_id) {
-								if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
-									error!("Error handling poll message: {e}");
+									if poll_peer_ids.contains(&peer_id) {
+										if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
+											error!("Error handling poll message: {e}");
+										}
+									} else if info_peer_ids.contains(&peer_id)
+										&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
+									{
+										error!("Error handling info message: {e}");
+									}
 								}
-							} else if info_peer_ids.contains(&peer_id)
-								&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
-							{
-								error!("Error handling info message: {e}");
+								_ => {}
+							}
+
+							let now = Timestamp::now();
+							if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
+								if !status_drop.status.is_empty() {
+									if let Err(e) = update_profile(&client, &status_drop.status).await {
+										error!("Error updating profile: {e}");
+									} else {
+										debug!("Profile status updated; message counter: {message_counter}");
+									}
+								}
+								last_status_update = now;
 							}
 						}
-						_ => {}
-					}
-
-					let now = Timestamp::now();
-					if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
-						if !status_drop.status.is_empty() {
-							if let Err(e) = update_profile(&client, &status_drop.status).await {
-								error!("Error updating profile: {e}");
-							} else {
-								debug!("Profile status updated; message counter: {message_counter}");
-							}
-						}
-						last_status_update = now;
+					};
+					if let Either::Right(((), _)) = select(std::pin::pin!(work), runner.as_mut()).await {
+						return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("MTProto runner exited unexpectedly")));
 					}
 				}
 			},
