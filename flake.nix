@@ -1,17 +1,15 @@
 {
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
-    pre-commit-hooks.url = "github:cachix/git-hooks.nix/ca5b894d3e3e151ffc1db040b6ce4dcc75d31c37";
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, flake-utils, pre-commit-hooks, v_flakes }:
+  outputs = { self, v_flakes }:
+    let
+      inherit (v_flakes) flake-utils pre-commit-hooks;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import v_flakes.default_nixpkgs {
-          inherit system;
-          allowUnfree = true;
-        };
+        pkgs = import v_flakes.default_nixpkgs { inherit system; };
         rust = v_flakes.rs.default_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
@@ -31,7 +29,7 @@
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
-          lastSupportedVersion = "nightly-2025-10-10";
+          lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
           jobs.default = true;
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
           # `cargo docs-rs` can't pick a member in a multi-crate workspace; scope it to the bin crate (mirrors v_exchanges).
@@ -86,6 +84,7 @@
                 openssl.dev
               ];
               nativeBuildInputs = with pkgs; [ pkg-config ];
+              RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
 
               cargoLock.lockFile = ./Cargo.lock;
               src = pkgs.lib.cleanSource ./.;
@@ -103,7 +102,7 @@
                 cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
             packages = [
-              mold-wrapped
+              mold
               openssl
               pkg-config
               rust
