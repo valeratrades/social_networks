@@ -14,7 +14,7 @@ use sha1::Sha1;
 use social_networks_utils::utils::{btc_price, format_num_with_thousands};
 use tokio::time;
 use tracing::{error, info, instrument};
-use v_utils::{macros::MyConfigPrimitives, trades::Timeframe};
+use v_utils::{Timeframe, macros::MyConfigPrimitives};
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
@@ -521,7 +521,7 @@ for ref, current price: ${btc_price}
 	}
 
 	fn dummy_poll_config() -> TwitterPollConfig {
-		use v_utils::trades::Timeframe;
+		use v_utils::Timeframe;
 		// Create a timeframe of 1 hour for testing
 		let schedule_every: Timeframe = serde_json::from_str("\"1h\"").unwrap();
 		TwitterPollConfig {

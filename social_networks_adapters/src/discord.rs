@@ -15,7 +15,7 @@ use tokio_tungstenite::{
 	tungstenite::{Message, protocol::frame::coding::CloseCode},
 };
 use tracing::{error, info, warn};
-use v_utils::{macros::MyConfigPrimitives, trades::Timeframe};
+use v_utils::{Timeframe, macros::MyConfigPrimitives};
 
 use crate::{
 	client::{AdapterError, Client},
@@ -52,7 +52,10 @@ pub struct DiscordDms {
 
 impl DiscordDms {
 	pub fn new(discord_config: DiscordConfig, tx: UnboundedSender<DmEvent>, notifier: TelegramNotifier, notification_horizon: Timeframe) -> Self {
-		let horizon = notification_horizon.signed_duration();
+		// `Timeframe::signed_duration` did not survive the move out of `v_utils::trades`; the
+		// remaining `duration()` is a `std::time::Duration`, and the horizon is subtracted from
+		// a jiff `Timestamp`.
+		let horizon = SignedDuration::try_from(notification_horizon.duration()).expect("a Timeframe is milliseconds, always in SignedDuration range");
 		assert!(horizon > SignedDuration::ZERO, "dms.notification_horizon must be positive");
 		Self {
 			discord_config,

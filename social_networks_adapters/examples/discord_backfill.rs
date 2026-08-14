@@ -2,7 +2,7 @@
 //! `DISCORD_AUTH=... DEFAULT_USERNAME=... cargo r -p social_networks_adapters --example discord_backfill`
 use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::{DiscordDms, discord::DiscordConfig, telegram_notifier::TelegramNotifier};
-use v_utils::trades::{Timeframe, TimeframeDesignator};
+use v_utils::{Timeframe, TimeframeDesignator};
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {

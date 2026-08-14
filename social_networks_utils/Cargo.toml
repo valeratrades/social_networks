@@ -16,6 +16,7 @@ tag = false
 [dependencies]
 clap.workspace = true
 color-eyre.workspace = true
+exchange_interactions.workspace = true
 futures.workspace = true
 grammers-client.workspace = true
 grammers-mtsender.workspace = true
@@ -25,7 +26,6 @@ psm.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 tracing.workspace = true
-v_exchanges.workspace = true
 v_utils.workspace = true
 xdg.workspace = true
 

@@ -5,10 +5,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use social_networks_adapters::{DmEvent, discord::DiscordConfig, telegram_notifier::TelegramNotifier};
 use tracing::{error, info};
-use v_utils::{
-	macros::MyConfigPrimitives,
-	trades::{Timeframe, TimeframeDesignator},
-};
+use v_utils::{Timeframe, TimeframeDesignator, macros::MyConfigPrimitives};
 
 const SAME_SOURCE_THROTTLE_SECS: i64 = 15 * 60;
 /// CLI args for the `dms` subcommand. Empty today, kept as a placeholder so the
