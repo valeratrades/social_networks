@@ -25,6 +25,9 @@ use crate::{
 
 const SURFACE: &str = "discord_dms";
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+/// `MessageType::CALL`, written into the DM the moment a call starts. Replaced the `CALL_CREATE`
+/// dispatch, which never produced a notification on this session and named no caller anyway.
+const CALL_MESSAGE_TYPE: u64 = 3;
 /// A session shorter than this counts as a failed connect, so backoff keeps growing.
 const STABLE_SESSION: SignedDuration = SignedDuration::from_secs(60);
 const FLAP_WINDOW: SignedDuration = SignedDuration::from_hours(1);
@@ -40,7 +43,6 @@ pub struct DiscordDms {
 	discord_config: DiscordConfig,
 	tx: UnboundedSender<DmEvent>,
 	message_counter: u64,
-	my_user_id: Option<String>,
 	notifier: TelegramNotifier,
 	horizon: SignedDuration,
 	/// `None` on cold start: a fresh process has no known gap, and backfilling here
@@ -61,7 +63,6 @@ impl DiscordDms {
 			discord_config,
 			tx,
 			message_counter: 0,
-			my_user_id: None,
 			notifier,
 			horizon,
 			last_session_end: None,
@@ -195,8 +196,6 @@ impl DiscordDms {
 								if let Some(d) = &event.d {
 									let event_type = event.t.as_deref();
 									let result = match event_type {
-										Some("READY") => self.handle_ready(d),
-										Some("CALL_CREATE") => self.handle_call_create(d),
 										// Only MESSAGE_CREATE: Discord also fires MESSAGE_UPDATE with identical content
 										// when it unfurls links/embeds, which would double-notify.
 										Some("MESSAGE_CREATE") => self.handle_message(d),
@@ -272,36 +271,6 @@ impl DiscordDms {
 		Ok((read, write, heartbeat_secs))
 	}
 
-	fn handle_ready(&mut self, data: &serde_json::Value) -> Result<()> {
-		let user_id = data
-			.get("user")
-			.and_then(|u| u.get("id"))
-			.and_then(|id| id.as_str())
-			.ok_or_else(|| color_eyre::eyre::eyre!("READY event missing user.id"))?;
-		info!("Captured my user id: {user_id}");
-		self.my_user_id = Some(user_id.to_string());
-		Ok(())
-	}
-
-	fn handle_call_create(&self, data: &serde_json::Value) -> Result<()> {
-		let my_id = self.my_user_id.as_deref().ok_or_else(|| color_eyre::eyre::eyre!("my_user_id not set"))?;
-		let ringing = data.get("ringing").and_then(|r| r.as_array());
-		if let Some(ringing) = ringing
-			&& ringing.iter().any(|id| id.as_str() == Some(my_id))
-		{
-			// CALL_CREATE names no caller; the DM channel is one-to-one, so it identifies them.
-			let channel_id = data
-				.get("channel_id")
-				.and_then(|c| c.as_str())
-				.ok_or_else(|| color_eyre::eyre::eyre!("CALL_CREATE missing channel_id"))?;
-			let _ = self.tx.send(DmEvent::IncomingCall {
-				platform: "Discord",
-				caller: channel_id.to_string(),
-			});
-		}
-		Ok(())
-	}
-
 	fn handle_message(&self, data: &serde_json::Value) -> Result<()> {
 		let author = data.get("author").and_then(|a| a.get("username")).and_then(|u| u.as_str());
 		let content = data.get("content").and_then(|c| c.as_str());
@@ -314,6 +283,16 @@ impl DiscordDms {
 		// Discord WS echoes our own outgoing messages back to us; drop those at the transport boundary,
 		// mirroring Telegram's `!message.outgoing()` filter.
 		if author == self.discord_config.my_username {
+			return Ok(());
+		}
+
+		// Type 3 is the call record, written when the call starts and only updated (never re-created)
+		// when it ends, so an unanswered ring lands here too.
+		if data.get("type").and_then(|t| t.as_u64()) == Some(CALL_MESSAGE_TYPE) {
+			let _ = self.tx.send(DmEvent::IncomingCall {
+				platform: "Discord",
+				caller: author.to_string(),
+			});
 			return Ok(());
 		}
 
@@ -434,6 +413,43 @@ mod tests {
 		// snowflake 1367859374448050318 encodes 2025-05-02T13:44:48.466Z
 		let ts: Timestamp = "2025-05-02T13:44:48.466Z".parse().unwrap();
 		assert_eq!(snowflake_at(ts), 1367859374448050318u64 & !((1 << 22) - 1));
+	}
+
+	/// Payload trimmed off a real incoming call (`GET /channels/{id}/messages`), which is the same
+	/// object the gateway hands to `MESSAGE_CREATE`.
+	#[test]
+	fn call_message_is_an_incoming_call() {
+		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+		let config = DiscordConfig {
+			user_token: String::new(),
+			my_username: "valeratrades".to_string(),
+		};
+		let discord = DiscordDms::new(
+			config,
+			tx,
+			TelegramNotifier::new(Default::default()),
+			Timeframe::from_naive(1, v_utils::TimeframeDesignator::Hours),
+		);
+
+		let call = serde_json::json!({
+			"type": 3,
+			"channel_id": "1446523722717728891",
+			"author": {"id": "1442413014119743508", "username": "p056212"},
+			"content": "",
+			"call": {"participants": ["474661840735961089"]},
+		});
+		discord.handle_message(&call).unwrap();
+		assert!(matches!(rx.try_recv().unwrap(), DmEvent::IncomingCall { platform: "Discord", caller } if caller == "p056212"));
+
+		// our own outgoing call leaves an identical record, authored by us
+		let mine = serde_json::json!({
+			"type": 3,
+			"channel_id": "1446523722717728891",
+			"author": {"id": "474661840735961089", "username": "valeratrades"},
+			"content": "",
+		});
+		discord.handle_message(&mine).unwrap();
+		assert!(rx.try_recv().is_err());
 	}
 
 	#[test]
