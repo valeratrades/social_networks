@@ -21,7 +21,10 @@ social_networks/
 ├── social_networks/                        # binary crate
 │   └── src/
 │       ├── main.rs                         # CLI entry, command dispatch
-│       └── health.rs                       # service/config/disk health checks
+│       ├── config.rs                       # root config + LiveSettings
+│       ├── dms.rs                          # notification rules over the DM event stream
+│       ├── health.rs                       # service/config/disk health checks
+│       └── rolodex/                        # per-person Nix files fed from Discord + Telegram
 │
 ├── social_networks_adapters/               # long-running surface adapters
 │   └── src/
@@ -38,8 +41,7 @@ social_networks/
 └── social_networks_utils/                  # shared primitives
     └── src/
         ├── lib.rs
-        ├── config.rs                       # TOML config + LiveSettings
-        ├── db.rs                           # SQLite client (libsql), email dedup
+        ├── db.rs                           # SQLite client (libsql): email dedup, rolodex checkpoints
         ├── telegram_notifier.rs            # central notification hub
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
@@ -86,9 +88,9 @@ When an adapter's `listen()` returns an error:
 
 ## Key Entities
 
-- `AppConfig` (utils::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
+- `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
 - `TelegramNotifier` (utils::telegram_notifier): all in-band outbound notifications flow through here.
-- `Database` (utils::db): email deduplication via SQLite (libsql).
+- `Database` (utils::db): SQLite (libsql). Email deduplication, and the rolodex per-source cursors that keep a full person-file regeneration from clobbering them.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 
 ## Invariants

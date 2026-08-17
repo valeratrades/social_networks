@@ -3,11 +3,13 @@
 mod config;
 mod dms;
 mod health;
+mod rolodex;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::DmsArgs;
+use rolodex::RolodexArgs;
 use social_networks_adapters::{
 	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs, install_panic_alert,
 	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
@@ -34,6 +36,8 @@ enum Commands {
 	Health,
 	/// Run database migrations
 	MigrateDb,
+	/// Per-person records, fed from Discord and Telegram
+	Rolodex(RolodexArgs),
 	/// Telegram channel watching (poll/info forwarding)
 	TelegramChannelWatch(TelegramArgs),
 	/// Twitter operations
@@ -83,6 +87,10 @@ fn main() {
 			let err = monitor.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
+		}),
+		Commands::Rolodex(args) => run_async("rolodex", || async {
+			v_utils::clientside!(Some("rolodex"));
+			rolodex::main(args, config).await
 		}),
 		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
 			v_utils::clientside!(Some("telegram_channel_watch"));

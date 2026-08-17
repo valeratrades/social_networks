@@ -29,9 +29,47 @@ impl Database {
 		.await
 		.wrap_err("failed to create processed_emails table")?;
 
+		// Machine-only, so a full regeneration of a rolodex person file can never clobber it.
+		conn.execute(
+			"CREATE TABLE IF NOT EXISTS rolodex_checkpoints (
+                person TEXT NOT NULL,
+                source TEXT NOT NULL,
+                cursor TEXT NOT NULL,
+                PRIMARY KEY (person, source)
+            )",
+			(),
+		)
+		.await
+		.wrap_err("failed to create rolodex_checkpoints table")?;
+
 		let this = Self { conn };
 		this.migrate_is_human_to_action().await?;
 		Ok(this)
+	}
+
+	/// Last item seen for `person` on `source`. Opaque to the db: a discord snowflake and a
+	/// telegram message id are both just the string the fetcher will compare against.
+	pub async fn rolodex_checkpoint(&self, person: &str, source: &str) -> Result<Option<String>> {
+		let mut rows = self
+			.conn
+			.query("SELECT cursor FROM rolodex_checkpoints WHERE person = ?1 AND source = ?2", [person, source])
+			.await
+			.wrap_err("failed to query rolodex_checkpoints")?;
+		match rows.next().await.wrap_err("failed to read row")? {
+			Some(row) => Ok(Some(row.get_str(0).wrap_err("failed to read cursor")?.to_string())),
+			None => Ok(None),
+		}
+	}
+
+	pub async fn set_rolodex_checkpoint(&self, person: &str, source: &str, cursor: &str) -> Result<()> {
+		self.conn
+			.execute(
+				"INSERT OR REPLACE INTO rolodex_checkpoints (person, source, cursor) VALUES (?1, ?2, ?3)",
+				libsql::params![person, source, cursor],
+			)
+			.await
+			.wrap_err("failed to execute set_rolodex_checkpoint")?;
+		Ok(())
 	}
 
 	/// Pre-`action` DBs carried a boolean `is_human`. Dropping the table instead would re-notify the whole unread inbox.

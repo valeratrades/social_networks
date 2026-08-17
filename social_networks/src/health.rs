@@ -20,7 +20,7 @@ pub fn main(config: AppConfig) -> Result<()> {
 
 	check_services();
 	check_env_vars(&config);
-	check_directories();
+	check_directories(&config);
 
 	println!();
 	Ok(())
@@ -136,8 +136,12 @@ fn check_env_vars(config: &AppConfig) {
 	println!("  {} Claude token (for email classification)", status_icon(claude_token_ok));
 }
 
-fn check_directories() {
+fn check_directories(config: &AppConfig) {
 	println!("\n{}", "Directory Sizes:".bold());
+
+	if let Some(rolodex) = &config.rolodex {
+		check_directory_size(&rolodex.path, "Rolodex directory");
+	}
 
 	let app_name = env!("CARGO_PKG_NAME");
 	let xdg_dirs = xdg::BaseDirectories::with_prefix(app_name);

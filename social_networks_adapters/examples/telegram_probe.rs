@@ -23,6 +23,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
 		api_id: 19721916,
 		api_hash: &std::env::var("TELEGRAM_API_HASH")?,
 		session_suffix: &std::env::args().nth(1).unwrap_or_default(),
+		seed_from: None,
 	})
 	.await?;
 

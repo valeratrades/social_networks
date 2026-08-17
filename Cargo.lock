@@ -4660,12 +4660,18 @@ dependencies = [
 name = "social_networks"
 version = "0.3.16"
 dependencies = [
+ "ask_llm",
  "clap",
  "color-eyre",
  "colored",
+ "futures",
+ "grammers-client",
+ "grammers-tl-types",
  "jiff",
  "miette",
+ "reqwest",
  "serde",
+ "serde_json",
  "social_networks_adapters",
  "social_networks_utils",
  "tokio",

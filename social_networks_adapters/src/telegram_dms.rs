@@ -55,6 +55,7 @@ impl TelegramDms {
 			api_id: self.telegram_config.api_id,
 			api_hash: &self.telegram_config.api_hash,
 			session_suffix: "_dm",
+			seed_from: None,
 		})
 		.await
 	}

@@ -8,6 +8,7 @@ Fill in `~/.config/social_networks.toml` following [examples/config.toml](../exa
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health status of all services, config, and directories |
 | `migrate-db` | Run database migrations |
+| `rolodex` | Per-person records, fed from Discord and Telegram |
 | `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
 | `twitter` | Twitter operations |
 | `twitter-schedule` | Twitter scheduled posting |

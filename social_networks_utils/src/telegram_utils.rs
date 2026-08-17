@@ -33,6 +33,10 @@ pub struct ConnectionConfig<'a> {
 	pub api_hash: &'a str,
 	/// Session file suffix (e.g., "_dm" for DM monitor, "" for main)
 	pub session_suffix: &'a str,
+	/// Suffix of the session to copy from when this one does not exist yet. The auth key travels
+	/// with the file, so the copy is authorized without a login code and without registering a new
+	/// device; the separate sqlite file is what keeps it off the 24/7 daemon's write path.
+	pub seed_from: Option<&'a str>,
 }
 
 /// Establishes a Telegram connection with proper session handling.
@@ -48,6 +52,19 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 	let session_filename = format!("{}{}.session", config.username, config.session_suffix);
 	let session_file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file(&session_filename)?;
 	info!("Using session file: {}", session_file.display());
+
+	if !session_file.exists()
+		&& let Some(seed) = config.seed_from
+	{
+		let seed_filename = format!("{}{seed}.session", config.username);
+		match xdg::BaseDirectories::with_prefix("social_networks").get_state_file(&seed_filename) {
+			Some(seed_file) => {
+				info!("Seeding {session_filename} from {}", seed_file.display());
+				std::fs::copy(&seed_file, &session_file)?;
+			}
+			None => info!("No {seed_filename} to seed {session_filename} from, will authenticate"),
+		}
+	}
 
 	info!("Opening session database");
 	let session = match SqliteSession::open(&session_file).await {

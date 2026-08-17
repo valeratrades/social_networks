@@ -17,7 +17,7 @@ pub struct DmsArgs {}
 ///
 /// Lives in the binary, not the adapters: deciding whether to notify is application logic,
 /// not transport.
-#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+#[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct DmsConfig {
 	/// Users to monitor across all platforms. Can be either:
 	/// - A plain string (applies to all platforms)
@@ -39,6 +39,19 @@ impl DmsConfig {
 			MonitoredUser::Discord(u) => platform == "Discord" && u == username,
 			MonitoredUser::Telegram(u) => platform == "Telegram" && u == username,
 		})
+	}
+}
+
+/// Hand-written because a derived `Timeframe::default()` is 0-length, which is unrepresentable —
+/// and the config machinery serializes defaults to report *any* deserialization error, so a derive
+/// here turns every config mistake in the binary into that panic.
+impl Default for DmsConfig {
+	fn default() -> Self {
+		Self {
+			monitored_users: Vec::new(),
+			discord: DiscordConfig::default(),
+			notification_horizon: __default_notification_horizon(),
+		}
 	}
 }
 

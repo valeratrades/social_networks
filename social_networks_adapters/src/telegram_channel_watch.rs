@@ -95,6 +95,7 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 		api_id: telegram_config.api_id,
 		api_hash: &telegram_config.api_hash,
 		session_suffix: "",
+		seed_from: None,
 	})
 	.await
 	.map_err(|e| {

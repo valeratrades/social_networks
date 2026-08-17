@@ -1,7 +1,7 @@
 use social_networks_adapters::{email::EmailConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
-use crate::dms::DmsConfig;
+use crate::{dms::DmsConfig, rolodex::RolodexConfig};
 
 #[derive(Clone, Debug, Default, LiveSettings, MyConfigPrimitives, Settings)]
 pub struct AppConfig {
@@ -20,4 +20,7 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub email: Option<EmailConfig>,
+	#[settings(skip)]
+	#[serde(default)]
+	pub rolodex: Option<RolodexConfig>,
 }
