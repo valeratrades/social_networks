@@ -110,11 +110,13 @@ async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()
 
 async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
+	let github = sources::Github::default();
 
 	for mut person in people {
 		let mut fetched_sources = BTreeMap::new();
 		let mut handles = BTreeMap::new();
 		let mut messages = Vec::new();
+		let mut activity = Vec::new();
 		let mut cursors: Vec<(String, String)> = Vec::new();
 
 		for (platform, handle) in &person.handles {
@@ -122,7 +124,8 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			let result = match platform.as_str() {
 				"discord" => discord.fetch(handle, cursor.as_deref()).await,
 				"telegram" => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, cursor.as_deref()).await,
-				// connected-account handles (github, youtube, …) carry no fetch path
+				"github" => github.fetch(handle, cursor.as_deref()).await,
+				// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
 				_ => continue,
 			};
 			match result {
@@ -130,6 +133,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 					fetched_sources.extend(fetched.sources);
 					handles.extend(fetched.handles);
 					messages.extend(fetched.messages);
+					activity.extend(fetched.activity);
 					if let Some(cursor) = fetched.cursor {
 						cursors.push((platform.clone(), cursor));
 					}
@@ -139,7 +143,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			}
 		}
 
-		let Some(delta) = delta::Delta::new(&person, &fetched_sources, messages) else {
+		let Some(delta) = delta::Delta::new(&person, &fetched_sources, messages, activity) else {
 			info!("{}: nothing new", person.name);
 			continue;
 		};

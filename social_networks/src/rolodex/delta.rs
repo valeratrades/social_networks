@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use super::{
 	person::{LogEntry, Person},
-	sources::Msg,
+	sources::{Activity, Msg},
 };
 
 /// Something new about a person. Only constructible when there is something new, so there is no
@@ -14,19 +14,21 @@ use super::{
 pub struct Delta<'a> {
 	person: &'a Person,
 	new_messages: Vec<Msg>,
+	new_activity: Vec<Activity>,
 	changed_sources: BTreeMap<String, String>,
 }
 
 impl<'a> Delta<'a> {
-	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, new_messages: Vec<Msg>) -> Option<Self> {
+	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, new_messages: Vec<Msg>, new_activity: Vec<Activity>) -> Option<Self> {
 		let changed_sources: BTreeMap<String, String> = fetched_sources
 			.iter()
 			.filter(|(key, value)| person.sources.get(*key) != Some(value))
 			.map(|(key, value)| (key.clone(), value.clone()))
 			.collect();
-		(!changed_sources.is_empty() || !new_messages.is_empty()).then_some(Self {
+		(!changed_sources.is_empty() || !new_messages.is_empty() || !new_activity.is_empty()).then_some(Self {
 			person,
 			new_messages,
+			new_activity,
 			changed_sources,
 		})
 	}
@@ -91,6 +93,23 @@ fn prompt(delta: &Delta<'_>) -> String {
 			let who = if message.outgoing { "me" } else { &delta.person.name };
 			let source = message.permalink.as_deref().unwrap_or("null");
 			p.push_str(&format!("- [{} | {who} | source={source}] {}\n", message.date, message.text));
+		}
+	}
+
+	if !delta.new_activity.is_empty() {
+		p.push_str(
+			"\n## New public activity (oldest first)\n\
+			 Apply a far higher bar here than to the messages above. A public feed is mostly routine \
+			 churn, and a rolodex full of `pushed to his own repo again` is worse than an empty one. \
+			 Record an entry only for something the person would themselves bring up months later: a \
+			 new project of theirs, a release, a first contribution to a project that is not theirs, \
+			 or a star that marks a real and durable shift in what they work on. Never record ordinary \
+			 pushes to work already covered by the summary, and never record a star or fork on its own \
+			 unless it clearly means something. When in doubt, record nothing — missing an entry costs \
+			 far less than adding one that is not worth remembering.\n",
+		);
+		for activity in &delta.new_activity {
+			p.push_str(&format!("- [{} | source={}] {}\n", activity.date, activity.permalink, activity.text));
 		}
 	}
 

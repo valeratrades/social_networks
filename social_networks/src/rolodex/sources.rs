@@ -23,6 +23,14 @@ pub struct Msg {
 	pub permalink: Option<String>,
 }
 
+/// Something a person did in public. Kept apart from [`Msg`] because it is worth recording under a
+/// far higher bar — see the prompt in `delta`.
+pub struct Activity {
+	pub date: String,
+	pub text: String,
+	pub permalink: String,
+}
+
 /// What one platform knows about a person right now.
 #[derive(Default)]
 pub struct Fetched {
@@ -30,7 +38,9 @@ pub struct Fetched {
 	pub handles: BTreeMap<String, String>,
 	/// Oldest-first.
 	pub messages: Vec<Msg>,
-	/// Newest message id seen. `None` when nothing came back, which leaves the checkpoint alone.
+	/// Oldest-first.
+	pub activity: Vec<Activity>,
+	/// Newest item id seen. `None` when nothing came back, which leaves the checkpoint alone.
 	pub cursor: Option<String>,
 }
 
@@ -193,6 +203,108 @@ pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Re
 	Ok(fetched)
 }
 
+/// Unauthenticated: everything read here is public, and 60 requests an hour is far more than a
+/// hand-run pull over a rolodex spends. A rate-limit 403 surfaces as this handle's failure.
+#[derive(Default)]
+pub struct Github {
+	http: reqwest::Client,
+}
+
+impl Github {
+	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+		let mut fetched = Fetched::default();
+
+		let profile: serde_json::Value = self.get(&format!("https://api.github.com/users/{handle}")).await?;
+		insert_nonempty(&mut fetched.sources, "github:bio", profile.get("bio").and_then(|v| v.as_str()));
+
+		// The feed only reaches back 300 events / 90 days no matter how it is paged, so one page is
+		// the whole of what a rare pull could have recovered anyway.
+		let events: Vec<serde_json::Value> = self.get(&format!("https://api.github.com/users/{handle}/events/public?per_page={PAGE}")).await?;
+		let full_page = events.len() == PAGE;
+		let cursor: Option<u64> = cursor.map(|c| c.parse()).transpose().wrap_err("a github checkpoint is an event id")?;
+
+		let mut reached_cursor = false;
+		// newest-first
+		for event in &events {
+			let id: u64 = event
+				.get("id")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| eyre!("github event without an id"))?
+				.parse()
+				.wrap_err("github event ids are numeric")?;
+			if cursor.is_some_and(|c| id <= c) {
+				reached_cursor = true;
+				break;
+			}
+			fetched.cursor.get_or_insert_with(|| id.to_string());
+			let Some((text, permalink)) = describe(event) else {
+				continue;
+			};
+			let date = event.get("created_at").and_then(|v| v.as_str()).ok_or_else(|| eyre!("github event {id} without created_at"))?;
+			fetched.activity.push(Activity {
+				date: date.parse::<Timestamp>().wrap_err("github timestamps are RFC3339")?.to_zoned(TimeZone::UTC).date().to_string(),
+				text,
+				permalink,
+			});
+		}
+		if full_page && !reached_cursor {
+			warn!("github `{handle}`: the whole {PAGE}-event page was new, anything older is past what the feed keeps");
+		}
+		fetched.activity.reverse();
+		Ok(fetched)
+	}
+
+	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
+		// github 403s a request without one
+		Ok(self
+			.http
+			.get(url)
+			.header("user-agent", "social_networks-rolodex")
+			.send()
+			.await?
+			.error_for_status()?
+			.json()
+			.await?)
+	}
+}
+
+/// `None` for the event types that carry no signal about a person. Filtering here rather than in the
+/// prompt is what keeps the routine churn of a public feed out of the extraction entirely.
+fn describe(event: &serde_json::Value) -> Option<(String, String)> {
+	let repo = event.pointer("/repo/name")?.as_str()?;
+	let repo_url = format!("https://github.com/{repo}");
+	let payload = event.get("payload")?;
+	match event.get("type")?.as_str()? {
+		"PushEvent" => {
+			let head = payload.pointer("/commits/0/message").and_then(|v| v.as_str()).unwrap_or("").lines().next().unwrap_or("");
+			Some((format!("pushed to {repo}: {head}"), repo_url))
+		}
+		// a branch or tag create is routine; a repository create is a new project
+		"CreateEvent" if payload.get("ref_type").and_then(|v| v.as_str()) == Some("repository") => Some((format!("created repository {repo}"), repo_url)),
+		"ReleaseEvent" => {
+			let tag = payload.pointer("/release/tag_name").and_then(|v| v.as_str()).unwrap_or("");
+			let url = payload.pointer("/release/html_url").and_then(|v| v.as_str()).unwrap_or(&repo_url);
+			Some((format!("released {tag} of {repo}"), url.to_string()))
+		}
+		"PublicEvent" => Some((format!("open-sourced {repo}"), repo_url)),
+		"WatchEvent" => Some((format!("starred {repo}"), repo_url)),
+		"ForkEvent" => Some((format!("forked {repo}"), repo_url)),
+		"PullRequestEvent" => {
+			let action = payload.get("action")?.as_str()?;
+			let merged = payload.pointer("/pull_request/merged").and_then(|v| v.as_bool()) == Some(true);
+			let verb = match (action, merged) {
+				("opened", _) => "opened",
+				("closed", true) => "merged",
+				_ => return None,
+			};
+			let title = payload.pointer("/pull_request/title").and_then(|v| v.as_str()).unwrap_or("");
+			let url = payload.pointer("/pull_request/html_url").and_then(|v| v.as_str()).unwrap_or(&repo_url);
+			Some((format!("{verb} a pull request on {repo}: {title}"), url.to_string()))
+		}
+		_ => None,
+	}
+}
+
 fn insert_nonempty(map: &mut BTreeMap<String, String>, key: &str, value: Option<&str>) {
 	if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
 		map.insert(key.to_string(), value.to_string());
@@ -208,6 +320,19 @@ fn next_after(ids: &[u64], limit: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The two event types that share a shape with something far less interesting: a branch create
+	/// is not a new project, and a closed pull request is not a merged one.
+	#[test]
+	fn describe_does_not_inflate() {
+		let create = |ref_type| serde_json::json!({"type": "CreateEvent", "repo": {"name": "o/r"}, "payload": {"ref_type": ref_type}});
+		assert!(describe(&create("branch")).is_none());
+		assert!(describe(&create("repository")).is_some());
+
+		let closed = |merged| serde_json::json!({"type": "PullRequestEvent", "repo": {"name": "o/r"}, "payload": {"action": "closed", "pull_request": {"merged": merged, "title": "t"}}});
+		assert!(describe(&closed(false)).is_none());
+		assert_eq!(describe(&closed(true)).unwrap().0, "merged a pull request on o/r: t");
+	}
 
 	#[test]
 	fn cursor_walks_forward() {

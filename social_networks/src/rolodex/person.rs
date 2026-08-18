@@ -8,7 +8,11 @@ use serde::Deserialize;
 
 /// A person file. The file is a rendered view of this struct — [`render`] regenerates it whole,
 /// so comments and hand formatting do not survive a `pull`.
+///
+/// `deny_unknown_fields` because the alternative is a misspelled or unwrapped attribute reading as
+/// an empty person, which `pull` then reports as "nothing new" forever.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Person {
 	/// File stem. Not in the file itself.
 	#[serde(skip)]
@@ -74,6 +78,7 @@ impl Person {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct LogEntry {
 	pub date: String,
 	pub text: String,
@@ -87,9 +92,11 @@ pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
 	if !dir.exists() {
 		return Ok(BTreeMap::new());
 	}
+	// `/. + <string>` rather than a bare path literal: a configured path may carry a trailing slash
+	// or a space, neither of which a nix path literal accepts.
 	let expr = format!(
-		r#"let d = {dir}; in builtins.listToAttrs (map (n: {{ name = builtins.substring 0 (builtins.stringLength n - 4) n; value = import (d + "/${{n}}"); }}) (builtins.filter (n: builtins.match ".*\\.nix" n != null) (builtins.attrNames (builtins.readDir d))))"#,
-		dir = dir.display()
+		r#"let d = /. + {dir}; in builtins.listToAttrs (map (n: {{ name = builtins.substring 0 (builtins.stringLength n - 4) n; value = import (d + "/${{n}}"); }}) (builtins.filter (n: builtins.match ".*\\.nix" n != null) (builtins.attrNames (builtins.readDir d))))"#,
+		dir = nix_dq(&dir.display().to_string())
 	);
 	let raw: BTreeMap<String, Person> = serde_json::from_slice(&nix_eval(&["--expr", &expr])?).wrap_err_with(|| format!("a person file in {} is not a person", dir.display()))?;
 	Ok(raw

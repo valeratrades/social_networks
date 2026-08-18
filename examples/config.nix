@@ -64,6 +64,10 @@ Sentiment check: $BTC, how are we feeling?
     };
   };
 
+  rolodex = {
+    path = "/home/v/s/g/rolodex/";
+  };
+
   email = {
     email = "valeratrades@gmail.com";
     claude_token = { env = "CLAUDE_TOKEN"; };
