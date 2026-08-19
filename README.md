@@ -59,7 +59,7 @@ The email command supports two authentication methods:
 <!-- markdownlint-restore -->
 
 ## Usage
-Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](./docs/examples/config.nix).
+Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](./examples/config.nix).
 
 ### Commands
 

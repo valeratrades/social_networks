@@ -1,4 +1,4 @@
-Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../examples/config.nix).
+Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../examples/config.nix).
 
 ## Commands
 
