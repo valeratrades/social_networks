@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **New `rolodex` command.** A directory of per-person Nix files, one per person, is now the single source of truth about a person. `rolodex open [pattern]` edits one; `rolodex pull [pattern]` fetches what is new from Discord DMs and notes, Telegram DMs and about, and the GitHub profile and public event feed, then folds it into a summary and a dated log through one LLM call. Per-source cursors live in the db, so a pull that finds nothing new costs nothing. Configured by `[rolodex] path`.
+
 - **Incoming Telegram calls notify again.** Naming the caller of a ringing call costs an RPC, and the DM adapter awaited it without polling the MTProto runner that answers it. The first incoming call therefore hung the adapter outright: no call alert, and no DM, ping or monitored-user alert from Telegram afterwards either, until the process was restarted. Update handling is now driven alongside the runner, so the alert fires and the adapter keeps serving.
 - **Telegram channel watch no longer hangs on the first matching message.** Forwarding a poll/media message and refreshing the profile status are both RPCs, and the watcher awaited them without polling the runner — the same defect as above, so the first watched message it acted on froze the surface for good. Update handling is now driven alongside the runner.
 - **Call alerts use a fixed throttle window.** The 15-minute per-caller mute was refreshed by every call event, including the ones it suppressed, so a caller reaching you more often than that could stay muted indefinitely. The window is now stamped only when an alert is actually sent.

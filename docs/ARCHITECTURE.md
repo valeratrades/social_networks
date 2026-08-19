@@ -24,7 +24,7 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files fed from Discord + Telegram
+│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub
 │
 ├── social_networks_adapters/               # long-running surface adapters
 │   └── src/
@@ -86,6 +86,15 @@ When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
 
+`rolodex` is the one surface-reading command that is not a daemon and notifies nobody — it reads the
+same sessions on demand and writes to disk:
+
+```
+Discord ──┐
+Telegram ─┼──► rolodex ──► LLM extraction ──► <person>.nix
+GitHub ───┘
+```
+
 ## Key Entities
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
@@ -105,6 +114,6 @@ When an adapter's `listen()` returns an error:
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
-- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite.
-- **LLM integration**: email classification and YouTube sentiment via Claude (`ask_llm` crate).
+- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex person files live in a user-chosen directory, everything machine-only stays in the db.
+- **LLM integration**: email classification, YouTube sentiment, and rolodex extraction via Claude (`ask_llm` crate).
 - **Systemd deployment**: each command runs as an independent systemd user service.
