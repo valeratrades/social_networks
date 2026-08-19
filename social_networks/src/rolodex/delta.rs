@@ -63,14 +63,13 @@ fn prompt(delta: &Delta<'_>) -> String {
 		 `summary` is the full rewritten summary, a few sentences at most, carrying everything still \
 		 true. `new_log_entries` holds only entries not already in the log; copy `date` and `source` \
 		 from the message a fact came from, and use null for `source` when it came from a changed \
-		 platform text. Return an empty `new_log_entries` if nothing is worth recording.\n\n",
+		 platform text. Return an empty `new_log_entries` if nothing is worth recording.\n\n\
+		 Never copy a secret into an entry. Passwords, API keys, tokens, private keys, seed phrases \
+		 and card numbers are to be referred to, never reproduced: write `shared his login` and not \
+		 the login. The file is plain text on disk and outlives the conversation.\n\n",
 	);
 
-	p.push_str(&format!(
-		"## Person\n{}{}\n\n",
-		delta.person.id,
-		delta.person.name.as_ref().map(|n| format!(" ({n})")).unwrap_or_default()
-	));
+	p.push_str(&format!("## Person\n{}\n\n", delta.person.name));
 	p.push_str(&format!(
 		"## Current summary\n{}\n\n",
 		if delta.person.summary.is_empty() { "(none)" } else { &delta.person.summary }
@@ -94,7 +93,7 @@ fn prompt(delta: &Delta<'_>) -> String {
 	if !delta.new_messages.is_empty() {
 		p.push_str("\n## New direct messages (oldest first)\n");
 		for message in &delta.new_messages {
-			let who = if message.outgoing { "me" } else { &delta.person.id };
+			let who = if message.outgoing { "me" } else { &delta.person.name };
 			let source = message.permalink.as_deref().unwrap_or("null");
 			p.push_str(&format!("- [{} | {who} | source={source}] {}\n", message.date, message.text));
 		}

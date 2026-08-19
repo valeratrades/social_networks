@@ -56,27 +56,27 @@ enum RolodexCommand {
 
 async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 	let people = person::load_dir(dir)?;
-	let id = match pattern {
+	let name = match pattern {
 		None => {
 			if people.is_empty() {
 				bail!("no people in {}", dir.display());
 			}
-			fzf(people.values(), "")?.ok_or_else(|| eyre!("nobody selected"))?
+			fzf(people.keys(), "")?.ok_or_else(|| eyre!("nobody selected"))?
 		}
 		Some(pattern) => {
-			let matches: Vec<&Person> = people.values().filter(|p| p.matches(pattern)).collect();
+			let matches: Vec<&String> = people.values().filter(|p| p.matches(pattern)).map(|p| &p.name).collect();
 			match matches.len() {
 				0 => {
 					eprintln!("no match for `{pattern}`, creating a new person");
 					pattern.to_string()
 				}
-				1 => matches[0].id.clone(),
+				1 => matches[0].clone(),
 				_ => fzf(matches.into_iter(), pattern)?.ok_or_else(|| eyre!("nobody selected"))?,
 			}
 		}
 	};
 
-	let person = people.get(&id).cloned().unwrap_or_else(|| Person::skeleton(&id));
+	let person = people.get(&name).cloned().unwrap_or_else(|| Person::skeleton(&name));
 	let path = person.path(dir);
 	if !path.exists() {
 		person.write(dir)?;
@@ -117,10 +117,10 @@ async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()
 
 async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
-	let github = sources::Github::new();
+	let github = sources::Github::default();
 
 	let total = people.len();
-	let width = people.iter().map(|p| p.id.chars().count()).max().expect("`pull` bails on an empty selection");
+	let width = people.iter().map(|p| p.name.chars().count()).max().expect("`pull` bails on an empty selection");
 	let pb = ProgressBar::new(total as u64);
 	pb.set_style(
 		ProgressStyle::with_template(" {spinner:.cyan} {prefix:.bold} [{elapsed_precise}] {bar:30.cyan/238} {pos:>2}/{len} {msg:.dim}")
@@ -132,7 +132,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 	let (mut updated, mut entries, mut failures) = (0usize, 0usize, 0usize);
 
 	for mut person in people {
-		let name = format!("{:<width$}", person.id);
+		let name = format!("{:<width$}", person.name);
 		let mut fetched_sources = BTreeMap::new();
 		let mut handles = BTreeMap::new();
 		let mut messages = Vec::new();
@@ -142,8 +142,8 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
 			let Some(source) = Source::parse(platform) else { continue };
-			pb.set_message(format!("{} {platform}", person.id));
-			let cursor = db.rolodex_checkpoint(&person.id, platform).await?;
+			pb.set_message(format!("{} {platform}", person.name));
+			let cursor = db.rolodex_checkpoint(&person.name, platform).await?;
 			let result = match source {
 				Source::Discord => discord.fetch(handle, cursor.as_deref()).await,
 				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, cursor.as_deref()).await,
@@ -162,36 +162,36 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 				// isolated per handle: the checkpoint stays put and the rest of the pull continues
 				Err(e) => {
 					failures += 1;
-					error!("{}: {platform}/{handle} failed, skipping: {e:#}", person.id);
+					error!("{}: {platform}/{handle} failed, skipping: {e:#}", person.name);
 					pb.suspend(|| println!("   {} {name} {platform}/{handle}: {e:#}", "✗".red()));
 				}
 			}
 		}
 
 		let Some(delta) = delta::Delta::new(&person, &fetched_sources, messages, activity) else {
-			info!("{}: nothing new", person.id);
+			info!("{}: nothing new", person.name);
 			pb.suspend(|| println!("   {} {name} unchanged", "·".dimmed()));
 			pb.inc(1);
 			continue;
 		};
-		pb.set_message(format!("{} extracting", person.id));
+		pb.set_message(format!("{} extracting", person.name));
 		let extraction = match delta::extract(&delta).await {
 			Ok(extraction) => extraction,
 			Err(e) => {
 				pb.abandon();
-				return Err(e).wrap_err_with(|| format!("extraction for {}", person.id));
+				return Err(e).wrap_err_with(|| format!("extraction for {}", person.name));
 			}
 		};
 
 		updated += 1;
 		entries += extraction.new_log_entries.len();
-		info!("{}: +{} log entries over {} sources", person.id, extraction.new_log_entries.len(), fetched_sources.len());
+		info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
 		pb.suspend(|| println!("   {} {name} +{} log entries, {} sources", "✓".green(), extraction.new_log_entries.len(), fetched_sources.len()));
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
 		person.write(dir)?;
 		// after the write, so a crash re-fetches rather than losing the messages
 		for (platform, cursor) in cursors {
-			db.set_rolodex_checkpoint(&person.id, &platform, &cursor).await?;
+			db.set_rolodex_checkpoint(&person.name, &platform, &cursor).await?;
 		}
 		pb.inc(1);
 	}
@@ -239,12 +239,10 @@ fn spinner(prefix: &'static str) -> ProgressBar {
 	pb
 }
 
-/// Returns the chosen file stem. `name` is on the line too, so it is searchable and visible, and a
-/// tab keeps it separable from a stem that contains spaces.
-fn fzf<'a>(people: impl Iterator<Item = &'a Person>, query: &str) -> Result<Option<String>> {
-	let input = people.map(|p| format!("{}\t{}", p.id, p.name.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("\n");
+fn fzf<'a>(names: impl Iterator<Item = &'a String>, query: &str) -> Result<Option<String>> {
+	let input = names.cloned().collect::<Vec<_>>().join("\n");
 	let mut fzf = Command::new("fzf")
-		.args(["--query", query, "--delimiter", "\t", "--with-nth", "1,2"])
+		.args(["--query", query])
 		.stdin(Stdio::piped())
 		.stdout(Stdio::piped())
 		.spawn()
@@ -254,6 +252,5 @@ fn fzf<'a>(people: impl Iterator<Item = &'a Person>, query: &str) -> Result<Opti
 	if !output.status.success() {
 		return Ok(None);
 	}
-	let chosen = String::from_utf8(output.stdout)?;
-	Ok(Some(chosen.trim_end_matches('\n').split('\t').next().expect("split always yields one field").to_string()))
+	Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
 }

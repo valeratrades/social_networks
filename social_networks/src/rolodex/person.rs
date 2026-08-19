@@ -16,11 +16,7 @@ use serde::Deserialize;
 pub struct Person {
 	/// File stem. Not in the file itself.
 	#[serde(skip)]
-	pub id: String,
-	/// Free text, never written by `pull`. Whatever a pattern should find this person by beyond the
-	/// file stem and the handles — a real name, a role, tags.
-	#[serde(default)]
-	pub name: Option<String>,
+	pub name: String,
 	/// Platform → handle. `discord` and `telegram` are the two `pull` knows how to fetch; the rest
 	/// come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
@@ -35,26 +31,22 @@ pub struct Person {
 	pub sources: BTreeMap<String, String>,
 }
 impl Person {
-	pub fn skeleton(id: &str) -> Self {
+	pub fn skeleton(name: &str) -> Self {
 		Self {
-			id: id.to_string(),
+			name: name.to_string(),
 			..Default::default()
 		}
 	}
 
 	pub fn path(&self, dir: &Path) -> PathBuf {
-		dir.join(format!("{}.nix", self.id))
+		dir.join(format!("{}.nix", self.name))
 	}
 
-	/// Match on the file stem, `name`, and every handle, so `pull dev_ardi` finds the person whose
+	/// Match on the file stem and on every handle, so `pull dev_ardi` finds the person whose
 	/// discord handle that is without anyone having to know what their file is called.
 	pub fn matches(&self, pattern: &str) -> bool {
 		let pattern = pattern.to_lowercase();
-		[Some(&self.id), self.name.as_ref()]
-			.into_iter()
-			.flatten()
-			.chain(self.handles.values())
-			.any(|field| field.to_lowercase().contains(&pattern))
+		self.name.to_lowercase().contains(&pattern) || self.handles.values().any(|h| h.to_lowercase().contains(&pattern))
 	}
 
 	/// Existing handles win: what a human typed outranks what discord's connected accounts guessed.
@@ -109,27 +101,23 @@ pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
 	let raw: BTreeMap<String, Person> = serde_json::from_slice(&nix_eval(&["--expr", &expr])?).wrap_err_with(|| format!("a person file in {} is not a person", dir.display()))?;
 	Ok(raw
 		.into_iter()
-		.map(|(id, mut person)| {
-			person.id = id.clone();
+		.map(|(name, mut person)| {
+			person.name = name.clone();
 			person.normalize();
-			(id, person)
+			(name, person)
 		})
 		.collect())
 }
 
 pub fn load_one(path: &Path) -> Result<Person> {
 	let mut person: Person = serde_json::from_slice(&nix_eval(&["--file", &path.display().to_string()])?).wrap_err_with(|| format!("{} is not a person", path.display()))?;
-	person.id = path.file_stem().expect("a path we built from a stem").to_string_lossy().into_owned();
+	person.name = path.file_stem().expect("a path we built from a stem").to_string_lossy().into_owned();
 	person.normalize();
 	Ok(person)
 }
 
 pub fn render(person: &Person) -> String {
 	let mut s = String::from("{\n");
-
-	if let Some(name) = &person.name {
-		s.push_str(&format!("  name = {};\n", nix_dq(name)));
-	}
 
 	s.push_str("  handles = {\n");
 	for (platform, handle) in &person.handles {
@@ -206,8 +194,7 @@ mod tests {
 	#[test]
 	fn render_survives_nix() {
 		let person = Person {
-			id: "ardi".to_string(),
-			name: Some("Orion \"crab guy\" Gonzales — rust, exchanges".to_string()),
+			name: "ardi".to_string(),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
 			log: vec![

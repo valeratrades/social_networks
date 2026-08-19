@@ -3,17 +3,19 @@
 
 use std::collections::BTreeMap;
 
-use color_eyre::eyre::{Result, WrapErr, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use grammers_client::Client;
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
 use tracing::warn;
 
 /// How far back to reach on the very first pull of a conversation. Without a checkpoint there is no
-/// natural stopping point, and a decade of DMs is neither affordable nor interesting.
-const INITIAL_MESSAGES: usize = 50;
+/// natural stopping point, and a decade of DMs is neither affordable nor interesting — but the first
+/// pull is the one that writes the summary from nothing, so it is worth more than a thin slice.
+const INITIAL_MESSAGES: usize = 200;
 /// Ceiling per pull once a checkpoint exists. Whatever is left over is picked up by the next run.
 const MAX_MESSAGES: usize = 500;
+/// Discord's own cap on `limit`; asking for more is a 400, not a bigger page.
 const PAGE: usize = 100;
 
 pub struct Msg {
@@ -22,7 +24,6 @@ pub struct Msg {
 	pub text: String,
 	pub permalink: Option<String>,
 }
-
 /// Something a person did in public. Kept apart from [`Msg`] because it is worth recording under a
 /// far higher bar — see the prompt in `delta`.
 pub struct Activity {
@@ -30,7 +31,6 @@ pub struct Activity {
 	pub text: String,
 	pub permalink: String,
 }
-
 /// What one platform knows about a person right now.
 #[derive(Default)]
 pub struct Fetched {
@@ -43,13 +43,11 @@ pub struct Fetched {
 	/// Newest item id seen. `None` when nothing came back, which leaves the checkpoint alone.
 	pub cursor: Option<String>,
 }
-
 pub struct Discord {
 	http: reqwest::Client,
 	token: String,
 	my_username: String,
 }
-
 impl Discord {
 	pub fn new(token: String, my_username: String) -> Self {
 		Self {
@@ -95,12 +93,27 @@ impl Discord {
 		}
 
 		let raw = match cursor {
-			None => self.messages(&channel_id, None, INITIAL_MESSAGES).await?,
+			// walk backwards from the newest, since there is no floor to walk up from
+			None => {
+				let mut raw: Vec<(u64, serde_json::Value)> = Vec::new();
+				let mut anchor = Anchor::Newest;
+				while raw.len() < INITIAL_MESSAGES {
+					let page = self.messages(&channel_id, anchor, PAGE.min(INITIAL_MESSAGES - raw.len())).await?;
+					let Some(oldest) = page.iter().map(|(id, _)| *id).min() else { break };
+					let short = page.len() < PAGE;
+					raw.extend(page);
+					if short {
+						break;
+					}
+					anchor = Anchor::Before(oldest);
+				}
+				raw
+			}
 			Some(cursor) => {
-				let mut after: u64 = cursor.parse().wrap_err("a discord checkpoint is a snowflake")?;
+				let mut anchor = Anchor::After(cursor.parse().wrap_err("a discord checkpoint is a snowflake")?);
 				let mut raw = Vec::new();
 				loop {
-					let page = self.messages(&channel_id, Some(after), PAGE).await?;
+					let page = self.messages(&channel_id, anchor, PAGE).await?;
 					let ids: Vec<u64> = page.iter().map(|(id, _)| *id).collect();
 					raw.extend(page);
 					if raw.len() >= MAX_MESSAGES {
@@ -108,7 +121,7 @@ impl Discord {
 						break;
 					}
 					match next_after(&ids, PAGE) {
-						Some(next) => after = next,
+						Some(next) => anchor = Anchor::After(next),
 						None => break,
 					}
 				}
@@ -123,10 +136,13 @@ impl Discord {
 		Ok(fetched)
 	}
 
-	async fn messages(&self, channel_id: &str, after: Option<u64>, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
+	async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
+		assert!(limit <= PAGE, "discord rejects a limit above {PAGE}");
 		let mut query = vec![("limit".to_string(), limit.to_string())];
-		if let Some(after) = after {
-			query.push(("after".to_string(), after.to_string()));
+		match anchor {
+			Anchor::Newest => {}
+			Anchor::After(id) => query.push(("after".to_string(), id.to_string())),
+			Anchor::Before(id) => query.push(("before".to_string(), id.to_string())),
 		}
 		let page: Vec<serde_json::Value> = self
 			.http
@@ -202,35 +218,13 @@ pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Re
 	fetched.messages = messages;
 	Ok(fetched)
 }
-
+/// Unauthenticated: everything read here is public, and 60 requests an hour is far more than a
+/// hand-run pull over a rolodex spends. A rate-limit 403 surfaces as this handle's failure.
+#[derive(Default)]
 pub struct Github {
 	http: reqwest::Client,
-	token: Option<String>,
 }
-
 impl Github {
-	/// `gh`'s token rather than a config field or an env var: it is already on the machine and
-	/// already scoped. Without one github allows 60 requests an hour *per host*, shared with
-	/// everything else running there, which two people in a rolodex can exhaust.
-	pub fn new() -> Self {
-		// `gh` being absent or logged out is an ordinary state, not an error — the read paths are
-		// public either way. What is not ordinary is finding that out from a bare 403 later.
-		let token = std::process::Command::new("gh")
-			.args(["auth", "token"])
-			.output()
-			.ok()
-			.filter(|out| out.status.success())
-			.map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-			.filter(|token| !token.is_empty());
-		if token.is_none() {
-			warn!("`gh auth token` gave nothing: github reads are unauthenticated, and capped at 60 requests an hour for this whole host");
-		}
-		Self {
-			http: reqwest::Client::new(),
-			token,
-		}
-	}
-
 	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
 		let mut fetched = Fetched::default();
 
@@ -275,21 +269,24 @@ impl Github {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
-		// github 403s a request without a user-agent
-		let mut request = self.http.get(url).header("user-agent", "social_networks-rolodex");
-		if let Some(token) = &self.token {
-			request = request.bearer_auth(token);
-		}
-		let response = request.send().await?;
-		// otherwise an exhausted budget arrives as a bare 403, which says nothing about what to do
-		if response.status() == reqwest::StatusCode::FORBIDDEN && response.headers().get("x-ratelimit-remaining").and_then(|v| v.to_str().ok()) == Some("0") {
-			bail!(
-				"github rate limit exhausted{}",
-				if self.token.is_some() { "" } else { ", and this host is unauthenticated (60/h)" }
-			);
-		}
-		Ok(response.error_for_status()?.json().await?)
+		// github 403s a request without one
+		Ok(self
+			.http
+			.get(url)
+			.header("user-agent", "social_networks-rolodex")
+			.send()
+			.await?
+			.error_for_status()?
+			.json()
+			.await?)
 	}
+}
+
+#[derive(Clone, Copy)]
+enum Anchor {
+	Newest,
+	After(u64),
+	Before(u64),
 }
 
 /// `None` for the event types that carry no signal about a person. Filtering here rather than in the
