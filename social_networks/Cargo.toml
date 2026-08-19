@@ -30,6 +30,7 @@ colored.workspace = true
 futures.workspace = true
 grammers-client.workspace = true
 grammers-tl-types.workspace = true
+indicatif.workspace = true
 jiff.workspace = true
 miette.workspace = true
 reqwest.workspace = true
