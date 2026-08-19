@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use grammers_client::Client;
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
+use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
 
 /// How far back to reach on the very first pull of a conversation. Without a checkpoint there is no
@@ -17,6 +18,16 @@ const INITIAL_MESSAGES: usize = 200;
 const MAX_MESSAGES: usize = 500;
 /// Discord's own cap on `limit`; asking for more is a 400, not a bigger page.
 const PAGE: usize = 100;
+/// The `handles` keys `pull` fetches. Separating this from the dispatch in `mod` would let a new
+/// source fall through to the no-fetch-path arm and silently do nothing.
+#[derive(AsRefStr, Clone, Copy, Debug, EnumIter, EnumString)]
+#[strum(serialize_all = "lowercase")]
+#[non_exhaustive]
+pub enum Source {
+	Discord,
+	Telegram,
+	Github,
+}
 
 pub struct Msg {
 	pub date: String,
@@ -353,6 +364,20 @@ mod tests {
 		let closed = |merged| serde_json::json!({"type": "PullRequestEvent", "repo": {"name": "o/r"}, "payload": {"action": "closed", "pull_request": {"merged": merged, "title": "t"}}});
 		assert!(describe(&closed(false)).is_none());
 		assert_eq!(describe(&closed(true)).unwrap().0, "merged a pull request on o/r: t");
+	}
+
+	/// A variant whose name does not round-trip is one `handles` cannot address, and it would never be
+	/// fetched rather than fail.
+	#[test]
+	fn every_source_is_addressable() {
+		use strum::IntoEnumIterator as _;
+		for source in Source::iter() {
+			assert!(
+				matches!(source.as_ref().parse::<Source>(), Ok(parsed) if parsed.as_ref() == source.as_ref()),
+				"{}",
+				source.as_ref()
+			);
+		}
 	}
 
 	#[test]

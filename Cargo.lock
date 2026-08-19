@@ -4689,6 +4689,7 @@ dependencies = [
  "serde_json",
  "social_networks_adapters",
  "social_networks_utils",
+ "strum",
  "tokio",
  "tracing",
  "v_utils",

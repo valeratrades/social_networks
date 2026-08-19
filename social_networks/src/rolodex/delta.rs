@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
+use strum::IntoEnumIterator as _;
 
 use super::{
 	person::{LogEntry, Person},
-	sources::{Activity, Msg},
+	sources::{Activity, Msg, Source},
 };
 
 /// Something new about a person. Only constructible when there is something new, so there is no
@@ -50,6 +51,87 @@ pub async fn extract(delta: &Delta<'_>) -> Result<Extraction> {
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
 		.wrap_err("extraction call failed")?;
 	serde_json::from_str(&response.text).wrap_err_with(|| format!("extraction did not return the requested shape:\n{}", response.text))
+}
+
+/// A handle stated in the conversation is a source nobody is looking for. What it finds is fetched
+/// by the *next* pull, the same cadence discord's connected accounts already run on.
+///
+/// Skipped when every [`Source`] is already covered — the set of possible additions is empty.
+pub async fn discover_handles(delta: &Delta<'_>) -> Result<Vec<(String, String)>> {
+	if Source::iter().all(|source| delta.person.handles.contains_key(source.as_ref())) {
+		return Ok(Vec::new());
+	}
+	let prompt = discovery_prompt(delta);
+	let response = ask_llm::Client::default()
+		.model(ask_llm::Model::Medium)
+		.force_json()
+		.ask(&prompt)
+		.await
+		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
+		.wrap_err("handle discovery call failed")?;
+	let discovered: Discovered = serde_json::from_str(&response.text).wrap_err_with(|| format!("handle discovery did not return the requested shape:\n{}", response.text))?;
+	Ok(discovered
+		.handles
+		.into_iter()
+		// `FromStr` is the only thing that makes a handle fetchable, so anything else is noise
+		.filter(|h| h.platform.to_lowercase().parse::<Source>().is_ok())
+		.map(|h| (h.platform.to_lowercase(), h.handle.trim().trim_start_matches('@').to_string()))
+		.filter(|(_, handle)| !handle.is_empty())
+		.collect())
+}
+#[derive(Debug, Deserialize)]
+struct Discovered {
+	handles: Vec<DiscoveredHandle>,
+}
+#[derive(Debug, Deserialize)]
+struct DiscoveredHandle {
+	platform: String,
+	handle: String,
+}
+
+fn discovery_prompt(delta: &Delta<'_>) -> String {
+	let mut p = String::from(
+		"You look for one thing: an account handle this person stated or linked outright, on one of \
+		 the platforms listed below as missing, so that their feed can be read later.\n\n\
+		 Record one when this person gives it themselves — `my github is X`, `github.com/X`, a \
+		 profile URL they paste as their own, an @name they name as theirs. Record every such handle \
+		 you see on a missing platform.\n\n\
+		 Do not record anything else. Never guess a handle from a display name, a nickname or an \
+		 email. Never infer one platform's handle from another's. Never take a handle belonging to \
+		 somebody else, one I stated about myself, or one on a platform not listed as missing. A \
+		 wrong handle pulls a stranger's data into this person's file, which costs far more than \
+		 missing one — when nobody stated a handle, {\"handles\": []} is the right and expected answer.\n\n\
+		 Respond with JSON only: {\"handles\": [{\"platform\": string, \"handle\": string}]}\n\
+		 `platform` is one of the platforms listed below as missing; `handle` is the bare username, \
+		 without an @ or a URL around it.\n\n",
+	);
+
+	p.push_str(&format!("## Person\n{}\n\n", delta.person.name));
+
+	p.push_str("## Sources\n`pull` can fetch these platforms, given a handle:\n");
+	for source in Source::iter() {
+		match delta.person.handles.get(source.as_ref()) {
+			Some(handle) => p.push_str(&format!("- {} = \"{handle}\" (have)\n", source.as_ref())),
+			None => p.push_str(&format!("- {} — missing\n", source.as_ref())),
+		}
+	}
+
+	if !delta.changed_sources.is_empty() {
+		p.push_str("\n## Platform texts\n");
+		for (key, value) in &delta.changed_sources {
+			p.push_str(&format!("### {key}\n{value}\n"));
+		}
+	}
+
+	if !delta.new_messages.is_empty() {
+		p.push_str("\n## Direct messages (oldest first)\n");
+		for message in &delta.new_messages {
+			let who = if message.outgoing { "me" } else { &delta.person.name };
+			p.push_str(&format!("- [{who}] {}\n", message.text));
+		}
+	}
+
+	p
 }
 
 fn prompt(delta: &Delta<'_>) -> String {

@@ -22,6 +22,7 @@ use social_networks_utils::{
 	db::Database,
 	telegram_utils::{self, ConnectionConfig, TelegramConnection},
 };
+use sources::Source;
 use tracing::{error, info};
 
 use crate::config::AppConfig;
@@ -141,7 +142,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
-			let Some(source) = Source::parse(platform) else { continue };
+			let Ok(source) = platform.parse::<Source>() else { continue };
 			pb.set_message(format!("{} {platform}", person.name));
 			let cursor = db.rolodex_checkpoint(&person.name, platform).await?;
 			let result = match source {
@@ -183,10 +184,35 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			}
 		};
 
+		pb.set_message(format!("{} discovering handles", person.name));
+		let discovered = match delta::discover_handles(&delta).await {
+			Ok(discovered) => discovered,
+			Err(e) => {
+				pb.abandon();
+				return Err(e).wrap_err_with(|| format!("handle discovery for {}", person.name));
+			}
+		};
+		// what a platform reports about itself outranks what an LLM read out of a conversation
+		let mut added: Vec<String> = Vec::new();
+		for (platform, handle) in discovered {
+			if !person.handles.contains_key(&platform) && !handles.contains_key(&platform) {
+				added.push(platform.clone());
+				handles.insert(platform, handle);
+			}
+		}
+
 		updated += 1;
 		entries += extraction.new_log_entries.len();
 		info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
-		pb.suspend(|| println!("   {} {name} +{} log entries, {} sources", "✓".green(), extraction.new_log_entries.len(), fetched_sources.len()));
+		let added = if added.is_empty() { String::new() } else { format!(", +{}", added.join(" +")) };
+		pb.suspend(|| {
+			println!(
+				"   {} {name} +{} log entries, {} sources{added}",
+				"✓".green(),
+				extraction.new_log_entries.len(),
+				fetched_sources.len()
+			)
+		});
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
 		person.write(dir)?;
 		// after the write, so a crash re-fetches rather than losing the messages
@@ -205,25 +231,6 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 	pb.set_style(ProgressStyle::with_template(" ✓ {prefix:.bold.green} [{elapsed_precise}] {bar:30.green/238} {pos:>2}/{len} {msg:.green}").expect("static template"));
 	pb.finish_with_message(summary);
 	Ok(())
-}
-
-/// The `handles` keys `pull` fetches. Separating this from the dispatch below would let a new source
-/// fall through to the no-fetch-path arm and silently do nothing.
-enum Source {
-	Discord,
-	Telegram,
-	Github,
-}
-
-impl Source {
-	fn parse(platform: &str) -> Option<Self> {
-		match platform {
-			"discord" => Some(Self::Discord),
-			"telegram" => Some(Self::Telegram),
-			"github" => Some(Self::Github),
-			_ => None,
-		}
-	}
 }
 
 fn spinner(prefix: &'static str) -> ProgressBar {
