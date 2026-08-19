@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use grammers_client::Client;
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
@@ -203,14 +203,34 @@ pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Re
 	Ok(fetched)
 }
 
-/// Unauthenticated: everything read here is public, and 60 requests an hour is far more than a
-/// hand-run pull over a rolodex spends. A rate-limit 403 surfaces as this handle's failure.
-#[derive(Default)]
 pub struct Github {
 	http: reqwest::Client,
+	token: Option<String>,
 }
 
 impl Github {
+	/// `gh`'s token rather than a config field or an env var: it is already on the machine and
+	/// already scoped. Without one github allows 60 requests an hour *per host*, shared with
+	/// everything else running there, which two people in a rolodex can exhaust.
+	pub fn new() -> Self {
+		// `gh` being absent or logged out is an ordinary state, not an error — the read paths are
+		// public either way. What is not ordinary is finding that out from a bare 403 later.
+		let token = std::process::Command::new("gh")
+			.args(["auth", "token"])
+			.output()
+			.ok()
+			.filter(|out| out.status.success())
+			.map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+			.filter(|token| !token.is_empty());
+		if token.is_none() {
+			warn!("`gh auth token` gave nothing: github reads are unauthenticated, and capped at 60 requests an hour for this whole host");
+		}
+		Self {
+			http: reqwest::Client::new(),
+			token,
+		}
+	}
+
 	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
 		let mut fetched = Fetched::default();
 
@@ -255,16 +275,20 @@ impl Github {
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
-		// github 403s a request without one
-		Ok(self
-			.http
-			.get(url)
-			.header("user-agent", "social_networks-rolodex")
-			.send()
-			.await?
-			.error_for_status()?
-			.json()
-			.await?)
+		// github 403s a request without a user-agent
+		let mut request = self.http.get(url).header("user-agent", "social_networks-rolodex");
+		if let Some(token) = &self.token {
+			request = request.bearer_auth(token);
+		}
+		let response = request.send().await?;
+		// otherwise an exhausted budget arrives as a bare 403, which says nothing about what to do
+		if response.status() == reqwest::StatusCode::FORBIDDEN && response.headers().get("x-ratelimit-remaining").and_then(|v| v.to_str().ok()) == Some("0") {
+			bail!(
+				"github rate limit exhausted{}",
+				if self.token.is_some() { "" } else { ", and this host is unauthenticated (60/h)" }
+			);
+		}
+		Ok(response.error_for_status()?.json().await?)
 	}
 }
 

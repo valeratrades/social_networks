@@ -23,5 +23,8 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 | `rolodex open [pattern]` | Open a person file in `$EDITOR`. Create the file if the pattern finds nobody. |
 | `rolodex pull [pattern]` | Get new data for each person the pattern finds. Write it to their files. |
 
-A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
-`pull` takes everybody.
+A pattern finds a person by file name, by the optional `name` field, or by any handle. Without a
+pattern, `open` starts `fzf` and `pull` takes everybody.
+
+`pull` writes the full person file. Only `name` is yours to keep — put in it whatever helps you find
+the person later.

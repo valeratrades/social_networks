@@ -66,7 +66,11 @@ fn prompt(delta: &Delta<'_>) -> String {
 		 platform text. Return an empty `new_log_entries` if nothing is worth recording.\n\n",
 	);
 
-	p.push_str(&format!("## Person\n{}\n\n", delta.person.name));
+	p.push_str(&format!(
+		"## Person\n{}{}\n\n",
+		delta.person.id,
+		delta.person.name.as_ref().map(|n| format!(" ({n})")).unwrap_or_default()
+	));
 	p.push_str(&format!(
 		"## Current summary\n{}\n\n",
 		if delta.person.summary.is_empty() { "(none)" } else { &delta.person.summary }
@@ -90,7 +94,7 @@ fn prompt(delta: &Delta<'_>) -> String {
 	if !delta.new_messages.is_empty() {
 		p.push_str("\n## New direct messages (oldest first)\n");
 		for message in &delta.new_messages {
-			let who = if message.outgoing { "me" } else { &delta.person.name };
+			let who = if message.outgoing { "me" } else { &delta.person.id };
 			let source = message.permalink.as_deref().unwrap_or("null");
 			p.push_str(&format!("- [{} | {who} | source={source}] {}\n", message.date, message.text));
 		}
