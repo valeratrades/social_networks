@@ -191,8 +191,16 @@ mod tests {
 
 	/// The file is the storage format, so anything `render` writes must come back identical through
 	/// nix — quoting, escaping and the indented-block trailing newline included.
+	///
+	/// `load_one` shells out to a real evaluator, which the CI runner does not have and the nix
+	/// build sandbox cannot provide to itself. Gating beats deleting the only check on the format.
 	#[test]
 	fn render_survives_nix() {
+		if std::process::Command::new("nix").arg("--version").output().is_err() {
+			eprintln!("render_survives_nix: skipped, no `nix` on PATH");
+			return;
+		}
+
 		let person = Person {
 			name: "ardi".to_string(),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),

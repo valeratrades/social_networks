@@ -13,6 +13,10 @@ repository = "https://github.com/valeratrades/social_networks"
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
+# reached only through `v_utils::clientside!`'s expansion, which machete cannot see
+[package.metadata.cargo-machete]
+ignored = ["miette"]
+
 # keep single-crate-style tags: release workflows trigger on `v[0-9]+.*` and binstall pkg-url expects `v{version}`
 [package.metadata.release]
 tag-name = "v{{version}}"

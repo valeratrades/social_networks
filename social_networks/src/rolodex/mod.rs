@@ -112,7 +112,7 @@ async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()
 	connecting.finish_and_clear();
 	match select(std::pin::pin!(pull_all(&config, &db, dir, people, Some(&client))), runner.as_mut()).await {
 		Either::Left((result, _)) => result,
-		Either::Right(((), _)) => bail!("MTProto runner exited during pull"),
+		Either::Right(((), _)) => Err(eyre!("MTProto runner exited during pull")),
 	}
 }
 

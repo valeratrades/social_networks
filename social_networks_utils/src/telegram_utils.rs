@@ -4,7 +4,7 @@
 
 use std::{future::Future, path::Path, pin::Pin, sync::Arc};
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Result, bail, eyre};
 use futures::future::{Either, select};
 use grammers_client::{Client, SignInError, client::UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
@@ -121,7 +121,7 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 
 	let updates = match select(std::pin::pin!(handshake), runner.as_mut()).await {
 		Either::Left((result, _)) => result?,
-		Either::Right(((), _)) => bail!("MTProto runner exited during connect"),
+		Either::Right(((), _)) => return Err(eyre!("MTProto runner exited during connect")),
 	};
 
 	Ok(TelegramConnection { client, updates, runner, session })

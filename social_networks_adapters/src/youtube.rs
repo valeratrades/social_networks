@@ -1,7 +1,7 @@
 use std::{collections::HashMap, convert::Infallible};
 
 use clap::Args;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, eyre};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -208,7 +208,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 		buf.clear();
 	}
 
-	bail!("No video entry found in RSS feed")
+	Err(eyre!("No video entry found in RSS feed"))
 }
 
 async fn analyze_sentiment(title: &str) -> Result<String> {

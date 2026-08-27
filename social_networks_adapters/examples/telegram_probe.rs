@@ -4,7 +4,7 @@
 //! handshake awaited RPCs.
 //!
 //! `PHONE_NUMBER_FR=... TELEGRAM_API_HASH=... cargo r -p social_networks_adapters --example telegram_probe [session_suffix]`
-use color_eyre::eyre::bail;
+use color_eyre::eyre::{bail, eyre};
 use futures::future::{Either, select};
 use grammers_session::{Session as _, types::PeerId};
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
@@ -44,6 +44,6 @@ async fn main() -> color_eyre::eyre::Result<()> {
 	// Every RPC above and below is answered by the runner; nothing progresses unless it is polled.
 	match select(std::pin::pin!(dump), runner.as_mut()).await {
 		Either::Left((result, _)) => result,
-		Either::Right(((), _)) => bail!("MTProto runner exited"),
+		Either::Right(((), _)) => return Err(eyre!("MTProto runner exited")),
 	}
 }

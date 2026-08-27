@@ -281,12 +281,17 @@ jobs:
       with:
         name: modified-cargo-files
     - uses: dtolnay/install@cargo-docs-rs
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
-        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && cargo docs-rs -p social_networks"
+    - run: "nix-shell -p mold pkg-config openssl.out openssl.dev --command \"export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
+        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
+        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
+        \ -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
+        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev\
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && for p\
+        \ in \\$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[]\
+        \ | select([.targets[].kind[]] | any(. == \\\"lib\\\" or . == \\\"proc-macro\\\
+        \")) | .name'); do\n  cargo docs-rs -p \\\"\\$p\\\"\ndone\n\""
     timeout-minutes: 45
   rust-machete:
     name: Unused Dependencies

@@ -4717,7 +4717,6 @@ dependencies = [
  "insta",
  "jiff",
  "mail-parser",
- "miette",
  "quick-xml 0.41.0",
  "rand 0.10.2",
  "regex",
@@ -4743,7 +4742,6 @@ dependencies = [
 name = "social_networks_utils"
 version = "0.3.17"
 dependencies = [
- "clap",
  "color-eyre",
  "exchange_interactions",
  "futures",
@@ -4752,10 +4750,7 @@ dependencies = [
  "grammers-session",
  "libsql",
  "psm",
- "reqwest",
- "serde",
  "tracing",
- "v_utils",
  "xdg",
 ]
 
