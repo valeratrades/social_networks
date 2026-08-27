@@ -44,6 +44,6 @@ async fn main() -> color_eyre::eyre::Result<()> {
 	// Every RPC above and below is answered by the runner; nothing progresses unless it is polled.
 	match select(std::pin::pin!(dump), runner.as_mut()).await {
 		Either::Left((result, _)) => result,
-		Either::Right(((), _)) => return Err(eyre!("MTProto runner exited")),
+		Either::Right(((), _)) => Err(eyre!("MTProto runner exited")),
 	}
 }
