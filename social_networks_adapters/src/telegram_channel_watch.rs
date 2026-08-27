@@ -219,17 +219,12 @@ async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infall
 					// Forwarding and profile updates are RPCs the runner has to answer; awaiting them
 					// on their own hangs the watcher on the first matching message.
 					let work = async {
-						'update: {
+						{
 							match update {
 								Update::NewMessage(message) if !message.outgoing() => {
-									let peer = match message.peer() {
-										Some(p) => p,
-										None => {
-											error!("Skipping message with unresolved peer");
-											break 'update;
-										}
-									};
-									let peer_id = peer.id();
+									// `peer()` only sees the update batch's own users/chats vector, which the
+									// short-update forms omit entirely. `peer_id()` reads the raw message.
+									let peer_id = message.peer_id();
 
 									if poll_peer_ids.contains(&peer_id) {
 										if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {

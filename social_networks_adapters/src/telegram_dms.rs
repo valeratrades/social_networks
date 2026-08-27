@@ -137,15 +137,17 @@ impl TelegramDms {
 	async fn handle_update(&mut self, client: &grammers_client::Client, session: &SqliteSession, update: Update) {
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
-				let Some(peer) = message.peer() else {
-					error!("Skipping message with unresolved peer");
-					return;
-				};
-				if !matches!(peer, grammers_client::peer::Peer::User(_)) {
+				// `peer()`/`sender()` only see the users vector of the update batch, and a plain DM
+				// arrives as `updateShortMessage`, which carries none. `peer_id()` reads the raw message.
+				let peer_id = message.peer_id();
+				if peer_id.kind() != grammers_session::types::PeerKind::User {
 					return;
 				}
-				let Some(sender) = message.sender() else { return };
-				let username = sender.username().unwrap_or("unknown").to_string();
+				// An incoming private message has no `from_id`; its sender is the peer itself.
+				let username = match message.sender() {
+					Some(sender) => sender.username().unwrap_or("unknown").to_string(),
+					None => resolve_username(client, session, peer_id).await,
+				};
 
 				// A call that already ended lands in the dialog as a service message. This is the
 				// only path that sees calls placed while we were disconnected.
@@ -157,7 +159,7 @@ impl TelegramDms {
 					return;
 				}
 
-				let chat_id = peer.id().bot_api_dialog_id().expect("incoming DM peer is never self").to_string();
+				let chat_id = peer_id.bot_api_dialog_id().expect("incoming DM peer is never self").to_string();
 				let text = message.text().to_string();
 
 				let _ = self.tx.send(DmEvent::Message {
@@ -177,7 +179,8 @@ impl TelegramDms {
 					phone_call: tl::enums::PhoneCall::Requested(call),
 				}) = &raw.raw
 				{
-					let caller = resolve_caller(client, session, call.admin_id).await;
+					let admin_id = grammers_session::types::PeerId::user(call.admin_id).expect("`admin_id` of an incoming call is a user");
+					let caller = resolve_username(client, session, admin_id).await;
 					let _ = self.tx.send(DmEvent::IncomingCall { platform: "Telegram", caller });
 				},
 			_ => {}
@@ -185,28 +188,28 @@ impl TelegramDms {
 	}
 }
 
-/// `phoneCallRequested` carries only the caller's id. Resolving it to the same username the
-/// service-message path reports is what lets the consumer collapse the two into one alert.
-/// Losing the name is not worth losing the alert on a call that is ringing right now, so every
-/// failure degrades to the bare id rather than dropping the event.
-async fn resolve_caller(client: &grammers_client::Client, session: &SqliteSession, admin_id: i64) -> String {
-	let peer_id = grammers_session::types::PeerId::user(admin_id).expect("`admin_id` of an incoming call is a user");
+/// Updates that carry no users vector (`phoneCallRequested`, `updateShortMessage`) give only an id.
+/// Resolving it to the same username the full-update path reports is what lets the consumer collapse
+/// the two into one alert. Losing the name is not worth losing the event, so every failure degrades
+/// to the bare id rather than dropping it.
+async fn resolve_username(client: &grammers_client::Client, session: &SqliteSession, peer_id: grammers_session::types::PeerId) -> String {
+	let bare = peer_id.bare_id_unchecked();
 	let peer_ref = match session.peer_ref(peer_id).await {
 		Ok(Some(r)) => r,
 		Ok(None) => {
-			error!("Caller {admin_id} is not in the peer cache");
-			return admin_id.to_string();
+			error!("Peer {bare} is not in the peer cache");
+			return bare.to_string();
 		}
 		Err(e) => {
-			error!("Peer cache lookup failed for caller {admin_id}: {e}");
-			return admin_id.to_string();
+			error!("Peer cache lookup failed for {bare}: {e}");
+			return bare.to_string();
 		}
 	};
 	match client.resolve_peer(peer_ref).await {
 		Ok(peer) => peer.username().unwrap_or("unknown").to_string(),
 		Err(e) => {
-			error!("Could not resolve caller {admin_id}: {e}");
-			admin_id.to_string()
+			error!("Could not resolve peer {bare}: {e}");
+			bare.to_string()
 		}
 	}
 }
