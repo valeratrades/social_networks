@@ -4672,7 +4672,7 @@ dependencies = [
 
 [[package]]
 name = "social_networks"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "ask_llm",
  "clap",
@@ -4698,7 +4698,7 @@ dependencies = [
 
 [[package]]
 name = "social_networks_adapters"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "ask_llm",
  "base64 0.23.0",
@@ -4740,7 +4740,7 @@ dependencies = [
 
 [[package]]
 name = "social_networks_utils"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "color-eyre",
  "exchange_interactions",
