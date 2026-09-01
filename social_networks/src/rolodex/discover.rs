@@ -1,6 +1,6 @@
 //! From a venue to the people in it. Reads what `recon` already wrote — `members.json` and the
-//! transcript — and leaves a skeleton file for everyone the selection names and nobody has yet.
-//! `pull` does the rest, because a skeleton with a handle in it is all `pull` has ever needed.
+//! transcript — and leaves a skeleton for everyone the selection names and nobody has yet. `pull`
+//! does the rest, because a skeleton with a handle in it is all `pull` has ever needed.
 //!
 //! Selection is relational: a roster joined against its own line counts. A grammar of our own would
 //! be SQL, worse, so the predicate *is* SQL — see [`venue::select`] for the columns. The flags are
@@ -39,7 +39,7 @@ pub struct DiscoverArgs {
 	predicate: Option<String>,
 	#[arg(long)]
 	limit: Option<usize>,
-	/// Write for members who already have a person file too
+	/// Write for members who already have a person directory too
 	#[arg(long)]
 	include_known: bool,
 	/// Print the selection and write nothing
@@ -68,9 +68,9 @@ pub async fn main(dir: &Path, args: DiscoverArgs) -> Result<()> {
 
 	let mut taken: BTreeSet<String> = people.keys().cloned().collect();
 	for member in &fresh {
-		let stem = stem(member, &mut taken);
+		let name = name(member, &mut taken);
 		println!(
-			"   {} {stem}\t{platform}/{}\t{}",
+			"   {} {name}\t{platform}/{}\t{}",
 			if args.dry_run { "?".yellow() } else { "+".green() },
 			member.handle,
 			member.display
@@ -78,7 +78,7 @@ pub async fn main(dir: &Path, args: DiscoverArgs) -> Result<()> {
 		if args.dry_run {
 			continue;
 		}
-		let mut person = Person::skeleton(&stem);
+		let mut person = Person::skeleton(&name);
 		person.handles = BTreeMap::from([(platform.to_string(), member.handle.clone())]);
 		person.write(dir)?;
 	}
@@ -94,7 +94,7 @@ pub async fn main(dir: &Path, args: DiscoverArgs) -> Result<()> {
 		}
 	);
 	if !args.dry_run && !fresh.is_empty() {
-		println!("   the stems are a guess off the display name — `git mv` any of them, `matches` searches handles too");
+		println!("   the names are a guess off the display name — `git mv` any of them, `matches` searches handles too");
 	}
 	Ok(())
 }
@@ -129,21 +129,21 @@ fn where_clause(args: &DiscoverArgs) -> Result<String> {
 }
 
 /// `<first>-<last>` off the display name, the handle when there is nothing else, and a numeric suffix
-/// when that is taken. The stem is not load-bearing — [`Person::matches`] searches handles too.
-fn stem(member: &Member, taken: &mut BTreeSet<String>) -> String {
+/// when that is taken. The name is not load-bearing — [`Person::matches`] searches handles too.
+fn name(member: &Member, taken: &mut BTreeSet<String>) -> String {
 	let base = match slug(&member.display) {
 		Some(slug) => slug,
 		None => slug(&member.handle).unwrap_or_else(|| "unnamed".to_string()),
 	};
-	let mut stem = base.clone();
+	let mut name = base.clone();
 	//LOOP: bounded by the roster, which is finite and can collide at most once per member
 	for n in 2.. {
-		if taken.insert(stem.clone()) {
-			return stem;
+		if taken.insert(name.clone()) {
+			return name;
 		}
-		stem = format!("{base}-{n}");
+		name = format!("{base}-{n}");
 	}
-	unreachable!("the loop returns on the first free stem")
+	unreachable!("the loop returns on the first free name")
 }
 
 fn slug(name: &str) -> Option<String> {
@@ -171,7 +171,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn a_stem_is_a_guess_that_never_collides() {
+	fn a_name_is_a_guess_that_never_collides() {
 		let member = |display: &str, handle: &str| Member {
 			handle: handle.to_string(),
 			display: display.to_string(),
@@ -181,9 +181,9 @@ mod tests {
 			zone: None,
 		};
 		let mut taken = BTreeSet::from(["lory-bellardant".to_string()]);
-		assert_eq!(stem(&member("Lory Bellardant", "lory-bellardant-1253"), &mut taken), "lory-bellardant-2");
-		assert_eq!(stem(&member("Lory  Bellardant!", "x"), &mut taken), "lory-bellardant-3");
-		assert_eq!(stem(&member("", "josh-lessard-4483"), &mut taken), "josh-lessard-4483");
-		assert_eq!(stem(&member("", "🙂"), &mut taken), "unnamed");
+		assert_eq!(name(&member("Lory Bellardant", "lory-bellardant-1253"), &mut taken), "lory-bellardant-2");
+		assert_eq!(name(&member("Lory  Bellardant!", "x"), &mut taken), "lory-bellardant-3");
+		assert_eq!(name(&member("", "josh-lessard-4483"), &mut taken), "josh-lessard-4483");
+		assert_eq!(name(&member("", "🙂"), &mut taken), "unnamed");
 	}
 }

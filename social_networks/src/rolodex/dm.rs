@@ -1,5 +1,5 @@
-//! The one path that writes to a platform rather than reading from it. Addressed by person, so the
-//! file stays the thing you name and the handle is looked up rather than typed.
+//! The one path that writes to a platform rather than reading from it. Addressed by person, so their
+//! directory stays the thing you name and the handle is looked up rather than typed.
 
 use std::path::Path;
 

@@ -133,7 +133,7 @@ sessions on demand and write to disk, and `dm` is the only place anything goes *
 Discord ──┐                                                          ┌──► Discord
 Telegram ─┤              ┌─► history ────────► <person>/<year>.md     ├──► Skool
 GitHub ───┼──► pull ─────┤                                        dm ─┼──► Telegram
-LinkedIn ─┤              └─► LLM extraction ─► <person>.nix           └──► Twitter
+LinkedIn ─┤              └─► LLM extraction ─► <person>/__main__.nix  └──► Twitter
 Skool ────┘                         ▲
                                     │ lines matching `[<handle>/`
 Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
@@ -141,10 +141,10 @@ GitHub ───┼──► recon                │                           
 Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
                                                                          │
                                     rolodex discover ◄────────────────────┘
-                                         └─► a skeleton <person>.nix, which `pull` then fills
+                                         └─► a skeleton <person>/__main__.nix, which `pull` then fills
 ```
 
-The transcript is what a read is for; the labels in `<person>.nix` are derived from it and can be
+The transcript is what a read is for; the labels in `__main__.nix` are derived from it and can be
 regenerated from it. A venue transcript keeps the whole conversation, including people nobody tracks
 — a thread with the non-members cut out is not the thread — and none of it is copied into a person's
 file, which stays their DMs. A person's own lines are selected out of it at `pull` time by the prefix

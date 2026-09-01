@@ -1,13 +1,13 @@
 # rolodex
 
-A local directory of per-person Nix files, one per person, fed from the platforms we already hold
-sessions for. The file is the single source of truth about a person; nothing it holds is ever
-written back to a platform — `dm` sends only what you type on the command line.
+A local directory of per-person directories, fed from the platforms we already hold sessions for.
+`__main__.nix` is the single source of truth about a person; nothing it holds is ever written back to
+a platform — `dm` sends only what you type on the command line.
 
 ```
                   ┌──────────────────────────────┐        ┌─ extract() ────────► log + summary ─┐
    rolodex pull ──┤ fetch ─► diff vs cursor       ├─► Delta┤                                     ▼
-                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► <person>.nix
+                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► <person>/__main__.nix
    a live DM (unwired) ──────────┼─────────────────---┤
    venue lines by this person ───┼──────────────────--┘
                                  └──► history::record ──► <person>/<year>.md
@@ -29,16 +29,20 @@ two-pull cadence discord's connected accounts already run on. A wrong handle nee
 step: its first fetch fails, which is reported per handle and leaves the rest of the pull alone.
 
 ```
-[rolodex] path ──► <dir>/<person>.nix  ◄── human edits        <dir>/<person>/
-                        │      ▲                                2019.md … 2026.md   the conversation
-               nix eval │      │ render (full regen: comments     assets/*.avif      its images
-                        ▼      │         and formatting are lost) meta.json          every cursor
-                     Person ───┘
+                                    ┌─ __main__.nix ──► Person   what we say about them
+                                    │        ▲   ▲
+[rolodex] path ──► <dir>/<person>/ ─┤        │   └── human edits
+                                    │        └── render (full regen: comments and
+                                    │                   hand formatting are lost)
+                                    ├─ 2019.md … 2026.md   the conversation
+                                    ├─ assets/*.avif       its images
+                                    └─ meta.json           every cursor
 ```
 
-The transcript is the durable artifact and the labels in `<person>.nix` are derived from it, so
+The transcript is the durable artifact and the labels in `__main__.nix` are derived from it, so
 `meta.json` is written *before* the extraction: a failed LLM call costs a re-run, never a message.
-`nix eval` filters on `\.nix$`, which is what keeps the person directory invisible to it.
+Holding a `__main__.nix` is what makes a directory a person's, so `venues/` and anything else living
+under the same root need no naming.
 
 Two states per person, in [`history`](../../../social_networks_reach/src/history.rs):
 
@@ -68,8 +72,8 @@ A year file, times in UTC, continuation lines indented two spaces so the list it
 Images are converted to avif once under a name their own id determines, so a re-download is free and
 an orphan from a failed pull is harmless. Everything else is named and not kept.
 
-`open [pattern]` and `pull [pattern]`. A pattern matches the file stem or any handle, so
-`pull dev_ardi` reaches `orion.nix`. No pattern means fzf for `open`, everybody for `pull`.
+`open [pattern]` and `pull [pattern]`. A pattern matches the directory name or any handle, so
+`pull dev_ardi` reaches `orion/`. No pattern means fzf for `open`, everybody for `pull`.
 
 `discover <platform>:<slug>` is the other axis arriving: it reads the roster and transcript `recon`
 wrote and leaves a skeleton file for everyone the selection names and nobody has yet. `pull` needs
@@ -87,9 +91,9 @@ flags desugar into that same clause, so there is one evaluator. `--where` takes 
 to a `.sql` file, told apart by asking the filesystem. Columns: `handle`, `display`, `joined`,
 `posts`, `first_post`, `last_post`.
 
-File stems are `<first>-<last>` off the display name, the handle when there is nothing else, and a
-numeric suffix on collision. `discover` prints what it wrote so a stem can be `git mv`'d — the stem
-is not load-bearing, since a pattern searches handles too.
+Directory names are `<first>-<last>` off the display name, the handle when there is nothing else,
+and a numeric suffix on collision. `discover` prints what it wrote so one can be `git mv`'d — the
+name is not load-bearing, since a pattern searches handles too.
 
 `cold [pattern]` is the other end of that handover: everybody no conversation is on record with, on
 any platform that could hold one. A venue line is not one — it never entered their year files — so a

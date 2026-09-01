@@ -6,15 +6,18 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 
-/// A person file. The file is a rendered view of this struct — [`render`] regenerates it whole,
-/// so comments and hand formatting do not survive a `pull`.
+const MAIN: &str = "__main__.nix";
+
+/// What a person's directory states about them, next to the conversation itself. [`MAIN`] is a
+/// rendered view of this struct — [`render`] regenerates it whole, so comments and hand formatting
+/// do not survive a `pull`.
 ///
 /// `deny_unknown_fields` because the alternative is a misspelled or unwrapped attribute reading as
 /// an empty person, which `pull` then reports as "nothing new" forever.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Person {
-	/// File stem. Not in the file itself.
+	/// Directory name. Not in the file itself.
 	#[serde(skip)]
 	pub name: String,
 	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
@@ -39,11 +42,11 @@ impl Person {
 	}
 
 	pub fn path(&self, dir: &Path) -> PathBuf {
-		dir.join(format!("{}.nix", self.name))
+		dir.join(&self.name).join(MAIN)
 	}
 
-	/// Match on the file stem and on every handle, so `pull dev_ardi` finds the person whose
-	/// discord handle that is without anyone having to know what their file is called.
+	/// Match on the directory name and on every handle, so `pull dev_ardi` finds the person whose
+	/// discord handle that is without anyone having to know what their directory is called.
 	pub fn matches(&self, pattern: &str) -> bool {
 		let pattern = pattern.to_lowercase();
 		self.name.to_lowercase().contains(&pattern) || self.handles.values().any(|h| h.to_lowercase().contains(&pattern))
@@ -71,7 +74,8 @@ impl Person {
 	}
 
 	pub fn write(&self, dir: &Path) -> Result<()> {
-		std::fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+		let person_dir = dir.join(&self.name);
+		std::fs::create_dir_all(&person_dir).wrap_err_with(|| format!("failed to create {}", person_dir.display()))?;
 		let path = self.path(dir);
 		std::fs::write(&path, render(self)).wrap_err_with(|| format!("failed to write {}", path.display()))
 	}
@@ -87,7 +91,9 @@ pub struct LogEntry {
 	pub source: Option<String>,
 }
 
-/// Evaluate every `*.nix` in `dir` in one nix process, keyed by file stem.
+/// Evaluate every `<name>/`[`MAIN`] under `dir` in one nix process, keyed by directory name. Holding
+/// that file is what makes a directory a person's, so `venues/` and the repo's own directories need
+/// naming nowhere.
 pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
 	if !dir.exists() {
 		return Ok(BTreeMap::new());
@@ -95,7 +101,7 @@ pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
 	// `/. + <string>` rather than a bare path literal: a configured path may carry a trailing slash
 	// or a space, neither of which a nix path literal accepts.
 	let expr = format!(
-		r#"let d = /. + {dir}; in builtins.listToAttrs (map (n: {{ name = builtins.substring 0 (builtins.stringLength n - 4) n; value = import (d + "/${{n}}"); }}) (builtins.filter (n: builtins.match ".*\\.nix" n != null) (builtins.attrNames (builtins.readDir d))))"#,
+		r#"let d = /. + {dir}; in builtins.listToAttrs (map (n: {{ name = n; value = import (d + "/${{n}}/{MAIN}"); }}) (builtins.filter (n: builtins.pathExists (d + "/${{n}}/{MAIN}")) (builtins.attrNames (builtins.readDir d))))"#,
 		dir = nix_dq(&dir.display().to_string())
 	);
 	let raw: BTreeMap<String, Person> = serde_json::from_slice(&nix_eval(&["--expr", &expr])?).wrap_err_with(|| format!("a person file in {} is not a person", dir.display()))?;
@@ -111,7 +117,13 @@ pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
 
 pub fn load_one(path: &Path) -> Result<Person> {
 	let mut person: Person = serde_json::from_slice(&nix_eval(&["--file", &path.display().to_string()])?).wrap_err_with(|| format!("{} is not a person", path.display()))?;
-	person.name = path.file_stem().expect("a path we built from a stem").to_string_lossy().into_owned();
+	person.name = path
+		.parent()
+		.expect("a path we built under a person directory")
+		.file_name()
+		.expect("the person directory is named after them")
+		.to_string_lossy()
+		.into_owned();
 	person.normalize();
 	Ok(person)
 }
