@@ -49,7 +49,7 @@ miette = { version = "=7.6.0", features = ["fancy", "syntect-highlighter", "serd
 psm = "=0.1.31"
 quick-xml = "=0.41.0"
 rand = "=0.10.2"
-ravif = "=0.13.0"
+ravif = { version = "=0.13.0", default-features = false, features = ["threading"] }
 regex = "=1.13.1"
 reqwest = { version = "=0.13.4", features = ["json", "multipart", "query", "form"] }
 rustls = { version = "=0.23.42", features = ["aws-lc-rs"] }

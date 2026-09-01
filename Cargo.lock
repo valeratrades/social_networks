@@ -3399,16 +3399,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 
 [[package]]
-name = "nasm-rs"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
-dependencies = [
- "jobserver",
- "log",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4454,7 +4444,6 @@ dependencies = [
  "av1-grain",
  "bitstream-io",
  "built",
- "cc",
  "cfg-if",
  "interpolate_name",
  "itertools 0.14.0",
@@ -4462,7 +4451,6 @@ dependencies = [
  "libfuzzer-sys",
  "log",
  "maybe-rayon",
- "nasm-rs",
  "new_debug_unreachable",
  "noop_proc_macro",
  "num-derive",

@@ -5,10 +5,13 @@ use std::path::Path;
 use color_eyre::eyre::{Result, WrapErr, bail};
 use image::AnimationDecoder as _;
 
-/// Measured over real DM images: speed 8 encodes ~1.5x faster than `magick -quality 50` for ~12%
-/// more bytes, and speed 10 halves the time again for ~20% more. See `examples/avif_bench.rs`.
+/// Measured over real DM images against `magick -quality 50`: at this speed ravif is a little
+/// faster for ~30% more bytes, and every slower preset loses on time. See `examples/avif_bench.rs`.
+///
+/// rav1e's `asm` feature halves the encode, and is off: it wants `nasm` at build time, on every CI
+/// runner and every machine that builds from source, to buy back bytes an archive can afford.
 const QUALITY: f32 = 50.;
-const SPEED: u8 = 8;
+const SPEED: u8 = 10;
 
 /// Whether the bytes are a still raster [`convert`] can keep whole. An animated gif is not — only
 /// its first frame would survive, and a reaction gif is the animation.

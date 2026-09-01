@@ -80,9 +80,7 @@
               buildInputs = with pkgs; [
                 openssl.dev
               ];
-              # nasm: rav1e's hand-written asm, which is what makes the avif encode in
-              # `rolodex/avif.rs` twice as fast as the portable path
-              nativeBuildInputs = with pkgs; [ pkg-config nasm ];
+              nativeBuildInputs = with pkgs; [ pkg-config ];
               RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
 
               cargoLock.lockFile = ./Cargo.lock;
@@ -103,7 +101,6 @@
             packages = [
               chromium # skool mints its session cookie by driving one; the systemd unit needs it on PATH too
               mold
-              nasm
               openssl
               pkg-config
               rust
