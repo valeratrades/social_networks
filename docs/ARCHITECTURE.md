@@ -33,6 +33,7 @@ social_networks/
 │       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`  — the daemon axis
 │       ├── reach.rs                        # `Profiles`/`Direct`/`Venue` + `Item`       — the on-demand axis
 │       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends
+│       ├── discord_mirror.rs               # a source guild reproduced under `_`, and the traffic both ways
 │       ├── telegram_dms.rs                 # MTProto DM monitoring; peers, dialogs, participants
 │       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
@@ -107,7 +108,7 @@ pub trait Client {
 
 | Surface | Recoverable inside `listen` | `AdapterError::Auth` |
 |---|---|---|
-| Discord DMs | network errors, codes 1000-1011, 4000-4003, 4005-4009 | **4004, 4010, 4011, 4012, 4013, 4014** |
+| Discord DMs / mirror | network errors, codes 1000-1011, 4000-4003, 4005-4009 | **4004, 4010, 4011, 4012, 4013, 4014** |
 | Telegram DMs / channel watch | network errors, generic RPC failures, runner exit | RPC `AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`, `USER_DEACTIVATED`, `AUTH_KEY_INVALID`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED` |
 | Twitter monitor / schedule | 429, 5xx, network errors | **401, 403** |
 | Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; OAuth refresh 401/403 |
@@ -172,7 +173,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, `rolodex pull`), refused when empty.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
-- **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app.
+- **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app. `mirror` divides on the same line: its exposure is the backfill, which the `y/n` gate holds — a closed stdin answers `No` — and only the tail runs unattended.
 
 ## Cross-Cutting Concerns
 

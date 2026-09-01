@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **New `mirror` command.** Reproduces a Discord guild's channel topology under a `_` prefix inside one of ours, tails it live over webhooks that wear the original author's name and avatar, and forwards what gets written back on our side into the source. `mirror --dry-run` prints the topology and creates nothing. History is behind a `y/n` gate and resumes from a per-channel cursor. Configured by `[mirror] source_guild, target_guild`; the token stays at `[dms.discord]`. Threads and forum posts mirror after their parents; permission overwrites, roles, emoji, members, edits and deletions do not.
+
 - **New `rolodex` command.** A directory of per-person Nix files, one per person, is now the single source of truth about a person. `rolodex open [pattern]` edits one; `rolodex pull [pattern]` fetches what is new from Discord DMs and notes, Telegram DMs and about, and the GitHub profile and public event feed, then folds it into a summary and a dated log through one LLM call. Per-source cursors live in the db, so a pull that finds nothing new costs nothing. Configured by `[rolodex] path`.
 
 - **`rolodex pull` discovers handles.** A second, precision-first LLM call reads handles a person stated outright in their own messages (`my github is X`, a pasted profile URL) and adds the ones `pull` knows how to fetch, so the next pull opens that feed. Skipped when a person already has every fetchable platform. Existing handles always win, and a wrong one simply fails its first fetch, which is already isolated per handle.

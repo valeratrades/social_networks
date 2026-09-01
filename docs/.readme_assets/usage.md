@@ -8,6 +8,7 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../exam
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health status of all services, config, and directories |
 | `migrate-db` | Run database migrations |
+| `mirror` | Copy a Discord guild into one of yours: the channels, the messages, and the answers back |
 | `rolodex` | Per-person records from Discord, Telegram, GitHub, LinkedIn and Skool |
 | `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
 | `twitter` | Twitter operations |
@@ -15,6 +16,24 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../exam
 | `youtube` | YouTube operations |
 
 All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
+
+### `mirror`
+
+`mirror` writes the channels of one guild into another guild. It gives each new channel the name of
+the source channel, with `_` in front. It then sends each new message from the source to the copy,
+and each new message in the copy back to the source.
+
+Set `[mirror] source_guild` and `[mirror] target_guild` in the config. `mirror` uses the Discord
+token at `[dms.discord]`.
+
+| Command | Description |
+|---------|-------------|
+| `mirror --dry-run` | Print the channels that `mirror` makes. Make no channel. |
+| `mirror` | Make the channels, then send the new messages both ways. |
+
+`mirror` asks you if it must also copy the full history. Answer `y` to start. The copy is slow,
+because Discord limits how fast a program can write. If you stop it, the next start continues from
+the same place. A daemon has no keyboard, so it always answers `n`.
 
 ### `rolodex`
 

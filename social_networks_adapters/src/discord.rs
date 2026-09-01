@@ -1,13 +1,16 @@
-use std::{convert::Infallible, path::Path, sync::Arc};
+use std::{convert::Infallible, path::Path};
 
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures::future::{Either, select};
-use futures_util::{SinkExt, StreamExt, stream::SplitStream};
+use futures_util::{
+	SinkExt, StreamExt,
+	stream::{SplitSink, SplitStream},
+};
 use jiff::{SignedDuration, Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
-	sync::{Mutex, mpsc::UnboundedSender},
+	sync::mpsc::UnboundedSender,
 	time::{self, Duration},
 };
 use tokio_tungstenite::{
@@ -33,6 +36,10 @@ const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 /// `MessageType::CALL`, written into the DM the moment a call starts. Replaced the `CALL_CREATE`
 /// dispatch, which never produced a notification on this session and named no caller anyway.
 const CALL_MESSAGE_TYPE: u64 = 3;
+/// `ChannelType::PUBLIC_THREAD`
+const PUBLIC_THREAD: u64 = 11;
+/// `MessageReferenceType::FORWARD`
+const FORWARD: u64 = 1;
 /// A session shorter than this counts as a failed connect, so backoff keeps growing.
 const STABLE_SESSION: SignedDuration = SignedDuration::from_secs(60);
 const FLAP_WINDOW: SignedDuration = SignedDuration::from_hours(1);
@@ -47,7 +54,6 @@ pub struct DiscordConfig {
 pub struct DiscordDms {
 	discord_config: DiscordConfig,
 	tx: UnboundedSender<DmEvent>,
-	message_counter: u64,
 	notifier: TelegramNotifier,
 	horizon: SignedDuration,
 	/// `None` on cold start: a fresh process has no known gap, and backfilling here
@@ -68,7 +74,6 @@ impl DiscordDms {
 			rest: Rest::new(discord_config.user_token.clone(), discord_config.my_username.clone()),
 			discord_config,
 			tx,
-			message_counter: 0,
 			notifier,
 			horizon,
 			last_session_end: None,
@@ -110,8 +115,8 @@ impl DiscordDms {
 	/// Returns `Ok(())` if the caller should reconnect, `Err(AdapterError::Auth)` if
 	/// retrying cannot help (datacenter banned, token revoked, etc.).
 	async fn run_session(&mut self) -> Result<(), AdapterError> {
-		let (mut read, write, heartbeat_secs) = match self.connect().await {
-			Ok(c) => c,
+		let mut gateway = match Gateway::connect(&self.discord_config.user_token, SURFACE).await {
+			Ok(g) => g,
 			Err(e) => {
 				error!("Discord connection error: {e:#}");
 				return Ok(());
@@ -127,133 +132,16 @@ impl DiscordDms {
 			}
 		}
 
-		let mut heartbeat_interval = time::interval(Duration::from_secs(heartbeat_secs));
-
-		loop {
-			enum Event {
-				Heartbeat,
-				Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
-			}
-
-			let event = {
-				let heartbeat_fut = std::pin::pin!(heartbeat_interval.tick());
-				let msg_fut = std::pin::pin!(read.next());
-
-				match select(heartbeat_fut, msg_fut).await {
-					Either::Left((_tick, _)) => Event::Heartbeat,
-					Either::Right((msg, _)) => Event::Message(msg),
-				}
-			};
-
-			match event {
-				Event::Heartbeat => {
-					let heartbeat = DiscordMessage {
-						op: 1,
-						d: Some(json!(null)),
-						s: None,
-						t: None,
-					};
-					let msg = match serde_json::to_string(&heartbeat) {
-						Ok(m) => m,
-						Err(e) =>
-							return Err(AdapterError::Unhandled {
-								surface: SURFACE,
-								detail: format!("heartbeat serialization: {e}"),
-							}),
-					};
-					if write.lock().await.send(Message::Text(msg.into())).await.is_err() {
-						error!("Failed to send Discord heartbeat, reconnecting...");
-						return Ok(());
-					}
-				}
-				Event::Message(Some(Ok(Message::Text(text)))) =>
-					if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
-						self.message_counter += 1;
-
-						match event.op {
-							11 => {
-								let now_zoned = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
-								let now = strtime::format("%m/%d/%y-%H", &now_zoned).unwrap();
-								info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {} messages", self.message_counter);
-								self.message_counter = 0;
-							}
-							0 =>
-								if let Some(d) = &event.d {
-									let event_type = event.t.as_deref();
-									let result = match event_type {
-										// Only MESSAGE_CREATE: Discord also fires MESSAGE_UPDATE with identical content
-										// when it unfurls links/embeds, which would double-notify.
-										Some("MESSAGE_CREATE") => self.handle_message(d),
-										_ => Ok(()),
-									};
-									if let Err(e) = result {
-										error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
-									}
-								},
-							_ => {}
-						}
-					},
-				Event::Message(Some(Ok(Message::Close(frame)))) => {
-					return classify_close(frame);
-				}
-				Event::Message(Some(Ok(_))) => {
-					// Non-text non-close message (Ping/Pong/Binary), ignore
-				}
-				Event::Message(Some(Err(e))) => {
-					error!("Discord WebSocket error: {e}, reconnecting...");
-					return Ok(());
-				}
-				Event::Message(None) => {
-					error!("Discord WebSocket closed (no frame), reconnecting...");
-					return Ok(());
-				}
+		// Only MESSAGE_CREATE: Discord also fires MESSAGE_UPDATE with identical content
+		// when it unfurls links/embeds, which would double-notify.
+		while let Some((event_type, d)) = gateway.next().await? {
+			if event_type == "MESSAGE_CREATE"
+				&& let Err(e) = self.handle_message(&d)
+			{
+				error!("Error handling MESSAGE_CREATE: {e}");
 			}
 		}
-	}
-
-	async fn connect(
-		&self,
-	) -> Result<(
-		SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>,
-		Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>>>,
-		u64,
-	)> {
-		let url = "wss://gateway.discord.gg/?v=10&encoding=json";
-		let (ws_stream, _) = connect_async(url).await?;
-
-		let (write, mut read) = ws_stream.split();
-		let write = Arc::new(Mutex::new(write));
-
-		let hello_msg = read.next().await.ok_or_else(|| color_eyre::eyre::eyre!("No hello message"))??;
-		let hello: DiscordMessage = serde_json::from_str(&hello_msg.to_string())?;
-
-		let heartbeat_interval = hello
-			.d
-			.as_ref()
-			.and_then(|d| d.get("heartbeat_interval"))
-			.and_then(|v| v.as_u64())
-			.ok_or_else(|| color_eyre::eyre::eyre!("No heartbeat interval"))?;
-
-		let heartbeat_secs = heartbeat_interval / 1000;
-
-		let identify = DiscordMessage {
-			op: 2,
-			d: Some(json!({
-				"token": self.discord_config.user_token,
-				"properties": {
-					"$os": "linux",
-					"$browser": "rust",
-					"$device": "pc"
-				}
-			})),
-			s: None,
-			t: None,
-		};
-
-		let msg = serde_json::to_string(&identify)?;
-		write.lock().await.send(Message::Text(msg.into())).await?;
-
-		Ok((read, write, heartbeat_secs))
+		Ok(())
 	}
 
 	fn handle_message(&self, data: &serde_json::Value) -> Result<()> {
@@ -349,6 +237,128 @@ impl Client for DiscordDms {
 	}
 }
 
+/// One gateway connection lifetime, from identify to close frame. Owns the socket and the
+/// heartbeat; hands the caller dispatches and nothing else.
+pub struct Gateway {
+	surface: &'static str,
+	read: SplitStream<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>,
+	write: SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>,
+	heartbeat: time::Interval,
+	/// reported on every heartbeat ack, the one regular tick the gateway gives us
+	seen: u64,
+}
+
+impl Gateway {
+	pub async fn connect(token: &str, surface: &'static str) -> Result<Self> {
+		let url = "wss://gateway.discord.gg/?v=10&encoding=json";
+		let (ws_stream, _) = connect_async(url).await?;
+		let (mut write, mut read) = ws_stream.split();
+
+		let hello_msg = read.next().await.ok_or_else(|| eyre!("No hello message"))??;
+		let hello: DiscordMessage = serde_json::from_str(&hello_msg.to_string())?;
+		let heartbeat_interval = hello
+			.d
+			.as_ref()
+			.and_then(|d| d.get("heartbeat_interval"))
+			.and_then(|v| v.as_u64())
+			.ok_or_else(|| eyre!("No heartbeat interval"))?;
+
+		let identify = DiscordMessage {
+			op: 2,
+			d: Some(json!({
+				"token": token,
+				"properties": {
+					"$os": "linux",
+					"$browser": "rust",
+					"$device": "pc"
+				}
+			})),
+			s: None,
+			t: None,
+		};
+		write.send(Message::Text(serde_json::to_string(&identify)?.into())).await?;
+
+		Ok(Self {
+			surface,
+			read,
+			write,
+			heartbeat: time::interval(Duration::from_secs(heartbeat_interval / 1000)),
+			seen: 0,
+		})
+	}
+
+	/// The next dispatch as `(type, payload)`. `Ok(None)` means the connection is over and the
+	/// caller should reconnect; `Err` means reconnecting cannot help.
+	pub async fn next(&mut self) -> Result<Option<(String, serde_json::Value)>, AdapterError> {
+		loop {
+			enum Event {
+				Heartbeat,
+				Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
+			}
+
+			let event = {
+				let heartbeat_fut = std::pin::pin!(self.heartbeat.tick());
+				let msg_fut = std::pin::pin!(self.read.next());
+				match select(heartbeat_fut, msg_fut).await {
+					Either::Left((_tick, _)) => Event::Heartbeat,
+					Either::Right((msg, _)) => Event::Message(msg),
+				}
+			};
+
+			match event {
+				Event::Heartbeat => {
+					let heartbeat = DiscordMessage {
+						op: 1,
+						d: Some(json!(null)),
+						s: None,
+						t: None,
+					};
+					let msg = serde_json::to_string(&heartbeat).map_err(|e| AdapterError::Unhandled {
+						surface: self.surface,
+						detail: format!("heartbeat serialization: {e}"),
+					})?;
+					if self.write.send(Message::Text(msg.into())).await.is_err() {
+						error!("Failed to send Discord heartbeat, reconnecting...");
+						return Ok(None);
+					}
+				}
+				Event::Message(Some(Ok(Message::Text(text)))) =>
+					if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
+						self.seen += 1;
+						match event.op {
+							11 => {
+								let now_zoned = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+								let now = strtime::format("%m/%d/%y-%H", &now_zoned).unwrap();
+								info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {} messages", self.seen);
+								self.seen = 0;
+							}
+							0 =>
+								if let (Some(t), Some(d)) = (event.t, event.d) {
+									return Ok(Some((t, d)));
+								},
+							_ => {}
+						}
+					},
+				Event::Message(Some(Ok(Message::Close(frame)))) => {
+					classify_close(frame, self.surface)?;
+					return Ok(None);
+				}
+				Event::Message(Some(Ok(_))) => {
+					// Non-text non-close message (Ping/Pong/Binary), ignore
+				}
+				Event::Message(Some(Err(e))) => {
+					error!("Discord WebSocket error: {e}, reconnecting...");
+					return Ok(None);
+				}
+				Event::Message(None) => {
+					error!("Discord WebSocket closed (no frame), reconnecting...");
+					return Ok(None);
+				}
+			}
+		}
+	}
+}
+
 /// Discord's REST surface: everything that has to be *asked* for, as opposed to what the gateway
 /// pushes. The daemon replays a gap through it, and the on-demand axis reads and writes over it.
 pub struct Rest {
@@ -383,7 +393,121 @@ impl Rest {
 			.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))
 	}
 
-	async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
+	pub async fn guild_channels(&self, guild_id: &str) -> Result<Vec<serde_json::Value>> {
+		self.get(&format!("https://discord.com/api/v10/guilds/{guild_id}/channels")).await
+	}
+
+	pub async fn create_channel(&self, guild_id: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+		Ok(self
+			.request(|| self.http.post(format!("https://discord.com/api/v10/guilds/{guild_id}/channels")).json(payload))
+			.await?
+			.error_for_status()?
+			.json()
+			.await?)
+	}
+
+	/// Threads still open. Discord serves these guild-wide, so this is one request for all of them.
+	pub async fn active_threads(&self, guild_id: &str) -> Result<Vec<serde_json::Value>> {
+		let body: serde_json::Value = self.get(&format!("https://discord.com/api/v10/guilds/{guild_id}/threads/active")).await?;
+		Ok(body.get("threads").and_then(|v| v.as_array()).cloned().unwrap_or_default())
+	}
+
+	/// One page of a channel's archived public threads — the tail past it is older than the
+	/// mirror cares to reproduce.
+	pub async fn archived_threads(&self, channel_id: &str) -> Result<Vec<serde_json::Value>> {
+		let body: serde_json::Value = self
+			.request(|| {
+				self.http
+					.get(format!("https://discord.com/api/v10/channels/{channel_id}/threads/archived/public"))
+					.query(&[("limit", PAGE.to_string())])
+			})
+			.await?
+			.error_for_status()?
+			.json()
+			.await?;
+		Ok(body.get("threads").and_then(|v| v.as_array()).cloned().unwrap_or_default())
+	}
+
+	pub async fn create_thread(&self, channel_id: &str, name: &str) -> Result<serde_json::Value> {
+		Ok(self
+			.request(|| {
+				self.http
+					.post(format!("https://discord.com/api/v10/channels/{channel_id}/threads"))
+					.json(&json!({ "name": name, "type": PUBLIC_THREAD }))
+			})
+			.await?
+			.error_for_status()?
+			.json()
+			.await?)
+	}
+
+	/// Returns the executable url, which is the whole of what the mirror stores.
+	pub async fn create_webhook(&self, channel_id: &str, name: &str) -> Result<String> {
+		let hook: serde_json::Value = self
+			.request(|| {
+				self.http
+					.post(format!("https://discord.com/api/v10/channels/{channel_id}/webhooks"))
+					.json(&json!({ "name": name }))
+			})
+			.await?
+			.error_for_status()?
+			.json()
+			.await?;
+		let id = hook.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord webhook carries an id"))?;
+		let token = hook.get("token").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord webhook carries a token"))?;
+		Ok(format!("https://discord.com/api/v10/webhooks/{id}/{token}"))
+	}
+
+	/// The only send that carries a per-message `username`/`avatar_url`, which is what lets a
+	/// mirrored message wear its original author. Deliberately unauthenticated: a webhook url is
+	/// its own credential.
+	///
+	/// `endpoint` is a webhook url and whatever query it already needs — a thread's is its
+	/// parent's with `?thread_id=`.
+	pub async fn execute_webhook(&self, endpoint: &str, payload: &serde_json::Value, files: &[(String, Vec<u8>)]) -> Result<serde_json::Value> {
+		let response = retrying(|| {
+			let request = self.http.post(endpoint).query(&[("wait", "true")]);
+			match files.is_empty() {
+				true => request.json(payload),
+				false => {
+					let mut form = reqwest::multipart::Form::new().text("payload_json", payload.to_string());
+					for (i, (name, bytes)) in files.iter().enumerate() {
+						form = form.part(format!("files[{i}]"), reqwest::multipart::Part::bytes(bytes.clone()).file_name(name.clone()));
+					}
+					request.multipart(form)
+				}
+			}
+		})
+		.await?;
+		Ok(response.error_for_status()?.json().await?)
+	}
+
+	/// A native forward: the target renders a snapshot card naming the real author, which is the
+	/// only attribution available on the way back into a guild we do not own.
+	pub async fn forward(&self, into: &str, from_guild: &str, from_channel: &str, message: &str) -> Result<serde_json::Value> {
+		Ok(self
+			.request(|| {
+				self.http.post(format!("https://discord.com/api/v10/channels/{into}/messages")).json(&json!({
+					"message_reference": {
+						"type": FORWARD,
+						"guild_id": from_guild,
+						"channel_id": from_channel,
+						"message_id": message,
+					}
+				}))
+			})
+			.await?
+			.error_for_status()?
+			.json()
+			.await?)
+	}
+
+	/// The cdn is signed and takes no api token of ours.
+	pub async fn download(&self, url: &str) -> Result<Vec<u8>> {
+		Ok(self.http.get(url).send().await?.error_for_status()?.bytes().await?.to_vec())
+	}
+
+	pub async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
 		assert!(limit <= PAGE, "discord rejects a limit above {PAGE}");
 		let mut query = vec![("limit".to_string(), limit.to_string())];
 		match anchor {
@@ -455,29 +579,39 @@ impl Rest {
 		Ok(out)
 	}
 
-	/// Discord answers a burst with a 429 and a body saying how long to hold off. A backfill is
-	/// hundreds of requests, so meeting one is expected rather than exceptional.
 	async fn request(&self, build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
-		for _ in 0..RATE_LIMIT_RETRIES {
-			// user tokens take no `Bot ` prefix
-			let response = build().header("authorization", &self.token).send().await?;
-			if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
-				return Ok(response);
-			}
-			let body: serde_json::Value = response.json().await?;
-			let after = body
-				.get("retry_after")
-				.and_then(|v| v.as_f64())
-				.ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
-			warn!("discord: rate limited, holding off {after}s");
-			time::sleep(Duration::from_secs_f64(after)).await;
-		}
-		Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
+		// user tokens take no `Bot ` prefix
+		retrying(|| build().header("authorization", &self.token)).await
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
 		Ok(self.request(|| self.http.get(url)).await?.error_for_status()?.json().await?)
 	}
+}
+
+#[derive(Clone, Copy)]
+pub enum Anchor {
+	Newest,
+	After(u64),
+	Before(u64),
+}
+/// Discord answers a burst with a 429 and a body saying how long to hold off. A backfill is
+/// hundreds of requests, so meeting one is expected rather than exceptional.
+async fn retrying(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+	for _ in 0..RATE_LIMIT_RETRIES {
+		let response = build().send().await?;
+		if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+			return Ok(response);
+		}
+		let body: serde_json::Value = response.json().await?;
+		let after = body
+			.get("retry_after")
+			.and_then(|v| v.as_f64())
+			.ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
+		warn!("discord: rate limited, holding off {after}s");
+		time::sleep(Duration::from_secs_f64(after)).await;
+	}
+	Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
 }
 
 fn snowflake_at(ts: Timestamp) -> u64 {
@@ -491,7 +625,7 @@ fn backfill_cutoff(last_session_end: Timestamp, now: Timestamp, horizon: SignedD
 	last_session_end.max(now - horizon)
 }
 
-fn reconnect_delay(attempt: u32) -> Duration {
+pub(crate) fn reconnect_delay(attempt: u32) -> Duration {
 	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0);
 	Duration::from_secs_f64(delay_secs)
 }
@@ -499,7 +633,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
 /// Map a Discord WS close frame to either a recoverable reconnect (`Ok(())`) or a fatal
 /// auth-class error. Codes 4004/4010-4014 are documented as fatal in the Discord
 /// gateway docs (invalid token, invalid intent, datacenter blocked, etc.).
-fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame::CloseFrame>) -> Result<(), AdapterError> {
+fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame::CloseFrame>, surface: &'static str) -> Result<(), AdapterError> {
 	let Some(frame) = frame else {
 		error!("Discord WS closed with no frame, reconnecting...");
 		return Ok(());
@@ -510,7 +644,7 @@ fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame:
 	};
 	match code {
 		4004 | 4010 | 4011 | 4012 | 4013 | 4014 => Err(AdapterError::Auth {
-			surface: SURFACE,
+			surface,
 			detail: format!("Discord WS close code {code}: {}", frame.reason),
 		}),
 		_ => {
@@ -633,16 +767,9 @@ impl Direct for Rest {
 	}
 }
 
-#[derive(Clone, Copy)]
-enum Anchor {
-	Newest,
-	After(u64),
-	Before(u64),
-}
-
 /// `after=<id>` returns the oldest window past the cursor, newest-first inside it — so the next
 /// cursor is the page's largest id, and a short page is the last one.
-fn next_after(ids: &[u64], limit: usize) -> Option<u64> {
+pub(crate) fn next_after(ids: &[u64], limit: usize) -> Option<u64> {
 	(ids.len() == limit).then(|| ids.iter().copied().max().expect("a full page is non-empty"))
 }
 

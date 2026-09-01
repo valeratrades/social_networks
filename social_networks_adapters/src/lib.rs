@@ -2,6 +2,7 @@
 #![feature(default_field_values)]
 pub mod client;
 pub mod discord;
+pub mod discord_mirror;
 pub mod dm_event;
 pub mod email;
 pub mod github;
@@ -18,6 +19,7 @@ pub mod youtube;
 
 pub use client::{AdapterError, Client, alert, install_panic_alert};
 pub use discord::DiscordDms;
+pub use discord_mirror::DiscordMirror;
 pub use dm_event::DmEvent;
 pub use email::EmailMonitor;
 pub use telegram_channel_watch::TelegramChannelWatch;

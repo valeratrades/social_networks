@@ -1,4 +1,6 @@
-use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, skool::SkoolCredentials, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{
+	discord_mirror::MirrorConfig, email::EmailConfig, llm::LlmConfig, skool::SkoolCredentials, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
+};
 use social_networks_reach::RolodexConfig;
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
@@ -33,6 +35,10 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub rolodex: Option<RolodexConfig>,
+	/// The token stays at `[dms.discord]`: it is one account.
+	#[settings(skip)]
+	#[serde(default)]
+	pub mirror: Option<MirrorConfig>,
 }
 impl AppConfig {
 	pub fn require_llm(&self, surface: &'static str) -> color_eyre::Result<LlmConfig> {

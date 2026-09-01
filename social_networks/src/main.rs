@@ -11,8 +11,9 @@ use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::DmsArgs;
 use rolodex::RolodexArgs;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs, install_panic_alert,
-	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
+	AdapterError, Client, DiscordDms, DiscordMirror, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, discord_mirror::MirrorArgs,
+	email::EmailArgs, install_panic_alert, telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs,
+	youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
 use v_utils::utils::exit_on_error;
@@ -36,6 +37,8 @@ enum Commands {
 	Health,
 	/// Run database migrations
 	MigrateDb,
+	/// Reproduce a Discord guild's channels and traffic inside ours
+	Mirror(MirrorArgs),
 	/// Per-person records, fed from Discord and Telegram
 	Rolodex(RolodexArgs),
 	/// Telegram channel watching (poll/info forwarding)
@@ -94,6 +97,20 @@ fn main() {
 				Err::<(), AdapterError>(err)
 			})
 		}
+		Commands::Mirror(args) => run_async("mirror", || async {
+			v_utils::clientside!(Some("mirror"));
+			let mirror_config = config
+				.mirror
+				.clone()
+				.ok_or_else(|| color_eyre::eyre::eyre!("`mirror` needs a `[mirror]` section naming `source_guild` and `target_guild`"))?;
+			let mut mirror = DiscordMirror::try_new(config.dms.discord.clone(), mirror_config, Database::try_new().await?).await?;
+			if args.dry_run {
+				return mirror.sync(true).await;
+			}
+			let err = mirror.listen().await.unwrap_err();
+			alert(&err).await;
+			Err::<(), color_eyre::eyre::Report>(err.into())
+		}),
 		Commands::Rolodex(args) => run_async("rolodex", || async {
 			v_utils::clientside!(Some("rolodex"));
 			rolodex::main(args, config).await
