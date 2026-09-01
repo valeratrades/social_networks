@@ -1,24 +1,28 @@
 //! The platform access `pull` diffs against and `dm` writes through. Every fetch is scoped to one
 //! handle so a handle that has stopped resolving takes only itself down.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
-use grammers_client::Client;
+use grammers_client::{Client, media::Media, message::Message};
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
+use serde::{Deserialize, Serialize};
 use social_networks_utils::skool::Skool;
 use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
 
-/// How far back to reach on the very first pull of a conversation. Without a checkpoint there is no
-/// natural stopping point, and a decade of DMs is neither affordable nor interesting — but the first
-/// pull is the one that writes the summary from nothing, so it is worth more than a thin slice.
-const INITIAL_MESSAGES: usize = 200;
+use super::{avif, history::Cursor};
+
+/// The window the extraction prompt reads, and therefore how much of a conversation the first pull
+/// puts in front of it — the history under that is the backfill's, not the prompt's.
+pub(super) const INITIAL_MESSAGES: usize = 200;
 /// Ceiling per pull once a checkpoint exists. Whatever is left over is picked up by the next run.
 const MAX_MESSAGES: usize = 500;
 /// Discord's own cap on `limit`; asking for more is a 400, not a bigger page.
 const PAGE: usize = 100;
+/// A 429 that outlasts this many waits is not a burst.
+const RATE_LIMIT_RETRIES: usize = 8;
 /// How long a fetched linkedin profile is taken as still current. The anonymous view budget is a
 /// handful of profiles before the authwall, so a pull has to touch a few people rather than all of
 /// them — which a headline that changes twice a year can afford.
@@ -32,8 +36,9 @@ const LINKS: [(&str, &str); 5] = [
 ];
 /// The `handles` keys `pull` fetches. Separating this from the dispatch in `mod` would let a new
 /// source fall through to the no-fetch-path arm and silently do nothing.
-#[derive(AsRefStr, Clone, Copy, Debug, EnumIter, EnumString)]
+#[derive(AsRefStr, Clone, Copy, Debug, Deserialize, EnumIter, EnumString, Eq, Hash, PartialEq, Serialize)]
 #[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum Source {
 	Discord,
@@ -42,12 +47,31 @@ pub enum Source {
 	Linkedin,
 	Skool,
 }
+impl Source {
+	/// Whether there is anything below the newest item to page down to. A github feed, a linkedin
+	/// profile and a skool post list are snapshots, so their backfill is over before it starts.
+	pub fn has_history(self) -> bool {
+		matches!(self, Self::Discord | Self::Telegram)
+	}
+}
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Msg {
-	pub date: String,
+	pub id: String,
+	pub source: Source,
+	pub at: Timestamp,
 	pub outgoing: bool,
 	pub text: String,
+	pub attachments: Vec<Attachment>,
 	pub permalink: Option<String>,
+}
+/// An image is kept: converted once, under a name its own id determines, so a re-download costs
+/// nothing. Everything else is named and not kept — a transcript that says a file went by is worth
+/// far more than the bytes of it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Attachment {
+	Image { file: String },
+	File { name: String },
 }
 /// Something a person did in public. Kept apart from [`Msg`] because it is worth recording under a
 /// far higher bar — see the prompt in `delta`.
@@ -65,8 +89,6 @@ pub struct Fetched {
 	pub messages: Vec<Msg>,
 	/// Oldest-first.
 	pub activity: Vec<Activity>,
-	/// Newest item id seen. `None` when nothing came back, which leaves the checkpoint alone.
-	pub cursor: Option<String>,
 }
 pub struct Discord {
 	http: reqwest::Client,
@@ -108,18 +130,13 @@ impl Discord {
 		Ok(())
 	}
 
-	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	pub async fn fetch(&self, handle: &str, cursor: &mut Cursor<'_>, assets: &Path) -> Result<Fetched> {
 		let (channel_id, user_id) = self.dm_channel(handle).await?;
 
 		let mut fetched = Fetched::default();
 
 		// 404 here means no note is set, not that the user is gone.
-		let note = self
-			.http
-			.get(format!("https://discord.com/api/v10/users/@me/notes/{user_id}"))
-			.header("authorization", &self.token)
-			.send()
-			.await?;
+		let note = self.request(|| self.http.get(format!("https://discord.com/api/v10/users/@me/notes/{user_id}"))).await?;
 		if note.status() != reqwest::StatusCode::NOT_FOUND {
 			let note: serde_json::Value = note.error_for_status()?.json().await?;
 			insert_nonempty(&mut fetched.sources, "discord:note", note.get("note").and_then(|v| v.as_str()));
@@ -135,7 +152,7 @@ impl Discord {
 			}
 		}
 
-		let raw = match cursor {
+		let raw = match cursor.newest() {
 			// walk backwards from the newest, since there is no floor to walk up from
 			None => {
 				let mut raw: Vec<(u64, serde_json::Value)> = Vec::new();
@@ -152,8 +169,8 @@ impl Discord {
 				}
 				raw
 			}
-			Some(cursor) => {
-				let mut anchor = Anchor::After(cursor.parse().wrap_err("a discord checkpoint is a snowflake")?);
+			Some(newest) => {
+				let mut anchor = Anchor::After(newest.parse().wrap_err("a discord checkpoint is a snowflake")?);
 				let mut raw = Vec::new();
 				loop {
 					let page = self.messages(&channel_id, anchor, PAGE).await?;
@@ -172,11 +189,53 @@ impl Discord {
 			}
 		};
 
-		fetched.cursor = raw.iter().map(|(id, _)| *id).max().map(|id| id.to_string());
-		let mut messages: Vec<Msg> = raw.into_iter().map(|(id, m)| self.message(&channel_id, id, &m)).collect::<Result<_>>()?;
-		messages.sort_by(|a, b| a.date.cmp(&b.date));
+		if let Some(newest) = raw.iter().map(|(id, _)| *id).max() {
+			cursor.advance(newest.to_string());
+		}
+		let floor = raw.iter().map(|(id, _)| *id).min();
+		let mut messages = Vec::with_capacity(raw.len());
+		for (id, m) in &raw {
+			messages.push(self.message(&channel_id, *id, m, assets).await?);
+		}
+		messages.sort_by_key(|m| m.at);
 		fetched.messages = messages;
+
+		// before the backfill, not after it: a page checked in below this slice persists the cursor
+		// above it, and a kill in between would leave the slice in no file at all
+		if cursor.archiving() {
+			cursor.stash(&fetched.messages)?;
+		}
+		if cursor.backfilling() {
+			self.backfill(&channel_id, cursor, assets, floor).await?;
+		}
 		Ok(fetched)
+	}
+
+	/// Down to the first message of the conversation, checking every page in before asking for the
+	/// next — so an interrupt costs the page in flight and nothing behind it.
+	async fn backfill(&self, channel_id: &str, cursor: &mut Cursor<'_>, assets: &Path, incremental_floor: Option<u64>) -> Result<()> {
+		let mut anchor = match cursor.floor() {
+			Some(floor) => Anchor::Before(floor.parse().wrap_err("a discord backfill floor is a snowflake")?),
+			// the slice fetched above is already accounted for, so the walk starts under it
+			None => incremental_floor.map_or(Anchor::Newest, Anchor::Before),
+		};
+		//LOOP: bounded by the conversation, which is finite and walked strictly downwards — the short
+		// page that ends it cannot be predicted from the page before it
+		loop {
+			let page = self.messages(channel_id, anchor, PAGE).await?;
+			let Some(oldest) = page.iter().map(|(id, _)| *id).min() else { break };
+			let short = page.len() < PAGE;
+			let mut msgs = Vec::with_capacity(page.len());
+			for (id, m) in &page {
+				msgs.push(self.message(channel_id, *id, m, assets).await?);
+			}
+			cursor.page(&msgs, oldest.to_string())?;
+			if short {
+				break;
+			}
+			anchor = Anchor::Before(oldest);
+		}
+		cursor.exhausted()
 	}
 
 	async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
@@ -188,11 +247,7 @@ impl Discord {
 			Anchor::Before(id) => query.push(("before".to_string(), id.to_string())),
 		}
 		let page: Vec<serde_json::Value> = self
-			.http
-			.get(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
-			.query(&query)
-			.header("authorization", &self.token)
-			.send()
+			.request(|| self.http.get(format!("https://discord.com/api/v10/channels/{channel_id}/messages")).query(&query))
 			.await?
 			.error_for_status()?
 			.json()
@@ -205,23 +260,69 @@ impl Discord {
 			.collect()
 	}
 
-	fn message(&self, channel_id: &str, id: u64, m: &serde_json::Value) -> Result<Msg> {
+	async fn message(&self, channel_id: &str, id: u64, m: &serde_json::Value, assets: &Path) -> Result<Msg> {
 		let timestamp = m.get("timestamp").and_then(|v| v.as_str()).ok_or_else(|| eyre!("discord message {id} without a timestamp"))?;
 		Ok(Msg {
-			date: timestamp
-				.parse::<Timestamp>()
-				.wrap_err("discord timestamps are RFC3339")?
-				.to_zoned(TimeZone::UTC)
-				.date()
-				.to_string(),
+			id: id.to_string(),
+			source: Source::Discord,
+			at: timestamp.parse().wrap_err("discord timestamps are RFC3339")?,
 			outgoing: m.pointer("/author/username").and_then(|v| v.as_str()) == Some(&self.my_username),
 			text: m.get("content").and_then(|v| v.as_str()).unwrap_or_default().to_string(), // an attachment-only message carries no content and is still worth its date
+			attachments: self.attachments(m, assets).await?,
 			permalink: Some(format!("https://discord.com/channels/@me/{channel_id}/{id}")),
 		})
 	}
 
+	async fn attachments(&self, m: &serde_json::Value, assets: &Path) -> Result<Vec<Attachment>> {
+		let mut out = Vec::new();
+		for attachment in m.get("attachments").and_then(|v| v.as_array()).into_iter().flatten() {
+			let name = attachment
+				.get("filename")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| eyre!("a discord attachment carries a filename"))?
+				.to_string();
+			let id = attachment.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord attachment carries an id"))?;
+			let file = format!("discord-{id}.avif");
+			if assets.join(&file).exists() {
+				out.push(Attachment::Image { file });
+				continue;
+			}
+			// an undeclared content type is one discord itself would not call an image
+			let mime = attachment.get("content_type").and_then(|v| v.as_str()).unwrap_or_default();
+			if !mime.starts_with("image/") {
+				out.push(Attachment::File { name });
+				continue;
+			}
+
+			let url = attachment.get("url").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord attachment carries a url"))?;
+			// the cdn url is signed; the token belongs on the api, not on it
+			let bytes = self.http.get(url).send().await?.error_for_status()?.bytes().await?;
+			out.push(keep(&bytes, mime, name, &assets.join(&file), file.clone()));
+		}
+		Ok(out)
+	}
+
+	/// Discord answers a burst with a 429 and a body saying how long to hold off. A backfill is
+	/// hundreds of requests, so meeting one is expected rather than exceptional.
+	async fn request(&self, build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+		for _ in 0..RATE_LIMIT_RETRIES {
+			let response = build().header("authorization", &self.token).send().await?;
+			if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+				return Ok(response);
+			}
+			let body: serde_json::Value = response.json().await?;
+			let after = body
+				.get("retry_after")
+				.and_then(|v| v.as_f64())
+				.ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
+			warn!("discord: rate limited, holding off {after}s");
+			tokio::time::sleep(Duration::from_secs_f64(after)).await;
+		}
+		Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
+	}
+
 	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
-		Ok(self.http.get(url).header("authorization", &self.token).send().await?.error_for_status()?.json().await?)
+		Ok(self.request(|| self.http.get(url)).await?.error_for_status()?.json().await?)
 	}
 }
 
@@ -229,8 +330,7 @@ pub async fn telegram_send(client: &Client, handle: &str, text: &str) -> Result<
 	client.send_message(telegram_peer(client, handle).await?, text).await?;
 	Ok(())
 }
-
-pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+pub async fn telegram(client: &Client, handle: &str, cursor: &mut Cursor<'_>, assets: &Path) -> Result<Fetched> {
 	let peer_ref = telegram_peer(client, handle).await?;
 
 	let mut fetched = Fetched::default();
@@ -239,30 +339,35 @@ pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Re
 	let tl::enums::UserFull::Full(user_full) = full.full_user;
 	insert_nonempty(&mut fetched.sources, "telegram:about", user_full.about.as_deref());
 
-	let cursor: Option<i32> = cursor.map(|c| c.parse()).transpose().wrap_err("a telegram checkpoint is a message id")?;
-	let limit = if cursor.is_some() { MAX_MESSAGES } else { INITIAL_MESSAGES };
+	let newest: Option<i32> = cursor.newest().map(|c| c.parse()).transpose().wrap_err("a telegram checkpoint is a message id")?;
+	let limit = if newest.is_some() { MAX_MESSAGES } else { INITIAL_MESSAGES };
 	let mut messages = Vec::new();
 	let mut iter = client.iter_messages(peer_ref);
 	// newest-first
 	while let Some(message) = iter.next().await? {
-		if cursor.is_some_and(|c| message.id() <= c) {
+		if newest.is_some_and(|c| message.id() <= c) {
 			break;
 		}
-		fetched.cursor.get_or_insert_with(|| message.id().to_string());
-		messages.push(Msg {
-			date: message.date().date_naive().to_string(),
-			outgoing: message.outgoing(),
-			// telegram DMs have no per-message URL
-			permalink: None,
-			text: message.text().to_string(),
-		});
+		if messages.is_empty() {
+			cursor.advance(message.id().to_string());
+		}
+		messages.push(telegram_msg(client, &message, assets).await?);
 		if messages.len() >= limit {
 			warn!("telegram `{handle}`: stopping at {limit} messages, the rest comes on the next pull");
 			break;
 		}
 	}
+	let floor = messages.iter().map(|m| m.id.parse::<i32>().expect("a telegram id we just printed")).min();
 	messages.reverse();
 	fetched.messages = messages;
+
+	// see the same call in `Discord::fetch`
+	if cursor.archiving() {
+		cursor.stash(&fetched.messages)?;
+	}
+	if cursor.backfilling() {
+		telegram_backfill(client, peer_ref, cursor, assets, floor).await?;
+	}
 	Ok(fetched)
 }
 /// Unauthenticated: everything read here is public, and 60 requests an hour is far more than a
@@ -272,7 +377,7 @@ pub struct Github {
 	http: reqwest::Client,
 }
 impl Github {
-	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	pub async fn fetch(&self, handle: &str, cursor: &mut Cursor<'_>) -> Result<Fetched> {
 		let mut fetched = Fetched::default();
 
 		let profile: serde_json::Value = self.get(&format!("https://api.github.com/users/{handle}")).await?;
@@ -282,9 +387,10 @@ impl Github {
 		// the whole of what a rare pull could have recovered anyway.
 		let events: Vec<serde_json::Value> = self.get(&format!("https://api.github.com/users/{handle}/events/public?per_page={PAGE}")).await?;
 		let full_page = events.len() == PAGE;
-		let cursor: Option<u64> = cursor.map(|c| c.parse()).transpose().wrap_err("a github checkpoint is an event id")?;
+		let newest: Option<u64> = cursor.newest().map(|c| c.parse()).transpose().wrap_err("a github checkpoint is an event id")?;
 
 		let mut reached_cursor = false;
+		let mut first = true;
 		// newest-first
 		for event in &events {
 			let id: u64 = event
@@ -293,11 +399,13 @@ impl Github {
 				.ok_or_else(|| eyre!("github event without an id"))?
 				.parse()
 				.wrap_err("github event ids are numeric")?;
-			if cursor.is_some_and(|c| id <= c) {
+			if newest.is_some_and(|c| id <= c) {
 				reached_cursor = true;
 				break;
 			}
-			fetched.cursor.get_or_insert_with(|| id.to_string());
+			if std::mem::take(&mut first) {
+				cursor.advance(id.to_string());
+			}
 			let Some((text, permalink)) = describe(event) else {
 				continue;
 			};
@@ -338,11 +446,11 @@ impl Github {
 /// Through `curl` rather than the http client every other source shares, because linkedin answers on
 /// the TLS handshake as much as on the request: reqwest gets `999` where a curl carrying byte-identical
 /// headers gets the page.
-pub fn linkedin(handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+pub fn linkedin(handle: &str, cursor: &mut Cursor<'_>) -> Result<Fetched> {
 	let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-	if let Some(cursor) = cursor {
-		let last: jiff::civil::Date = cursor.parse().wrap_err("a linkedin checkpoint is a date")?;
-		// the empty `Fetched` carries no cursor, so a skip leaves the checkpoint where it is
+	if let Some(last) = cursor.newest() {
+		let last: jiff::civil::Date = last.parse().wrap_err("a linkedin checkpoint is a date")?;
+		// an early return leaves the checkpoint where it is, so the skip is not itself a success
 		if last.until((jiff::Unit::Day, today))?.get_days() < PROFILE_REFRESH_DAYS {
 			return Ok(Fetched::default());
 		}
@@ -374,14 +482,13 @@ pub fn linkedin(handle: &str, cursor: Option<&str>) -> Result<Fetched> {
 	let mut fetched = Fetched::default();
 	insert_nonempty(&mut fetched.sources, "linkedin:headline", Some(&headline(&person)));
 	insert_nonempty(&mut fetched.sources, "linkedin:about", person.get("description").and_then(|v| v.as_str()));
-	fetched.cursor = Some(today.to_string());
+	cursor.advance(today.to_string());
 	Ok(fetched)
 }
-
 /// The profile fields skool serves to anybody. Their absence of a session is why this is the one
 /// source that needs no credentials at all: `postTrees` is the only part membership adds, and it
 /// comes back empty rather than failing.
-pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+pub async fn skool(client: &mut Skool, handle: &str, cursor: &mut Cursor<'_>) -> Result<Fetched> {
 	let handle = handle.trim_start_matches('@');
 	let payload = client.page(&format!("/@{handle}")).await?;
 	let props = payload.pointer("/props/pageProps").ok_or_else(|| eyre!("skool served a page without pageProps"))?;
@@ -401,15 +508,18 @@ pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Re
 
 	// newest-first, and only ever populated for a session that shares a group with them
 	let posts = props.get("postTrees").and_then(|v| v.as_array()).ok_or_else(|| eyre!("skool `{handle}`: no postTrees"))?;
+	let mut first = true;
 	for node in posts {
 		let post = node.get("post").ok_or_else(|| eyre!("a skool postTree without a post: {node}"))?;
 		let id = post.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool post without an id: {post}"))?;
 		// ids are opaque hex, so the cursor can only be recognised, not compared — a post that has
 		// already scrolled off the first page is reported again rather than missed
-		if cursor == Some(id) {
+		if cursor.newest() == Some(id) {
 			break;
 		}
-		fetched.cursor.get_or_insert_with(|| id.to_string());
+		if std::mem::take(&mut first) {
+			cursor.advance(id.to_string());
+		}
 		let created = post.get("createdAt").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without createdAt"))?;
 		let title = post.pointer("/metadata/title").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a title"))?;
 		let (group, name) = (post.pointer("/group/name").and_then(|v| v.as_str()), post.get("name").and_then(|v| v.as_str()));
@@ -425,6 +535,90 @@ pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Re
 	fetched.activity.reverse();
 	Ok(fetched)
 }
+/// An image that will not convert is still an attachment that went by, and losing the whole page of
+/// a backfill over one of them would cost the conversation around it.
+fn keep(bytes: &[u8], mime: &str, name: String, dest: &Path, file: String) -> Attachment {
+	if !avif::still(mime, bytes) {
+		return Attachment::File { name };
+	}
+	match avif::convert(bytes, dest) {
+		Ok(()) => Attachment::Image { file },
+		Err(e) => {
+			warn!("`{name}` stays a filename: {e:#}");
+			Attachment::File { name }
+		}
+	}
+}
+
+/// `offset_id` walks strictly older, and `0` means "from the newest" — the same two anchors discord
+/// pages by, spelled once.
+async fn telegram_backfill(client: &Client, peer_ref: grammers_client::session::types::PeerRef, cursor: &mut Cursor<'_>, assets: &Path, incremental_floor: Option<i32>) -> Result<()> {
+	let mut offset = match cursor.floor() {
+		Some(floor) => floor.parse().wrap_err("a telegram backfill floor is a message id")?,
+		None => incremental_floor.unwrap_or(0),
+	};
+	//LOOP: as in `Discord::backfill`
+	loop {
+		let mut iter = client.iter_messages(peer_ref).offset_id(offset);
+		let mut page = Vec::new();
+		while page.len() < PAGE {
+			let Some(message) = iter.next().await? else { break };
+			page.push(message);
+		}
+		let Some(oldest) = page.iter().map(|m| m.id()).min() else { break };
+		let short = page.len() < PAGE;
+		let mut msgs = Vec::with_capacity(page.len());
+		for message in &page {
+			msgs.push(telegram_msg(client, message, assets).await?);
+		}
+		cursor.page(&msgs, oldest.to_string())?;
+		if short {
+			break;
+		}
+		offset = oldest;
+	}
+	cursor.exhausted()
+}
+
+async fn telegram_msg(client: &Client, message: &Message, assets: &Path) -> Result<Msg> {
+	Ok(Msg {
+		id: message.id().to_string(),
+		source: Source::Telegram,
+		at: Timestamp::from_second(message.date().timestamp()).wrap_err("a telegram message date is a unix second")?,
+		outgoing: message.outgoing(),
+		text: message.text().to_string(),
+		attachments: telegram_attachment(client, message, assets).await?,
+		// telegram DMs have no per-message URL
+		permalink: None,
+	})
+}
+
+/// One media per message: an album arrives as several messages, each carrying its own.
+async fn telegram_attachment(client: &Client, message: &Message, assets: &Path) -> Result<Vec<Attachment>> {
+	let Some(media) = message.media() else { return Ok(Vec::new()) };
+	let (name, mime) = match &media {
+		Media::Photo(_) => (format!("photo-{}.jpg", message.id()), "image/jpeg".to_string()),
+		Media::Document(document) => (document.name().unwrap_or("attachment").to_string(), document.mime_type().unwrap_or_default().to_string()),
+		// a sticker, a poll, a location: nothing with bytes worth a file, and still worth a mark
+		_ => ("attachment".to_string(), String::new()),
+	};
+
+	let file = format!("telegram-{}.avif", message.id());
+	if assets.join(&file).exists() {
+		return Ok(vec![Attachment::Image { file }]);
+	}
+	if !mime.starts_with("image/") {
+		return Ok(vec![Attachment::File { name }]);
+	}
+
+	let mut bytes = Vec::new();
+	let mut download = client.iter_download(&media);
+	while let Some(chunk) = download.next().await? {
+		bytes.extend_from_slice(&chunk);
+	}
+	Ok(vec![keep(&bytes, &mime, name, &assets.join(&file), file.clone())])
+}
+
 async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
 	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
 	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))

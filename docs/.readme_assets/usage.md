@@ -25,3 +25,7 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 
 A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
 `pull` takes everybody.
+
+`pull` also keeps the messages. It writes them to `<person>/<year>.md`, next to the person file. The
+first `pull` gets the full history of each conversation, and can take a long time. If you stop it,
+the next `pull` continues from the same place.

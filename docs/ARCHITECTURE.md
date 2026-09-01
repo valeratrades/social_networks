@@ -24,7 +24,7 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub, LinkedIn, Skool
+│       └── rolodex/                        # per-person Nix files, and the message archive under them
 │
 ├── social_networks_adapters/               # long-running surface adapters
 │   └── src/
@@ -42,7 +42,7 @@ social_networks/
 └── social_networks_utils/                  # shared primitives
     └── src/
         ├── lib.rs
-        ├── db.rs                           # SQLite client (libsql): email dedup, rolodex checkpoints
+        ├── db.rs                           # SQLite client (libsql): email dedup
         ├── skool.rs                        # `__NEXT_DATA__` reads, browser-minted session cookie
         ├── telegram_notifier.rs            # central notification hub
         ├── telegram_utils.rs               # shared MTProto connect helpers
@@ -94,12 +94,15 @@ When an adapter's `listen()` returns an error:
 sessions on demand and writes to disk, and is the only place anything goes *out* over them:
 
 ```
-Discord ──┐                                                    ┌──► Discord
-Telegram ─┤                                                    │
-GitHub ───┼──► pull ──► LLM extraction ──► <person>.nix    dm ─┼──► Telegram
-LinkedIn ─┤                                                    └──► Twitter
+Discord ──┐                                                          ┌──► Discord
+Telegram ─┤              ┌─► history ────────► <person>/<year>.md     │
+GitHub ───┼──► pull ─────┤                                        dm ─┼──► Telegram
+LinkedIn ─┤              └─► LLM extraction ─► <person>.nix           └──► Twitter
 Skool ────┘
 ```
+
+The transcript is what a pull is for; the labels in `<person>.nix` are derived from it and can be
+regenerated from it.
 
 Skool is the one surface with no API at all: every read is the `__NEXT_DATA__` payload skool's SSR
 embeds in the HTML, and the route it says it served is how it reports "not a member" / "not signed
@@ -111,7 +114,7 @@ why the rolodex source needs no credentials and the daemon's cookie only widens 
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
 - `TelegramNotifier` (utils::telegram_notifier): all in-band outbound notifications flow through here.
-- `Database` (utils::db): SQLite (libsql). Email deduplication, and the rolodex per-source cursors that keep a full person-file regeneration from clobbering them.
+- `Database` (utils::db): SQLite (libsql). Email deduplication.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 
 ## Invariants
@@ -127,6 +130,6 @@ why the rolodex source needs no credentials and the daemon's cookie only widens 
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
-- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex person files live in a user-chosen directory, everything machine-only stays in the db.
+- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex state is co-located with the person it describes, under the user-chosen directory — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and rolodex extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Systemd deployment**: each command runs as an independent systemd user service.

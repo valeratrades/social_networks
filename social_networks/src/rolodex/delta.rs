@@ -7,7 +7,7 @@ use strum::IntoEnumIterator as _;
 
 use super::{
 	person::{LogEntry, Person},
-	sources::{Activity, Msg, Source},
+	sources::{Activity, INITIAL_MESSAGES, Msg, Source},
 };
 
 /// Something new about a person. Only constructible when there is something new, so there is no
@@ -21,7 +21,12 @@ pub struct Delta<'a> {
 }
 
 impl<'a> Delta<'a> {
-	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, new_messages: Vec<Msg>, new_activity: Vec<Activity>) -> Option<Self> {
+	/// Only the newest [`INITIAL_MESSAGES`] reach the prompt. The archive keeps the rest; a
+	/// conversation the model cannot hold in one read is not one it summarises better for trying.
+	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, mut new_messages: Vec<Msg>, new_activity: Vec<Activity>) -> Option<Self> {
+		if new_messages.len() > INITIAL_MESSAGES {
+			new_messages.drain(..new_messages.len() - INITIAL_MESSAGES);
+		}
 		let changed_sources: BTreeMap<String, String> = fetched_sources
 			.iter()
 			.filter(|(key, value)| person.sources.get(*key) != Some(value))
@@ -176,7 +181,11 @@ fn prompt(delta: &Delta<'_>) -> String {
 		for message in &delta.new_messages {
 			let who = if message.outgoing { "me" } else { &delta.person.name };
 			let source = message.permalink.as_deref().unwrap_or("null");
-			p.push_str(&format!("- [{} | {who} | source={source}] {}\n", message.date, message.text));
+			p.push_str(&format!(
+				"- [{} | {who} | source={source}] {}\n",
+				message.at.to_zoned(jiff::tz::TimeZone::UTC).date(),
+				message.text
+			));
 		}
 	}
 
