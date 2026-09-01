@@ -45,6 +45,7 @@ pub struct RolodexArgs {
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
 	match args.command {
+		RolodexCommand::Cold { pattern } => cold(&dir, pattern.as_deref()),
 		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
@@ -54,6 +55,8 @@ pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 
 #[derive(Subcommand)]
 enum RolodexCommand {
+	/// List matching people no conversation is on record with, on any platform
+	Cold { pattern: Option<String> },
 	/// Write skeleton files for the members of a venue nobody has a file for yet
 	Discover(discover::DiscoverArgs),
 	/// Send a message to exactly one matching person over one messenger
@@ -99,6 +102,54 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 	v_utils::io::file_open::open(&path).await.map_err(|e| eyre!("{e:#}"))?;
 	person::load_one(&path).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
 	Ok(())
+}
+
+/// Everybody the rolodex has looked for a conversation with and found none. What a person said in a
+/// venue is not a conversation with them — it stayed in the venue's transcript, and is why the
+/// members `discover` wrote a file for come out cold until somebody writes to them.
+fn cold(dir: &Path, pattern: Option<&str>) -> Result<()> {
+	let people = person::load_dir(dir)?;
+	let total = people.len();
+	let (cold, outstanding) = sift(dir, people.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect())?;
+
+	let width = cold.iter().chain(outstanding.iter().map(|(p, _)| p)).map(|p| p.name.chars().count()).max().unwrap_or(0);
+	for person in &cold {
+		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
+		println!("   {} {:<width$} {}", "·".dimmed(), person.name, handles.join(" ").dimmed());
+	}
+	for (person, source) in &outstanding {
+		println!(
+			"   {} {:<width$} {}",
+			"?".yellow(),
+			person.name,
+			format!("{}/{} has never been pulled", source.as_ref(), person.handles[source.as_ref()]).dimmed()
+		);
+	}
+	println!("   {} of {total} cold, {} unanswered", cold.len(), outstanding.len());
+	Ok(())
+}
+
+/// The cold, and those whose answer is still owed: a source that can hold a conversation and has
+/// never been asked is not evidence of silence, so it disqualifies rather than counts.
+fn sift(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<(Person, Source)>)> {
+	let (mut cold, mut outstanding) = (Vec::new(), Vec::new());
+	for person in people {
+		let meta = history::Meta::load(&dir.join(&person.name))?;
+		let asked: Vec<(Source, Option<usize>)> = person
+			.handles
+			.keys()
+			.filter_map(|platform| platform.parse::<Source>().ok())
+			.map(|source| (source, meta.messages(source)))
+			.collect();
+		if asked.iter().any(|(_, messages)| messages.is_some_and(|n| n > 0)) {
+			continue;
+		}
+		match asked.iter().find(|(source, messages)| source.has_history() && messages.is_none()) {
+			Some((source, _)) => outstanding.push((person, *source)),
+			None => cold.push(person),
+		}
+	}
+	Ok((cold, outstanding))
 }
 
 async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
@@ -385,6 +436,45 @@ mod tests {
 	use std::collections::BTreeMap;
 
 	use super::*;
+
+	/// Silence and ignorance are different answers, and the outreach list is only worth anything if
+	/// it holds the first and not the second.
+	#[test]
+	fn a_source_nobody_asked_is_not_a_source_that_said_nothing() {
+		let dir = std::env::temp_dir().join("social_networks_rolodex_cold");
+		let _ = std::fs::remove_dir_all(&dir);
+		let meta = |name: &str, json: &str| {
+			std::fs::create_dir_all(dir.join(name)).unwrap();
+			std::fs::write(dir.join(name).join("meta.json"), json).unwrap();
+		};
+		let person = |name: &str, handles: &[(&str, &str)]| {
+			let mut person = Person::skeleton(name);
+			person.handles = handles.iter().map(|(p, h)| (p.to_string(), h.to_string())).collect();
+			person
+		};
+		let source = |messages: usize| format!(r#"{{"newest":null,"oldest":null,"backfill_done":true,"messages":{messages},"last_message":null}}"#);
+
+		meta("asked", &format!(r#"{{"sources":{{"skool":{}}}}}"#, source(0)));
+		meta("silent", &format!(r#"{{"sources":{{"discord":{}}}}}"#, source(0)));
+		meta("spoke", &format!(r#"{{"sources":{{"discord":{}}}}}"#, source(3)));
+		meta("half", &format!(r#"{{"sources":{{"skool":{}}}}}"#, source(0)));
+
+		let people = vec![
+			person("asked", &[("skool", "asked-1")]),
+			person("silent", &[("discord", "silent")]),
+			person("spoke", &[("discord", "spoke")]),
+			// skool answered, telegram never did — the conversation could still be there
+			person("half", &[("skool", "half-2"), ("telegram", "half")]),
+			person("never", &[("telegram", "never")]),
+		];
+		let (cold, outstanding) = sift(&dir, people).unwrap();
+		assert_eq!(cold.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["asked", "silent"]);
+		assert_eq!(
+			outstanding.iter().map(|(p, s)| (p.name.as_str(), s.as_ref())).collect::<Vec<_>>(),
+			[("half", "telegram"), ("never", "telegram")]
+		);
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
 
 	/// What the venue axis is for, and the one thing it must never get wrong: a pull folds in this
 	/// person's lines and nobody else's, out of a transcript that keeps the whole conversation.

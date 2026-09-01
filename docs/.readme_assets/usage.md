@@ -23,6 +23,7 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 | `rolodex open [pattern]` | Open a person file in `$EDITOR`. Create the file if the pattern finds nobody. |
 | `rolodex pull [pattern]` | Get new data for each person the pattern finds. Write it to their files. |
 | `rolodex discover <platform>:<slug>` | Make a file for each member of a group that has no file yet. |
+| `rolodex cold [pattern]` | Show each person that you sent no message to and got no message from. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
 
 A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
@@ -31,6 +32,11 @@ A pattern finds a person by file name or by any handle. Without a pattern, `open
 `pull` also keeps the messages. It writes them to `<person>/<year>.md`, next to the person file. The
 first `pull` gets the full history of each conversation, and can take a long time. If you stop it,
 the next `pull` continues from the same place.
+
+`cold` reads those messages. A person is cold when the messages hold no conversation with them. A
+line that a person wrote in a group is not a conversation, so each member that `discover` added
+stays cold. Discord and Telegram can hold a conversation. If you keep a Discord or a Telegram handle
+for a person, and no `pull` read it, `cold` shows that person apart. Do a `pull` to get the answer.
 
 ### `recon`
 

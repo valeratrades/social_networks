@@ -122,6 +122,12 @@ impl Meta {
 		})
 	}
 
+	/// Direct messages on record for `source`. `None` is "never asked", which is not the same answer
+	/// as none — see `rolodex cold`.
+	pub fn messages(&self, source: Source) -> Option<usize> {
+		self.sources.get(source.as_ref()).map(|s| s.messages)
+	}
+
 	pub fn venues_through(&self) -> Option<Timestamp> {
 		self.venues_through
 	}

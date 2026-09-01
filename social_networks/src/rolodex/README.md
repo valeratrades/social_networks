@@ -91,6 +91,12 @@ File stems are `<first>-<last>` off the display name, the handle when there is n
 numeric suffix on collision. `discover` prints what it wrote so a stem can be `git mv`'d — the stem
 is not load-bearing, since a pattern searches handles too.
 
+`cold [pattern]` is the other end of that handover: everybody whose sources have been read and hold
+no conversation. A venue line is not one — it never entered their year files — so a member
+`discover` wrote a file for stays cold until they are written to. A source that can hold a
+conversation and has never been pulled is ignorance rather than silence, and prints apart from the
+answer.
+
 `dm <--discord|--skool|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
 other than exactly one match: a wasted fetch is recoverable, a message to the wrong person is not.
 The flag names the `handles` key it sends through, so a person without that handle is an error
