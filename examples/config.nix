@@ -1,5 +1,8 @@
 {
-  claude_token = { env = "CLAUDE_TOKEN"; };
+  llm = {
+    claude_token = { env = "CLAUDE_TOKEN"; };
+    openai_token = { env = "OPENAI_API_KEY"; };
+  };
 
   dms = {
     discord = {

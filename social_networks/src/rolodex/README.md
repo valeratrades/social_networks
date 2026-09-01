@@ -1,8 +1,8 @@
 # rolodex
 
 A local directory of per-person Nix files, one per person, fed from the platforms we already hold
-sessions for. The file is the single source of truth about a person; our side is never written back
-to a platform.
+sessions for. The file is the single source of truth about a person; nothing it holds is ever
+written back to a platform — `dm` sends only what you type on the command line.
 
 ```
                   ┌──────────────────────────────┐        ┌─ extract() ────────► log + summary ─┐
@@ -35,6 +35,12 @@ Checkpoints live in sqlite rather than the file, so regenerating a person cannot
 
 `open [pattern]` and `pull [pattern]`. A pattern matches the file stem or any handle, so
 `pull dev_ardi` reaches `orion.nix`. No pattern means fzf for `open`, everybody for `pull`.
+
+`dm <--discord|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
+other than exactly one match: a wasted fetch is recoverable, a message to the wrong person is not.
+The flag names the `handles` key it sends through, so a person without that handle is an error
+rather than a guess. Discord and telegram reuse the sessions `pull` reads with; twitter sends from
+the `[twitter.oauth]` account.
 
 `handles` maps platform → handle. `discord`, `telegram`, `github` and `skool` are what `pull`
 fetches; the rest are seeded from discord's connected accounts and skool's profile links, and exist

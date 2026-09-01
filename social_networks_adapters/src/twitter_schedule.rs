@@ -18,7 +18,7 @@ use v_utils::{Timeframe, macros::MyConfigPrimitives};
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
-	twitter::TwitterConfig,
+	twitter::{TwitterConfig, TwitterOauthConfig},
 };
 
 const SURFACE: &str = "twitter_schedule";
@@ -174,7 +174,7 @@ async fn post_poll(twitter_config: &TwitterConfig) -> Result<(), ScheduleError> 
 		}),
 	};
 
-	let response = post_tweet(&oauth.api_key, &oauth.api_key_secret, &oauth.access_token, &oauth.access_token_secret, &request).await?;
+	let response = post_tweet(oauth, &request).await?;
 
 	info!("posted tweet_id={} text={}", response.data.id, response.data.text);
 	println!("Tweet ID: {}", response.data.id);
@@ -182,55 +182,48 @@ async fn post_poll(twitter_config: &TwitterConfig) -> Result<(), ScheduleError> 
 	Ok(())
 }
 
-#[instrument(skip_all)]
-async fn post_tweet(api_key: &str, api_key_secret: &str, access_token: &str, access_token_secret: &str, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse, ScheduleError> {
-	let url = "https://api.twitter.com/2/tweets";
-	let method = "POST";
-
-	// Generate OAuth parameters
+/// OAuth 1.0a `Authorization` for a POST whose payload is a JSON body — which is therefore not part
+/// of the signature base string, leaving the oauth parameters as the whole of it.
+pub(crate) fn oauth_header(url: &str, oauth: &TwitterOauthConfig) -> Result<String> {
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
 	let nonce: String = rand::rng().sample_iter(rand::distr::Alphanumeric).take(32).map(char::from).collect();
 
 	let mut oauth_params = BTreeMap::new();
-	oauth_params.insert("oauth_consumer_key", api_key);
+	oauth_params.insert("oauth_consumer_key", oauth.api_key.as_str());
 	oauth_params.insert("oauth_nonce", &nonce);
 	oauth_params.insert("oauth_signature_method", "HMAC-SHA1");
 	oauth_params.insert("oauth_timestamp", &timestamp);
-	oauth_params.insert("oauth_token", access_token);
+	oauth_params.insert("oauth_token", oauth.access_token.as_str());
 	oauth_params.insert("oauth_version", "1.0");
 
-	// Create parameter string (for signature base string, we only use oauth params for POST with JSON body)
 	let param_string = oauth_params
 		.iter()
 		.map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
 		.collect::<Vec<_>>()
 		.join("&");
+	let signature_base = format!("POST&{}&{}", percent_encode(url), percent_encode(&param_string));
+	let signing_key = format!("{}&{}", percent_encode(&oauth.api_key_secret), percent_encode(&oauth.access_token_secret));
 
-	// Create signature base string
-	let signature_base = format!("{}&{}&{}", method, percent_encode(url), percent_encode(&param_string));
-
-	// Create signing key
-	let signing_key = format!("{}&{}", percent_encode(api_key_secret), percent_encode(access_token_secret));
-
-	// Generate signature
 	let mut mac = HmacSha1::new_from_slice(signing_key.as_bytes()).map_err(|e| eyre!("Failed to create HMAC: {e}"))?;
 	mac.update(signature_base.as_bytes());
 	let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, mac.finalize().into_bytes());
 
-	// Build Authorization header
 	let mut auth_header_params = oauth_params.clone();
 	auth_header_params.insert("oauth_signature", &signature);
-
-	let auth_header = format!(
+	Ok(format!(
 		"OAuth {}",
 		auth_header_params.iter().map(|(k, v)| format!(r#"{}="{}""#, k, percent_encode(v))).collect::<Vec<_>>().join(", ")
-	);
+	))
+}
 
-	// Make the request
+#[instrument(skip_all)]
+async fn post_tweet(oauth: &TwitterOauthConfig, tweet: &CreateTweetRequest) -> Result<CreateTweetResponse, ScheduleError> {
+	let url = "https://api.twitter.com/2/tweets";
+
 	let client = reqwest::Client::new();
 	let response = client
 		.post(url)
-		.header("Authorization", auth_header)
+		.header("Authorization", oauth_header(url, oauth)?)
 		.header("Content-Type", "application/json")
 		.json(tweet)
 		.send()

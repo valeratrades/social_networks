@@ -24,7 +24,7 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub
+│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub, Skool
 │
 ├── social_networks_adapters/               # long-running surface adapters
 │   └── src/
@@ -90,14 +90,14 @@ When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
 
-`rolodex` is the one surface-reading command that is not a daemon and notifies nobody — it reads the
-same sessions on demand and writes to disk:
+`rolodex` is the one surface command that is not a daemon and notifies nobody — it reads the same
+sessions on demand and writes to disk, and is the only place anything goes *out* over them:
 
 ```
-Discord ──┐
-Telegram ─┤
-GitHub ───┼──► rolodex ──► LLM extraction ──► <person>.nix
-Skool ────┘
+Discord ──┐                                                     ┌──► Discord
+Telegram ─┤                                                     │
+GitHub ───┼──► pull ──► LLM extraction ──► <person>.nix   dm ──┼──► Telegram
+Skool ────┘                                                     └──► Twitter
 ```
 
 Skool is the one surface with no API at all: every read is the `__NEXT_DATA__` payload skool's SSR
@@ -120,11 +120,12 @@ why the rolodex source needs no credentials and the daemon's cookie only widens 
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
+- **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, `rolodex pull`), refused when empty.
 
 ## Cross-Cutting Concerns
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
 - **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex person files live in a user-chosen directory, everything machine-only stays in the db.
-- **LLM integration**: email classification, YouTube sentiment, and rolodex extraction via Claude (`ask_llm` crate).
+- **LLM integration**: email classification, YouTube sentiment and rolodex extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Systemd deployment**: each command runs as an independent systemd user service.

@@ -4,6 +4,7 @@ pub mod client;
 pub mod discord;
 pub mod dm_event;
 pub mod email;
+pub mod llm;
 pub mod skool;
 pub mod telegram_channel_watch;
 pub mod telegram_dms;
