@@ -111,7 +111,9 @@ impl Skool {
 	/// group. Which group the request goes through does not matter, and only skool knows which are
 	/// shared, so they are tried until one answers.
 	async fn channel_with(&mut self, user: &str) -> Result<String> {
-		let open = self.api(Method::GET, "/self/chat-channels", &[("limit", "100")], None).await?;
+		// 30 is the page the web client asks for, and anything larger is a 400. Past it we fall through
+		// to `chat-request`, which answers with the open channel anyway.
+		let open = self.api(Method::GET, "/self/chat-channels", &[("limit", "30")], None).await?;
 		let open: serde_json::Value = serde_json::from_str(&open).wrap_err("listing open chat channels")?;
 		// `channels: null` is how skool spells an empty list
 		let open = open.get("channels").ok_or_else(|| eyre!("a chat channel listing without `channels`: {open}"))?;
