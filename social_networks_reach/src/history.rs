@@ -1,9 +1,9 @@
-//! The durable half of a pull: the conversation itself, next to the person file rather than derived
-//! from it. Labels in `<person>.nix` are what an LLM made of these; these are what happened.
+//! The durable half of a read: the conversation itself, next to whoever it is about rather than
+//! derived from it. Labels in `<person>.nix` are what an LLM made of these; these are what happened.
 //!
 //! ```text
 //! BACKFILLING                                 STEADY
-//! every message → cache jsonl                 every new message → append <year>.md
+//! every item → cache jsonl                    every new item → append <year>.md
 //! no year files yet                           the cache is gone
 //! meta saved per page: an interrupt costs one append-only: no parser, no rewrite
 //!      └──── all sources backfill_done ────► render the year files once, drop the cache ────┘
@@ -22,23 +22,42 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use jiff::{Timestamp, tz::TimeZone};
 use serde::{Deserialize, Serialize};
+use social_networks_adapters::reach::{Attachment, Author, Item, Source, VenueRef};
 use strum::IntoEnumIterator as _;
 use tracing::warn;
 
-use super::sources::{Attachment, Msg, Source};
+/// Whose transcript is being written. A DM file has two participants and names the other one in
+/// every incoming line; a venue file has as many as it has, and names the place too.
+#[derive(Clone, Copy)]
+pub enum Facing<'a> {
+	Person(&'a str),
+	Venue(&'a VenueRef),
+}
+impl Facing<'_> {
+	fn title(&self) -> String {
+		match self {
+			Self::Person(name) => (*name).to_string(),
+			Self::Venue(at) => at.to_string(),
+		}
+	}
+}
 
-/// `<person>/meta.json`. Every "where did we stop" the rolodex holds, in one place a full
+/// `<dir>/meta.json`. Every "where did we stop" a person's history holds, in one place a full
 /// regeneration of the person file never touches.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Meta {
 	#[serde(skip)]
 	dir: PathBuf,
 	sources: BTreeMap<String, SourceMeta>,
+	/// The newest venue line already folded into this person's labels. A venue transcript is never
+	/// copied into their file, so this is the only record of what the extraction has seen of it.
+	#[serde(default)]
+	venues_through: Option<Timestamp>,
 }
 impl Meta {
 	pub fn load(person_dir: &Path) -> Result<Self> {
 		let path = person_dir.join("meta.json");
-		let mut meta = match std::fs::read(&path) {
+		let mut meta: Self = match std::fs::read(&path) {
 			Ok(bytes) => serde_json::from_slice(&bytes).wrap_err_with(|| format!("{} is not rolodex history state", path.display()))?,
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
 			Err(e) => return Err(e).wrap_err_with(|| format!("failed to read {}", path.display())),
@@ -59,7 +78,7 @@ impl Meta {
 
 	/// Where `source` stopped, and the scratch its backfill checkpoints into.
 	pub fn cursor(&mut self, source: Source) -> Result<Cursor<'_>> {
-		let person = self.person().to_string();
+		let person = self.label().to_string();
 		let cache = cache_dir(&person)?.join(format!("{}.jsonl", source.as_ref()));
 		// A source first seen on a person whose archive is already rendered cannot be backfilled into
 		// it: the year files are written whole, once, and merging a second pass into them would take
@@ -103,7 +122,22 @@ impl Meta {
 		})
 	}
 
-	fn person(&self) -> &str {
+	pub fn venues_through(&self) -> Option<Timestamp> {
+		self.venues_through
+	}
+
+	/// Called once the extraction has actually read them: a failed call has to cost a re-read rather
+	/// than the lines.
+	pub fn venues_read(&mut self, through: Option<Timestamp>) -> Result<()> {
+		if through.is_none() {
+			return Ok(());
+		}
+		self.venues_through = through.max(self.venues_through);
+		self.save()
+	}
+
+	/// The directory's own name, which is the person the transcript is of.
+	fn label(&self) -> &str {
 		self.dir
 			.file_name()
 			.expect("a person directory is <rolodex dir>/<name>")
@@ -115,13 +149,13 @@ impl Meta {
 		self.sources.values().any(|s| !s.backfill_done)
 	}
 
-	fn last_message(&self) -> Option<Timestamp> {
+	fn last_item(&self) -> Option<Timestamp> {
 		self.sources.values().filter_map(|s| s.last_message).max()
 	}
 
-	fn absorb(&mut self, msgs: &[Msg]) {
+	fn absorb(&mut self, items: &[Item]) {
 		for source in Source::iter() {
-			let of_source: Vec<&Msg> = msgs.iter().filter(|m| m.source == source).collect();
+			let of_source: Vec<&Item> = items.iter().filter(|m| m.source == source).collect();
 			if !of_source.is_empty() {
 				self.sources.entry(source.as_ref().to_string()).or_default().absorb(&of_source);
 			}
@@ -161,11 +195,11 @@ impl Cursor<'_> {
 
 	/// The slice fetched above the cursor, checked in the moment it is fetched. Leaves the backfill
 	/// floor alone: this sits above it, not below.
-	pub fn stash(&mut self, msgs: &[Msg]) -> Result<()> {
-		if msgs.is_empty() {
+	pub fn stash(&mut self, items: &[Item]) -> Result<()> {
+		if items.is_empty() {
 			return Ok(());
 		}
-		let refs: Vec<&Msg> = msgs.iter().collect();
+		let refs: Vec<&Item> = items.iter().collect();
 		append_jsonl(&self.cache, &refs)?;
 		self.state_mut().absorb(&refs);
 		self.meta.save()
@@ -176,8 +210,8 @@ impl Cursor<'_> {
 	}
 
 	/// One page below [`Cursor::floor`], checked in before the fetch asks for the next one.
-	pub fn page(&mut self, msgs: &[Msg], floor: String) -> Result<()> {
-		let refs: Vec<&Msg> = msgs.iter().collect();
+	pub fn page(&mut self, items: &[Item], floor: String) -> Result<()> {
+		let refs: Vec<&Item> = items.iter().collect();
 		append_jsonl(&self.cache, &refs)?;
 		let state = self.state_mut();
 		state.oldest = Some(floor);
@@ -202,18 +236,56 @@ impl Cursor<'_> {
 
 /// Steady state: append to the year files. Backfilling: stash to the cache. Renders the year files
 /// once and drops the cache when the last source has finished.
-pub fn record(person_dir: &Path, mut msgs: Vec<Msg>, meta: &mut Meta) -> Result<()> {
-	msgs.sort_by(order);
+pub fn record(person_dir: &Path, mut items: Vec<Item>, meta: &mut Meta) -> Result<()> {
+	items.sort_by(order);
 	if meta.backfilling() {
 		// every fetch checked its own slice into the cache as it went
-	} else if cache_dir(meta.person())?.exists() {
+	} else if cache_dir(meta.label())?.exists() {
 		// the last backfill finished during this pull, so the whole archive lands in one pass
 		render(person_dir, meta)?;
 	} else {
-		append(person_dir, &msgs, meta.last_message())?;
-		meta.absorb(&msgs);
+		let last = meta.last_item();
+		append(person_dir, Facing::Person(meta.label()), &items, last)?;
+		meta.absorb(&items);
 	}
 	meta.save()
+}
+/// `last` is the newest item already in the files, and decides whether the first item here opens a
+/// new day. Items must be [`order`]ed.
+pub fn append(dir: &Path, facing: Facing<'_>, items: &[Item], last: Option<Timestamp>) -> Result<()> {
+	if items.is_empty() {
+		return Ok(());
+	}
+	std::fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+	let title = facing.title();
+
+	let mut day = last.map(|t| t.to_zoned(TimeZone::UTC).date());
+	let mut open: Option<(i16, std::fs::File)> = None;
+	for item in items {
+		let zoned = item.at.to_zoned(TimeZone::UTC);
+		let (year, date) = (zoned.year(), zoned.date());
+		if open.as_ref().map(|(y, _)| *y) != Some(year) {
+			let path = dir.join(format!("{year}.md"));
+			let fresh = !path.exists();
+			let mut file = std::fs::OpenOptions::new()
+				.create(true)
+				.append(true)
+				.open(&path)
+				.wrap_err_with(|| format!("failed to open {}", path.display()))?;
+			if fresh {
+				writeln!(file, "# {title} — {year} (times UTC)")?;
+				day = None;
+			}
+			open = Some((year, file));
+		}
+		let file = &mut open.as_mut().expect("just opened").1;
+		if day != Some(date) {
+			write!(file, "\n## {date}\n\n")?;
+			day = Some(date);
+		}
+		writeln!(file, "{}", line(facing, item))?;
+	}
+	Ok(())
 }
 /// `newest` is the cursor the incremental fetch resumes above; `oldest` the floor a backfill
 /// continues below. `last_message` orders two messengers against each other, which a date alone
@@ -228,9 +300,9 @@ struct SourceMeta {
 }
 
 impl SourceMeta {
-	fn absorb(&mut self, msgs: &[&Msg]) {
-		self.messages += msgs.len();
-		self.last_message = msgs.iter().map(|m| m.at).max().max(self.last_message);
+	fn absorb(&mut self, items: &[&Item]) {
+		self.messages += items.len();
+		self.last_message = items.iter().map(|m| m.at).max().max(self.last_message);
 	}
 }
 
@@ -238,8 +310,8 @@ impl SourceMeta {
 /// one page on the next run — and written out through the same appender the steady state uses, so
 /// an interrupted backfill and an uninterrupted one cannot render differently.
 fn render(person_dir: &Path, meta: &Meta) -> Result<()> {
-	let cache = cache_dir(meta.person())?;
-	let mut msgs = Vec::new();
+	let cache = cache_dir(meta.label())?;
+	let mut items = Vec::new();
 	let mut seen = HashSet::new();
 	for source in Source::iter() {
 		let path = cache.join(format!("{}.jsonl", source.as_ref()));
@@ -249,61 +321,33 @@ fn render(person_dir: &Path, meta: &Meta) -> Result<()> {
 			Err(e) => return Err(e).wrap_err_with(|| format!("failed to read {}", path.display())),
 		};
 		for line in body.lines().filter(|l| !l.trim().is_empty()) {
-			let msg: Msg = serde_json::from_str(line).wrap_err_with(|| format!("{} holds a line that is not a message", path.display()))?;
-			if seen.insert((msg.source, msg.id.clone())) {
-				msgs.push(msg);
+			let item: Item = serde_json::from_str(line).wrap_err_with(|| format!("{} holds a line that is not an item", path.display()))?;
+			if seen.insert((item.source, item.id.clone())) {
+				items.push(item);
 			}
 		}
 	}
-	msgs.sort_by(order);
+	items.sort_by(order);
 
-	append(person_dir, &msgs, None)?;
+	append(person_dir, Facing::Person(meta.label()), &items, None)?;
 	std::fs::remove_dir_all(&cache).wrap_err_with(|| format!("failed to remove {}", cache.display()))
 }
 
-/// `last` is the newest message already in the files, and decides whether the first message here
-/// opens a new day. Messages must be [`order`]ed.
-fn append(person_dir: &Path, msgs: &[Msg], last: Option<Timestamp>) -> Result<()> {
-	if msgs.is_empty() {
-		return Ok(());
-	}
-	std::fs::create_dir_all(person_dir).wrap_err_with(|| format!("failed to create {}", person_dir.display()))?;
-	let person = person_dir.file_name().expect("a person directory is <rolodex dir>/<name>").to_string_lossy().into_owned();
-
-	let mut day = last.map(|t| t.to_zoned(TimeZone::UTC).date());
-	let mut open: Option<(i16, std::fs::File)> = None;
-	for msg in msgs {
-		let zoned = msg.at.to_zoned(TimeZone::UTC);
-		let (year, date) = (zoned.year(), zoned.date());
-		if open.as_ref().map(|(y, _)| *y) != Some(year) {
-			let path = person_dir.join(format!("{year}.md"));
-			let fresh = !path.exists();
-			let mut file = std::fs::OpenOptions::new()
-				.create(true)
-				.append(true)
-				.open(&path)
-				.wrap_err_with(|| format!("failed to open {}", path.display()))?;
-			if fresh {
-				writeln!(file, "# {person} — {year} (times UTC)")?;
-				day = None;
-			}
-			open = Some((year, file));
-		}
-		let file = &mut open.as_mut().expect("just opened").1;
-		if day != Some(date) {
-			write!(file, "\n## {date}\n\n")?;
-			day = Some(date);
-		}
-		writeln!(file, "{}", line(&person, msg))?;
-	}
-	Ok(())
-}
-
-fn line(person: &str, msg: &Msg) -> String {
-	let who = if msg.outgoing { "me" } else { person };
-	let time = msg.at.to_zoned(TimeZone::UTC).time();
-	let mut text = msg.text.trim().to_string();
-	for name in msg.attachments.iter().filter_map(|a| match a {
+/// `- HH:MM:SS [who/platform] text`, and `[who/platform@slug]` in a venue. The prefix is fixed
+/// because it is what a person's pull matches their own venue lines on.
+fn line(facing: Facing<'_>, item: &Item) -> String {
+	let who = match (&item.author, facing) {
+		(Author::Me, _) => "me",
+		(Author::Handle(handle), Facing::Venue(_)) => handle,
+		(Author::Handle(_), Facing::Person(name)) => name,
+	};
+	let at = match facing {
+		Facing::Person(_) => String::new(),
+		Facing::Venue(venue) => format!("@{}", venue.slug),
+	};
+	let time = item.at.to_zoned(TimeZone::UTC).time();
+	let mut text = item.text.trim().to_string();
+	for name in item.attachments.iter().filter_map(|a| match a {
 		Attachment::File { name } => Some(name),
 		Attachment::Image { .. } => None,
 	}) {
@@ -312,15 +356,15 @@ fn line(person: &str, msg: &Msg) -> String {
 
 	// a continuation line has to stay indented under the list item, or it closes it
 	let mut out = format!(
-		"- {:02}:{:02}:{:02} [{who}/{}] {}",
+		"- {:02}:{:02}:{:02} [{who}/{}{at}] {}",
 		time.hour(),
 		time.minute(),
 		time.second(),
-		msg.source.as_ref(),
+		item.source.as_ref(),
 		text.trim().replace('\n', "\n  ")
 	);
 	out.truncate(out.trim_end().len());
-	for file in msg.attachments.iter().filter_map(|a| match a {
+	for file in item.attachments.iter().filter_map(|a| match a {
 		Attachment::Image { file } => Some(file),
 		Attachment::File { .. } => None,
 	}) {
@@ -329,13 +373,13 @@ fn line(person: &str, msg: &Msg) -> String {
 	out
 }
 
-/// Total, and independent of the order sources were fetched in: two runs that saw the same messages
+/// Total, and independent of the order sources were fetched in: two runs that saw the same items
 /// must write the same bytes.
-fn order(a: &Msg, b: &Msg) -> std::cmp::Ordering {
+fn order(a: &Item, b: &Item) -> std::cmp::Ordering {
 	(a.at, a.source.as_ref(), &a.id).cmp(&(b.at, b.source.as_ref(), &b.id))
 }
 
-fn append_jsonl(path: &Path, msgs: &[&Msg]) -> Result<()> {
+fn append_jsonl(path: &Path, items: &[&Item]) -> Result<()> {
 	let parent = path.parent().expect("a cache path carries a directory");
 	std::fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {}", parent.display()))?;
 	let mut file = std::fs::OpenOptions::new()
@@ -344,8 +388,8 @@ fn append_jsonl(path: &Path, msgs: &[&Msg]) -> Result<()> {
 		.open(path)
 		.wrap_err_with(|| format!("failed to open {}", path.display()))?;
 	let mut body = String::new();
-	for msg in msgs {
-		body.push_str(&serde_json::to_string(msg)?);
+	for item in items {
+		body.push_str(&serde_json::to_string(item)?);
 		body.push('\n');
 	}
 	file.write_all(body.as_bytes()).wrap_err_with(|| format!("failed to write {}", path.display()))
@@ -382,14 +426,20 @@ mod tests {
 		path::{Path, PathBuf},
 	};
 
+	use social_networks_adapters::reach::{Kind, VenueSource};
+
 	use super::*;
 
-	fn msg(source: Source, id: &str, at: &str, outgoing: bool, text: &str) -> Msg {
-		Msg {
+	fn item(source: Source, id: &str, at: &str, outgoing: bool, text: &str) -> Item {
+		Item {
 			id: id.to_string(),
 			source,
 			at: at.parse().expect("a test timestamp"),
-			outgoing,
+			kind: Kind::Direct,
+			author: match outgoing {
+				true => Author::Me,
+				false => Author::Handle("them".to_string()),
+			},
 			text: text.to_string(),
 			attachments: Vec::new(),
 			permalink: None,
@@ -397,26 +447,26 @@ mod tests {
 	}
 
 	/// A conversation across two sources and a year boundary, in the order a backwards walk pages it.
-	fn pages() -> Vec<Vec<Msg>> {
+	fn pages() -> Vec<Vec<Item>> {
 		vec![
 			vec![
-				msg(Source::Discord, "40", "2026-01-04T09:00:00Z", false, "and back"),
-				msg(Source::Telegram, "41", "2026-01-03T22:10:33Z", false, "can't sleep"),
+				item(Source::Discord, "40", "2026-01-04T09:00:00Z", false, "and back"),
+				item(Source::Telegram, "41", "2026-01-03T22:10:33Z", false, "can't sleep"),
 			],
 			vec![
-				msg(Source::Discord, "30", "2025-12-31T23:59:00Z", true, "happy new year"),
-				msg(Source::Telegram, "31", "2025-12-31T10:00:00Z", false, "same day, other messenger"),
+				item(Source::Discord, "30", "2025-12-31T23:59:00Z", true, "happy new year"),
+				item(Source::Telegram, "31", "2025-12-31T10:00:00Z", false, "same day, other messenger"),
 			],
 			vec![
-				msg(Source::Discord, "20", "2025-06-02T12:00:00Z", false, "line one\nline two"),
-				msg(Source::Discord, "10", "2025-06-01T08:30:00Z", true, "hey"),
+				item(Source::Discord, "20", "2025-06-02T12:00:00Z", false, "line one\nline two"),
+				item(Source::Discord, "10", "2025-06-01T08:30:00Z", true, "hey"),
 			],
 		]
 	}
 
-	fn check_in(meta: &mut Meta, page: &[Msg]) -> Result<()> {
+	fn check_in(meta: &mut Meta, page: &[Item]) -> Result<()> {
 		for source in [Source::Discord, Source::Telegram] {
-			let of_source: Vec<Msg> = page.iter().filter(|m| m.source == source).cloned().collect();
+			let of_source: Vec<Item> = page.iter().filter(|m| m.source == source).cloned().collect();
 			if !of_source.is_empty() {
 				let floor = of_source.iter().map(|m| m.id.clone()).min().expect("a non-empty page");
 				meta.cursor(source)?.page(&of_source, floor)?;
@@ -512,15 +562,15 @@ mod tests {
 	fn steady_state_appends_under_the_open_day() {
 		let dir = scratch("ardi");
 		let mut meta = Meta::load(&dir).unwrap();
-		check_in(&mut meta, &[msg(Source::Discord, "10", "2026-03-04T14:02:11Z", true, "hey")]).unwrap();
+		check_in(&mut meta, &[item(Source::Discord, "10", "2026-03-04T14:02:11Z", true, "hey")]).unwrap();
 		finish(&dir, &mut meta).unwrap();
 
 		let mut meta = Meta::load(&dir).unwrap();
 		record(
 			&dir,
 			vec![
-				msg(Source::Discord, "11", "2026-03-04T14:03:40Z", false, "yeah, v1 is out"),
-				msg(Source::Discord, "12", "2026-03-05T09:00:00Z", false, "morning"),
+				item(Source::Discord, "11", "2026-03-04T14:03:40Z", false, "yeah, v1 is out"),
+				item(Source::Discord, "12", "2026-03-05T09:00:00Z", false, "morning"),
 			],
 			&mut meta,
 		)
@@ -545,7 +595,7 @@ mod tests {
 	fn a_late_source_cannot_rewrite_a_rendered_archive() {
 		let dir = scratch("mel");
 		let mut meta = Meta::load(&dir).unwrap();
-		check_in(&mut meta, &[msg(Source::Discord, "10", "2026-03-04T14:02:11Z", true, "hey")]).unwrap();
+		check_in(&mut meta, &[item(Source::Discord, "10", "2026-03-04T14:02:11Z", true, "hey")]).unwrap();
 		finish(&dir, &mut meta).unwrap();
 		let rendered = archive(&dir);
 
@@ -553,7 +603,7 @@ mod tests {
 		let telegram = meta.cursor(Source::Telegram).unwrap();
 		assert!(!telegram.backfilling(), "a late source tails forward instead");
 		assert!(!telegram.archiving());
-		record(&dir, vec![msg(Source::Telegram, "1", "2026-03-06T08:00:00Z", false, "hi from the new one")], &mut meta).unwrap();
+		record(&dir, vec![item(Source::Telegram, "1", "2026-03-06T08:00:00Z", false, "hi from the new one")], &mut meta).unwrap();
 
 		assert_eq!(
 			archive(&dir).get("2026.md").expect("a 2026 file"),
@@ -566,22 +616,28 @@ mod tests {
 	}
 
 	/// An attachment-only message is still a message: the filename carries it, and an image hangs
-	/// off a continuation line rather than closing the list item.
+	/// off a continuation line rather than closing the list item. A venue line names its author and
+	/// the place, which is the prefix a person's pull matches on.
 	#[test]
 	fn attachments_reach_the_transcript() {
-		let mut image = msg(Source::Discord, "1", "2026-03-04T14:03:40Z", false, "yeah, v1 is out");
+		let mut image = item(Source::Discord, "1", "2026-03-04T14:03:40Z", false, "yeah, v1 is out");
 		image.attachments = vec![Attachment::Image {
 			file: "discord-1349938102838738944.avif".to_string(),
 		}];
 		assert_eq!(
-			line("orion", &image),
+			line(Facing::Person("orion"), &image),
 			"- 14:03:40 [orion/discord] yeah, v1 is out\n  ![](assets/discord-1349938102838738944.avif)"
 		);
 
-		let mut file = msg(Source::Discord, "2", "2026-03-04T14:05:02Z", false, "");
+		let mut file = item(Source::Discord, "2", "2026-03-04T14:05:02Z", false, "");
 		file.attachments = vec![Attachment::File {
 			name: "adapter_bench.csv".to_string(),
 		}];
-		assert_eq!(line("orion", &file), "- 14:05:02 [orion/discord] [adapter_bench.csv]");
+		assert_eq!(line(Facing::Person("orion"), &file), "- 14:05:02 [orion/discord] [adapter_bench.csv]");
+
+		let mut post = item(Source::Skool, "3", "2026-03-04T14:03:40Z", false, "shipped it");
+		post.author = Author::Handle("lory".to_string());
+		let at = VenueRef::new(VenueSource::Skool, "20kmodrop");
+		assert_eq!(line(Facing::Venue(&at), &post), "- 14:03:40 [lory/skool@20kmodrop] shipped it");
 	}
 }

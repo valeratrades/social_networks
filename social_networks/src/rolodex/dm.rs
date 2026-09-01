@@ -6,10 +6,10 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
-use social_networks_utils::skool::Skool;
+use social_networks_adapters::{reach::Direct, skool::Skool, telegram_dms, twitter};
 use strum::AsRefStr;
 
-use super::{person, sources, with_telegram};
+use super::{person, with_telegram};
 use crate::config::AppConfig;
 
 /// Clap has no flag-to-enum, so the group is how [`Messenger`] is spelled on the command line.
@@ -64,9 +64,10 @@ pub async fn send(config: &AppConfig, dir: &Path, messenger: Messenger, pattern:
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
 
+	// one `Direct::send`, four sessions: the same enum dispatch the reads go through
 	match messenger {
 		Messenger::Discord =>
-			sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone())
+			social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone())
 				.send(handle, text)
 				.await?,
 		// the read path is happy anonymous, but a message is written as somebody
@@ -75,10 +76,10 @@ pub async fn send(config: &AppConfig, dir: &Path, messenger: Messenger, pattern:
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
-			Skool::try_new(Some(credentials.into()))?.dm(handle, text).await?
+			Skool::try_new(Some(credentials.clone()))?.send(handle, text).await?
 		}
-		Messenger::Telegram => with_telegram(&config.telegram, async |client| sources::telegram_send(&client, handle, text).await).await?,
-		Messenger::Twitter => social_networks_adapters::twitter::send_dm(&config.twitter, handle, text).await?,
+		Messenger::Telegram => with_telegram(&config.telegram, async |client| telegram_dms::Reach { client: &client }.send(handle, text).await).await?,
+		Messenger::Twitter => twitter::Reach(&config.twitter).send(handle, text).await?,
 	}
 	println!("   {} {platform}/{handle} ({})", "✓".green(), person.name);
 	Ok(())

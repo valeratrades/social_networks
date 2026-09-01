@@ -5245,16 +5245,13 @@ dependencies = [
  "colored",
  "futures",
  "grammers-client",
- "grammers-tl-types",
- "image",
  "indicatif",
  "jiff",
  "miette",
- "ravif",
- "reqwest",
  "serde",
  "serde_json",
  "social_networks_adapters",
+ "social_networks_reach",
  "social_networks_utils",
  "strum",
  "tokio",
@@ -5269,6 +5266,7 @@ version = "0.3.18"
 dependencies = [
  "ask_llm",
  "base64 0.23.0",
+ "chromiumoxide",
  "clap",
  "color-eyre",
  "futures",
@@ -5293,6 +5291,7 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "social_networks_utils",
+ "strum",
  "tg",
  "thiserror 2.0.19",
  "tokio",
@@ -5306,20 +5305,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "social_networks_reach"
+version = "0.3.18"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "colored",
+ "futures",
+ "grammers-client",
+ "jiff",
+ "libsql",
+ "serde",
+ "serde_json",
+ "social_networks_adapters",
+ "social_networks_utils",
+ "strum",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "v_utils",
+ "xdg",
+]
+
+[[package]]
 name = "social_networks_utils"
 version = "0.3.18"
 dependencies = [
- "chromiumoxide",
  "color-eyre",
  "exchange_interactions",
  "futures",
  "grammers-client",
  "grammers-mtsender",
  "grammers-session",
+ "image",
  "libsql",
  "psm",
- "regex",
- "reqwest",
+ "ravif",
  "serde",
  "serde_json",
  "tokio",

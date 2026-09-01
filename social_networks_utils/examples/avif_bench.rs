@@ -1,5 +1,5 @@
 //! Which encoder the archive keeps its images with. Point it at a directory of real DM images:
-//! `cargo r --release -p social_networks --example avif_bench -- <dir>`.
+//! `cargo r --release -p social_networks_utils --example avif_bench -- <dir>`.
 //!
 //! Decode time is shared by both paths and left out; what is compared is encode wall time and the
 //! bytes that land on disk at a visually comparable quality.

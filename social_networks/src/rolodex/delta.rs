@@ -1,41 +1,48 @@
 use std::collections::BTreeMap;
 
 use color_eyre::eyre::{Result, WrapErr};
+use jiff::tz::TimeZone;
 use serde::Deserialize;
-use social_networks_adapters::llm::LlmConfig;
+use social_networks_adapters::{
+	llm::LlmConfig,
+	reach::{Author, INITIAL_ITEMS, Item, Kind, Source},
+};
 use strum::IntoEnumIterator as _;
 
-use super::{
-	person::{LogEntry, Person},
-	sources::{Activity, INITIAL_MESSAGES, Msg, Source},
-};
+use super::person::{LogEntry, Person};
 
 /// Something new about a person. Only constructible when there is something new, so there is no
 /// "should we call the LLM?" branch anywhere to get wrong — and nothing here names `pull`, so a live
 /// DM can build one just as well.
 pub struct Delta<'a> {
 	person: &'a Person,
-	new_messages: Vec<Msg>,
-	new_activity: Vec<Activity>,
+	/// [`Kind::Direct`], oldest-first.
+	new_messages: Vec<Item>,
+	/// Everything they did where anyone could see it: a venue post, a release. Held to a far higher
+	/// bar than a DM, and the prompt says so.
+	new_public: Vec<Item>,
 	changed_sources: BTreeMap<String, String>,
 }
 
 impl<'a> Delta<'a> {
-	/// Only the newest [`INITIAL_MESSAGES`] reach the prompt. The archive keeps the rest; a
+	/// Only the newest [`INITIAL_ITEMS`] of each half reach the prompt. The archive keeps the rest; a
 	/// conversation the model cannot hold in one read is not one it summarises better for trying.
-	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, mut new_messages: Vec<Msg>, new_activity: Vec<Activity>) -> Option<Self> {
-		if new_messages.len() > INITIAL_MESSAGES {
-			new_messages.drain(..new_messages.len() - INITIAL_MESSAGES);
+	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, items: Vec<Item>) -> Option<Self> {
+		let (mut new_messages, mut new_public): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|item| item.kind == Kind::Direct);
+		for half in [&mut new_messages, &mut new_public] {
+			if half.len() > INITIAL_ITEMS {
+				half.drain(..half.len() - INITIAL_ITEMS);
+			}
 		}
 		let changed_sources: BTreeMap<String, String> = fetched_sources
 			.iter()
 			.filter(|(key, value)| person.sources.get(*key) != Some(value))
 			.map(|(key, value)| (key.clone(), value.clone()))
 			.collect();
-		(!changed_sources.is_empty() || !new_messages.is_empty() || !new_activity.is_empty()).then_some(Self {
+		(!changed_sources.is_empty() || !new_messages.is_empty() || !new_public.is_empty()).then_some(Self {
 			person,
 			new_messages,
-			new_activity,
+			new_public,
 			changed_sources,
 		})
 	}
@@ -130,12 +137,23 @@ fn discovery_prompt(delta: &Delta<'_>) -> String {
 	if !delta.new_messages.is_empty() {
 		p.push_str("\n## Direct messages (oldest first)\n");
 		for message in &delta.new_messages {
-			let who = if message.outgoing { "me" } else { &delta.person.name };
-			p.push_str(&format!("- [{who}] {}\n", message.text));
+			p.push_str(&format!("- [{}] {}\n", who(delta, message), message.text));
 		}
 	}
 
 	p
+}
+
+/// The transcript slot: a DM file has two participants, and an item is either theirs or mine.
+fn who<'a>(delta: &'a Delta<'_>, item: &Item) -> &'a str {
+	match item.author {
+		Author::Me => "me",
+		Author::Handle(_) => &delta.person.name,
+	}
+}
+
+fn day(item: &Item) -> jiff::civil::Date {
+	item.at.to_zoned(TimeZone::UTC).date()
 }
 
 fn prompt(delta: &Delta<'_>) -> String {
@@ -179,17 +197,12 @@ fn prompt(delta: &Delta<'_>) -> String {
 	if !delta.new_messages.is_empty() {
 		p.push_str("\n## New direct messages (oldest first)\n");
 		for message in &delta.new_messages {
-			let who = if message.outgoing { "me" } else { &delta.person.name };
 			let source = message.permalink.as_deref().unwrap_or("null");
-			p.push_str(&format!(
-				"- [{} | {who} | source={source}] {}\n",
-				message.at.to_zoned(jiff::tz::TimeZone::UTC).date(),
-				message.text
-			));
+			p.push_str(&format!("- [{} | {} | source={source}] {}\n", day(message), who(delta, message), message.text));
 		}
 	}
 
-	if !delta.new_activity.is_empty() {
+	if !delta.new_public.is_empty() {
 		p.push_str(
 			"\n## New public activity (oldest first)\n\
 			 Apply a far higher bar here than to the messages above. A public feed is mostly routine \
@@ -201,8 +214,8 @@ fn prompt(delta: &Delta<'_>) -> String {
 			 unless it clearly means something. When in doubt, record nothing — missing an entry costs \
 			 far less than adding one that is not worth remembering.\n",
 		);
-		for activity in &delta.new_activity {
-			p.push_str(&format!("- [{} | source={}] {}\n", activity.date, activity.permalink, activity.text));
+		for activity in &delta.new_public {
+			p.push_str(&format!("- [{} | source={}] {}\n", day(activity), activity.permalink.as_deref().unwrap_or("null"), activity.text));
 		}
 	}
 

@@ -1,6 +1,6 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, path::Path, sync::Arc};
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures::future::{Either, select};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use jiff::{SignedDuration, Timestamp, fmt::strtime};
@@ -20,10 +20,15 @@ use v_utils::{Timeframe, macros::MyConfigPrimitives};
 use crate::{
 	client::{AdapterError, Client},
 	dm_event::DmEvent,
+	reach::{Attachment, Author, Direct, Item, Kind, PAGE, Page, Profile, Profiles, Source, Window},
 	telegram_notifier::TelegramNotifier,
 };
 
 const SURFACE: &str = "discord_dms";
+/// A 429 that outlasts this many waits is not a burst.
+const RATE_LIMIT_RETRIES: usize = 8;
+/// How much of a gap the daemon replays per channel. Bounded by the horizon rather than by paging.
+const REPLAY: usize = 50;
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 /// `MessageType::CALL`, written into the DM the moment a call starts. Replaced the `CALL_CREATE`
 /// dispatch, which never produced a notification on this session and named no caller anyway.
@@ -49,7 +54,7 @@ pub struct DiscordDms {
 	/// would re-beep every deploy.
 	last_session_end: Option<Timestamp>,
 	disconnects: Vec<Timestamp>,
-	http: reqwest::Client,
+	rest: Rest,
 }
 
 impl DiscordDms {
@@ -60,6 +65,7 @@ impl DiscordDms {
 		let horizon = SignedDuration::try_from(notification_horizon.duration()).expect("a Timeframe is milliseconds, always in SignedDuration range");
 		assert!(horizon > SignedDuration::ZERO, "dms.notification_horizon must be positive");
 		Self {
+			rest: Rest::new(discord_config.user_token.clone(), discord_config.my_username.clone()),
 			discord_config,
 			tx,
 			message_counter: 0,
@@ -67,7 +73,6 @@ impl DiscordDms {
 			horizon,
 			last_session_end: None,
 			disconnects: Vec::new(),
-			http: reqwest::Client::new(),
 		}
 	}
 
@@ -78,18 +83,7 @@ impl DiscordDms {
 	/// path without staging a real disconnect.
 	pub async fn backfill(&self, cutoff: Timestamp) -> Result<()> {
 		let after = snowflake_at(cutoff);
-		let channels: Vec<serde_json::Value> = self
-			.http
-			.get("https://discord.com/api/v10/users/@me/channels")
-			// user tokens take no `Bot ` prefix
-			.header("authorization", &self.discord_config.user_token)
-			.send()
-			.await?
-			.error_for_status()?
-			.json()
-			.await?;
-
-		for channel in &channels {
+		for channel in &self.rest.channels().await? {
 			let Some(id) = channel.get("id").and_then(|v| v.as_str()) else {
 				continue;
 			};
@@ -102,19 +96,10 @@ impl DiscordDms {
 				continue;
 			}
 
-			let messages: Vec<serde_json::Value> = self
-				.http
-				.get(format!("https://discord.com/api/v10/channels/{id}/messages"))
-				.query(&[("limit", "50".to_string()), ("after", after.to_string())])
-				.header("authorization", &self.discord_config.user_token)
-				.send()
-				.await?
-				.error_for_status()?
-				.json()
-				.await?;
-
+			let messages = self.rest.messages(id, Anchor::After(after), REPLAY).await?;
 			info!("Backfilling {} messages from channel {id}", messages.len());
-			for message in messages.iter().rev() {
+			// newest-first off the wire, and a replay has to arrive in the order it happened
+			for (_, message) in messages.iter().rev() {
 				self.handle_message(message)?;
 			}
 		}
@@ -364,6 +349,137 @@ impl Client for DiscordDms {
 	}
 }
 
+/// Discord's REST surface: everything that has to be *asked* for, as opposed to what the gateway
+/// pushes. The daemon replays a gap through it, and the on-demand axis reads and writes over it.
+pub struct Rest {
+	http: reqwest::Client,
+	token: String,
+	my_username: String,
+}
+impl Rest {
+	pub fn new(token: String, my_username: String) -> Self {
+		Self {
+			http: reqwest::Client::new(),
+			token,
+			my_username,
+		}
+	}
+
+	pub async fn channels(&self) -> Result<Vec<serde_json::Value>> {
+		self.get("https://discord.com/api/v10/users/@me/channels").await
+	}
+
+	/// Only channels that already exist: opening one takes a user id, which nothing outside an open
+	/// channel hands us.
+	async fn dm_channel(&self, handle: &str) -> Result<(String, String)> {
+		self.channels()
+			.await?
+			.iter()
+			.find_map(|c| {
+				let channel_id = c.get("id")?.as_str()?;
+				let recipient = c.get("recipients")?.as_array()?.iter().find(|r| r.get("username").and_then(|u| u.as_str()) == Some(handle))?;
+				Some((channel_id.to_string(), recipient.get("id")?.as_str()?.to_string()))
+			})
+			.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))
+	}
+
+	async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
+		assert!(limit <= PAGE, "discord rejects a limit above {PAGE}");
+		let mut query = vec![("limit".to_string(), limit.to_string())];
+		match anchor {
+			Anchor::Newest => {}
+			Anchor::After(id) => query.push(("after".to_string(), id.to_string())),
+			Anchor::Before(id) => query.push(("before".to_string(), id.to_string())),
+		}
+		let page: Vec<serde_json::Value> = self
+			.request(|| self.http.get(format!("https://discord.com/api/v10/channels/{channel_id}/messages")).query(&query))
+			.await?
+			.error_for_status()?
+			.json()
+			.await?;
+		page.into_iter()
+			.map(|m| {
+				let id = m.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("discord message without an id"))?;
+				Ok((id.parse().wrap_err("discord ids are snowflakes")?, m))
+			})
+			.collect()
+	}
+
+	async fn item(&self, channel_id: &str, id: u64, m: &serde_json::Value, assets: &Path) -> Result<Item> {
+		let timestamp = m.get("timestamp").and_then(|v| v.as_str()).ok_or_else(|| eyre!("discord message {id} without a timestamp"))?;
+		let author = m
+			.pointer("/author/username")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("discord message {id} without an author"))?;
+		Ok(Item {
+			id: id.to_string(),
+			source: Source::Discord,
+			at: timestamp.parse().wrap_err("discord timestamps are RFC3339")?,
+			kind: Kind::Direct,
+			author: match author == self.my_username {
+				true => Author::Me,
+				false => Author::Handle(author.to_string()),
+			},
+			text: m.get("content").and_then(|v| v.as_str()).unwrap_or_default().to_string(), // an attachment-only message carries no content and is still worth its date
+			attachments: self.attachments(m, assets).await?,
+			permalink: Some(format!("https://discord.com/channels/@me/{channel_id}/{id}")),
+		})
+	}
+
+	async fn attachments(&self, m: &serde_json::Value, assets: &Path) -> Result<Vec<Attachment>> {
+		let mut out = Vec::new();
+		for attachment in m.get("attachments").and_then(|v| v.as_array()).into_iter().flatten() {
+			let name = attachment
+				.get("filename")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| eyre!("a discord attachment carries a filename"))?
+				.to_string();
+			let id = attachment.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord attachment carries an id"))?;
+			let file = format!("discord-{id}.avif");
+			if assets.join(&file).exists() {
+				out.push(Attachment::Image { file });
+				continue;
+			}
+			// an undeclared content type is one discord itself would not call an image
+			let mime = attachment.get("content_type").and_then(|v| v.as_str()).unwrap_or_default();
+			if !mime.starts_with("image/") {
+				out.push(Attachment::File { name });
+				continue;
+			}
+
+			let url = attachment.get("url").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a discord attachment carries a url"))?;
+			// the cdn url is signed; the token belongs on the api, not on it
+			let bytes = self.http.get(url).send().await?.error_for_status()?.bytes().await?;
+			out.push(Attachment::keep(&bytes, mime, name, assets, file));
+		}
+		Ok(out)
+	}
+
+	/// Discord answers a burst with a 429 and a body saying how long to hold off. A backfill is
+	/// hundreds of requests, so meeting one is expected rather than exceptional.
+	async fn request(&self, build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+		for _ in 0..RATE_LIMIT_RETRIES {
+			// user tokens take no `Bot ` prefix
+			let response = build().header("authorization", &self.token).send().await?;
+			if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+				return Ok(response);
+			}
+			let body: serde_json::Value = response.json().await?;
+			let after = body
+				.get("retry_after")
+				.and_then(|v| v.as_f64())
+				.ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
+			warn!("discord: rate limited, holding off {after}s");
+			time::sleep(Duration::from_secs_f64(after)).await;
+		}
+		Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
+	}
+
+	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
+		Ok(self.request(|| self.http.get(url)).await?.error_for_status()?.json().await?)
+	}
+}
+
 fn snowflake_at(ts: Timestamp) -> u64 {
 	let ms = ts.as_millisecond() - DISCORD_EPOCH_MS;
 	assert!(ms > 0, "cutoff predates Discord epoch");
@@ -404,9 +520,142 @@ fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame:
 	}
 }
 
+impl Profiles for Rest {
+	/// Discord publishes no feed a person's own activity could be read off, so the window bounds
+	/// nothing here.
+	async fn profile(&mut self, handle: &str, _window: Window) -> Result<Profile> {
+		let (_, user_id) = self.dm_channel(handle).await?;
+		let mut profile = Profile::default();
+
+		// 404 here means no note is set, not that the user is gone.
+		let note = self.request(|| self.http.get(format!("https://discord.com/api/v10/users/@me/notes/{user_id}"))).await?;
+		if note.status() != reqwest::StatusCode::NOT_FOUND {
+			let note: serde_json::Value = note.error_for_status()?.json().await?;
+			profile.state("discord:note", note.get("note").and_then(|v| v.as_str()));
+		}
+
+		let payload: serde_json::Value = self.get(&format!("https://discord.com/api/v10/users/{user_id}/profile")).await?;
+		// `/user_profile/bio` carries the same text; it only diverges per-guild, which `@me` never is
+		profile.state("discord:bio", payload.pointer("/user/bio").and_then(|v| v.as_str()));
+		profile.state("discord:pronouns", payload.pointer("/user_profile/pronouns").and_then(|v| v.as_str()));
+		profile.display = payload.pointer("/user/global_name").and_then(|v| v.as_str()).map(str::to_string);
+		for account in payload.get("connected_accounts").and_then(|v| v.as_array()).into_iter().flatten() {
+			if let (Some(kind), Some(name)) = (account.get("type").and_then(|v| v.as_str()), account.get("name").and_then(|v| v.as_str())) {
+				profile.handles.insert(kind.to_string(), name.to_string());
+			}
+		}
+		Ok(profile)
+	}
+}
+
+impl Direct for Rest {
+	async fn direct(&mut self, handle: &str, window: Window, assets: &Path) -> Result<Page> {
+		let (channel_id, _) = self.dm_channel(handle).await?;
+		let limit = window.limit();
+		let mut raw: Vec<(u64, serde_json::Value)> = Vec::new();
+		let mut exhausted = false;
+
+		match &window {
+			// one page under the floor, checked in by the caller before it asks for the next
+			Window::Below { before, .. } => {
+				let anchor = match before {
+					Some(floor) => Anchor::Before(floor.parse().wrap_err("a discord backfill floor is a snowflake")?),
+					None => Anchor::Newest,
+				};
+				let page = self.messages(&channel_id, anchor, PAGE.min(limit)).await?;
+				exhausted = page.len() < PAGE.min(limit);
+				raw = page;
+			}
+			// forward from the checkpoint: `after=<id>` returns the oldest window past it
+			Window::Above { after: Some(after), .. } => {
+				let mut anchor = Anchor::After(after.parse().wrap_err("a discord checkpoint is a snowflake")?);
+				//LOOP: walks strictly upwards from a fixed checkpoint towards the newest message, and
+				// stops on the first page that is not full
+				loop {
+					let page = self.messages(&channel_id, anchor, PAGE).await?;
+					let ids: Vec<u64> = page.iter().map(|(id, _)| *id).collect();
+					raw.extend(page);
+					if raw.len() >= limit {
+						warn!("discord `{handle}`: stopping at {limit} messages, the rest comes on the next pull");
+						break;
+					}
+					match next_after(&ids, PAGE) {
+						Some(next) => anchor = Anchor::After(next),
+						None => break,
+					}
+				}
+			}
+			// walk backwards from the newest, since there is no floor to walk up from
+			Window::Above { after: None, .. } => {
+				let mut anchor = Anchor::Newest;
+				//LOOP: bounded by `limit` and by the conversation, which is walked strictly downwards
+				while raw.len() < limit {
+					let page = self.messages(&channel_id, anchor, PAGE.min(limit - raw.len())).await?;
+					let Some(oldest) = page.iter().map(|(id, _)| *id).min() else {
+						exhausted = true;
+						break;
+					};
+					let short = page.len() < PAGE;
+					raw.extend(page);
+					if short {
+						exhausted = true;
+						break;
+					}
+					anchor = Anchor::Before(oldest);
+				}
+			}
+		}
+
+		let mut items = Vec::with_capacity(raw.len());
+		for (id, m) in &raw {
+			items.push(self.item(&channel_id, *id, m, assets).await?);
+		}
+		items.retain(|item| !window.reached(item.at));
+		items.sort_by_key(|item| item.at);
+		Ok(Page {
+			newest: raw.iter().map(|(id, _)| *id).max().map(|id| id.to_string()),
+			oldest: raw.iter().map(|(id, _)| *id).min().map(|id| id.to_string()),
+			exhausted,
+			items,
+		})
+	}
+
+	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
+		let (channel_id, _) = self.dm_channel(handle).await?;
+		self.request(|| {
+			self.http
+				.post(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
+				.json(&serde_json::json!({ "content": text }))
+		})
+		.await?
+		.error_for_status()?;
+		Ok(())
+	}
+}
+
+#[derive(Clone, Copy)]
+enum Anchor {
+	Newest,
+	After(u64),
+	Before(u64),
+}
+
+/// `after=<id>` returns the oldest window past the cursor, newest-first inside it — so the next
+/// cursor is the page's largest id, and a short page is the last one.
+fn next_after(ids: &[u64], limit: usize) -> Option<u64> {
+	(ids.len() == limit).then(|| ids.iter().copied().max().expect("a full page is non-empty"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn cursor_walks_forward() {
+		assert_eq!(next_after(&[30, 20, 10], 3), Some(30));
+		assert_eq!(next_after(&[20, 10], 3), None);
+		assert_eq!(next_after(&[], 3), None);
+	}
 
 	#[test]
 	fn snowflake_matches_discord() {

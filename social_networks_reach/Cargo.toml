@@ -1,33 +1,40 @@
 cargo-features = ["codegen-backend"]
 
 [package]
-name = "social_networks_utils"
+name = "social_networks_reach"
 version = "0.3.18"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
-description = "shared primitives for social_networks"
+description = "the transcript format of the on-demand axis, and the CLI that fills it"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
+include = ["src/**/*", "build.rs", "README.md"]
 
 # only the bin crate tags releases
 [package.metadata.release]
 tag = false
 
+[[bin]]
+name = "recon"
+path = "src/bin/recon.rs"
+
 [dependencies]
+clap.workspace = true
 color-eyre.workspace = true
-exchange_interactions.workspace = true
+colored.workspace = true
 futures.workspace = true
 grammers-client.workspace = true
-grammers-mtsender.workspace = true
-grammers-session.workspace = true
-image.workspace = true
+jiff.workspace = true
 libsql.workspace = true
-psm.workspace = true
-ravif.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+social_networks_adapters.workspace = true
+social_networks_utils.workspace = true
+strum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+v_utils.workspace = true
 xdg.workspace = true
 
 [lints]

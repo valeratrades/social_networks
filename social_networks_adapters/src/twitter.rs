@@ -1,4 +1,4 @@
-use std::{collections::HashMap, convert::Infallible};
+use std::{collections::HashMap, convert::Infallible, path::Path};
 
 use clap::Args;
 use color_eyre::eyre::{Context, Result, bail, eyre};
@@ -10,6 +10,7 @@ use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
 	client::{AdapterError, Client},
+	reach::{Direct, Page, Window},
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
 	twitter_schedule::TwitterPollConfig,
@@ -70,9 +71,23 @@ impl Client for TwitterMonitor {
 	}
 }
 
+/// Twitter is reachable outbound only: it is no [`Source`](crate::reach::Source), so nothing pulls
+/// from it, and `dm --twitter` is the whole of what it is here for.
+pub struct Reach<'a>(pub &'a TwitterConfig);
+
+impl Direct for Reach<'_> {
+	async fn direct(&mut self, _handle: &str, _window: Window, _assets: &Path) -> Result<Page> {
+		bail!("twitter is not a rolodex source — nothing reads its DMs")
+	}
+
+	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
+		send_dm(self.0, handle, text).await
+	}
+}
+
 /// Sent from the `[twitter.oauth]` account — the one that posts — while the lookup goes through the
 /// bearer token, which is all it needs.
-pub async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()> {
+async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()> {
 	let oauth = config.oauth.as_ref().ok_or_else(|| eyre!("no `[twitter.oauth]` in the config"))?;
 	let client = reqwest::Client::new();
 

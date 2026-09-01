@@ -1,16 +1,14 @@
 #![doc = include_str!("README.md")]
-mod avif;
 mod delta;
+mod discover;
 mod dm;
-mod history;
 mod person;
-mod sources;
 
 use std::{
 	collections::BTreeMap,
 	future::Future,
 	io::Write as _,
-	path::{Path, PathBuf},
+	path::Path,
 	process::{Command, Stdio},
 	time::Duration,
 };
@@ -18,13 +16,21 @@ use std::{
 use clap::{Args, Subcommand};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use colored::Colorize as _;
-use futures::future::{Either, select};
 use grammers_client::Client;
 use indicatif::{ProgressBar, ProgressStyle};
+use jiff::Timestamp;
 use person::Person;
-use social_networks_adapters::telegram_dms::TelegramConfig;
-use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
-use sources::Source;
+use social_networks_adapters::{
+	github::Github,
+	linkedin::Linkedin,
+	reach::{Author, Direct, Item, Kind, Page, Profiles, Source, Window},
+	skool::Skool,
+	telegram_dms::{self, TelegramConfig},
+};
+use social_networks_reach::{
+	history::{self, Cursor},
+	venue,
+};
 use tracing::{error, info};
 
 use crate::config::AppConfig;
@@ -39,19 +45,17 @@ pub struct RolodexArgs {
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
 	match args.command {
+		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
 		RolodexCommand::Pull { pattern } => pull(&config, &dir, pattern.as_deref()).await,
 	}
 }
-/// `[rolodex] path` is the directory of person files. No default: a present-but-pathless section is
-/// a config mistake, not a request for a guess.
-#[derive(Clone, Debug, Default, v_utils::macros::MyConfigPrimitives)]
-pub struct RolodexConfig {
-	pub path: PathBuf,
-}
+
 #[derive(Subcommand)]
 enum RolodexCommand {
+	/// Write skeleton files for the members of a venue nobody has a file for yet
+	Discover(discover::DiscoverArgs),
 	/// Send a message to exactly one matching person over one messenger
 	Dm {
 		#[command(flatten)]
@@ -109,32 +113,31 @@ async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<(
 	with_telegram(&config.telegram, async |client| pull_all(config, dir, people, Some(&client)).await).await
 }
 
-/// The runner has to be polled alongside whatever uses the client, and the dialog prefetch inside
-/// `connect` takes long enough to look like a hang without the spinner.
-async fn with_telegram<T, F: Future<Output = Result<T>>>(config: &TelegramConfig, f: impl FnOnce(Client) -> F) -> Result<T> {
+/// The dialog prefetch inside `connect` takes long enough to look like a hang without the spinner.
+pub(super) async fn with_telegram<T, F: Future<Output = Result<T>>>(config: &TelegramConfig, f: impl FnOnce(Client) -> F) -> Result<T> {
 	let connecting = spinner("telegram");
-	let TelegramConnection { client, mut runner, .. } = telegram_utils::connect(ConnectionConfig {
-		username: &config.username,
-		phone: &config.phone,
-		api_id: config.api_id,
-		api_hash: &config.api_hash,
-		session_suffix: "_rolodex",
-		seed_from: Some("_dm"),
+	social_networks_reach::with_telegram(config, |client| {
+		connecting.finish_and_clear();
+		f(client)
 	})
-	.await?;
-	connecting.finish_and_clear();
-	match select(std::pin::pin!(f(client)), runner.as_mut()).await {
-		Either::Left((result, _)) => result,
-		Either::Right(((), _)) => Err(eyre!("MTProto runner exited mid-call")),
-	}
+	.await
+}
+
+/// What one platform had to say about one person this run.
+#[derive(Default)]
+struct Fetched {
+	sources: BTreeMap<String, String>,
+	handles: BTreeMap<String, String>,
+	items: Vec<Item>,
 }
 
 async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
 	let llm_config = config.require_llm("rolodex")?;
-	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
-	let github = sources::Github::default();
+	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
+	let mut github = Github::default();
+	let mut linkedin = Linkedin;
 	// credentials only widen what skool answers; without them the public profile is still a whole result
-	let mut skool = social_networks_utils::skool::Skool::try_new(config.skool.as_ref().map(Into::into))?;
+	let mut skool = Skool::try_new(config.skool.clone())?;
 
 	let total = people.len();
 	let width = people.iter().map(|p| p.name.chars().count()).max().expect("`pull` bails on an empty selection");
@@ -155,27 +158,31 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 		let mut meta = history::Meta::load(&person_dir)?;
 		let mut fetched_sources = BTreeMap::new();
 		let mut handles = BTreeMap::new();
-		let mut messages = Vec::new();
-		let mut activity = Vec::new();
+		let mut fetched = Vec::new();
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
 			let Ok(source) = platform.parse::<Source>() else { continue };
 			pb.set_message(format!("{} {platform}", person.name));
 			let mut cursor = meta.cursor(source)?;
+			// exhaustive: a source that grows a fetch path is handled here or nothing compiles
 			let result = match source {
-				Source::Discord => discord.fetch(handle, &mut cursor, &assets).await,
-				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, &mut cursor, &assets).await,
-				Source::Github => github.fetch(handle, &mut cursor).await,
-				Source::Linkedin => sources::linkedin(handle, &mut cursor),
-				Source::Skool => sources::skool(&mut skool, handle, &mut cursor).await,
+				Source::Discord => converse(&mut discord, handle, &mut cursor, &assets).await,
+				Source::Telegram => {
+					let mut client = telegram_dms::Reach {
+						client: telegram.expect("a telegram client is connected iff somebody has a telegram handle"),
+					};
+					converse(&mut client, handle, &mut cursor, &assets).await
+				}
+				Source::Github => stated(&mut github, handle, &mut cursor).await,
+				Source::Linkedin => stated(&mut linkedin, handle, &mut cursor).await,
+				Source::Skool => stated(&mut skool, handle, &mut cursor).await,
 			};
 			match result {
-				Ok(fetched) => {
-					fetched_sources.extend(fetched.sources);
-					handles.extend(fetched.handles);
-					messages.extend(fetched.messages);
-					activity.extend(fetched.activity);
+				Ok(fetch) => {
+					fetched_sources.extend(fetch.sources);
+					handles.extend(fetch.handles);
+					fetched.extend(fetch.items);
 				}
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
 				// the pull continues
@@ -188,11 +195,18 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 		}
 
 		// before the extraction, not after it: the transcript is the durable record now and the labels
-		// are derived from it, so a failed LLM call costs a re-run rather than the messages
-		history::record(&person_dir, messages.clone(), &mut meta)?;
+		// are derived from it, so a failed LLM call costs a re-run rather than the messages. A person's
+		// year files hold their DMs; what they said in a venue stays in the venue's.
+		let direct: Vec<Item> = fetched.iter().filter(|item| item.kind == Kind::Direct).cloned().collect();
+		history::record(&person_dir, direct, &mut meta)?;
 		let state = meta.backfill_status().map(|s| format!(", {s}")).unwrap_or_default();
 
-		let Some(delta) = delta::Delta::new(&person, &fetched_sources, messages, activity) else {
+		// costs no network: `recon posts` already paid for these
+		let from_venues = venue_items(dir, &person, meta.venues_through())?;
+		let through = from_venues.iter().map(|item| item.at).max();
+		fetched.extend(from_venues);
+
+		let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched) else {
 			info!("{}: nothing new", person.name);
 			pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
 			pb.inc(1);
@@ -224,6 +238,8 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 			}
 		}
 
+		// only once the extraction has actually read them, so a failed call costs a re-read
+		meta.venues_read(through)?;
 		updated += 1;
 		entries += extraction.new_log_entries.len();
 		info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
@@ -250,6 +266,89 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 	pb.set_style(ProgressStyle::with_template(" ✓ {prefix:.bold.green} [{elapsed_precise}] {bar:30.green/238} {pos:>2}/{len} {msg:.green}").expect("static template"));
 	pb.finish_with_message(summary);
 	Ok(())
+}
+
+/// What a platform states, for the sources that hold no conversation.
+async fn stated<C: Profiles>(client: &mut C, handle: &str, cursor: &mut Cursor<'_>) -> Result<Fetched> {
+	let profile = client.profile(handle, Window::above(cursor.newest().map(str::to_string))).await?;
+	if let Some(newest) = &profile.activity.newest {
+		cursor.advance(newest.clone());
+	}
+	Ok(Fetched {
+		sources: profile.sources,
+		handles: profile.handles,
+		items: profile.activity.items,
+	})
+}
+
+/// What a messenger states, plus the conversation itself and whatever backfill is still owed.
+async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'_>, assets: &Path) -> Result<Fetched> {
+	let profile = client.profile(handle, Window::above(cursor.newest().map(str::to_string))).await?;
+	let page = client.direct(handle, Window::above(cursor.newest().map(str::to_string)), assets).await?;
+	if let Some(newest) = &page.newest {
+		cursor.advance(newest.clone());
+	}
+
+	// before the backfill, not after it: a page checked in below this slice persists the cursor above
+	// it, and a kill in between would leave the slice in no file at all
+	if cursor.archiving() {
+		cursor.stash(&page.items)?;
+	}
+	if cursor.backfilling() {
+		match page.exhausted && cursor.floor().is_none() {
+			// the first read already reached the first message of the conversation
+			true => cursor.exhausted()?,
+			false => backfill(client, handle, cursor, assets, page.oldest.clone()).await?,
+		}
+	}
+	Ok(Fetched {
+		sources: profile.sources,
+		handles: profile.handles,
+		items: page.items,
+	})
+}
+
+/// Down to the first message of the conversation, checking every page in before asking for the next
+/// — so an interrupt costs the page in flight and nothing behind it.
+async fn backfill<C: Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'_>, assets: &Path, incremental_floor: Option<String>) -> Result<()> {
+	// the slice fetched above is already accounted for, so the walk starts under it
+	let mut before = cursor.floor().map(str::to_string).or(incremental_floor);
+	// the short page that ends the walk cannot be predicted from the page before it
+	//LOOP: bounded by the conversation, which is finite and walked strictly downwards
+	loop {
+		let page: Page = client.direct(handle, Window::below(before.clone()), assets).await?;
+		let Some(oldest) = page.oldest.clone() else { break };
+		cursor.page(&page.items, oldest.clone())?;
+		if page.exhausted {
+			break;
+		}
+		before = Some(oldest);
+	}
+	cursor.exhausted()
+}
+
+/// This person's own lines out of every venue transcript on disk. Nothing is fetched: `recon posts`
+/// already paid for them, and a pull reads only the lines the slot attributes to a handle of theirs.
+fn venue_items(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {
+	let mut out = Vec::new();
+	for at in venue::all(dir)? {
+		let Some(handle) = person.handles.get(at.platform.as_ref()) else { continue };
+		let store = venue::Store::open(dir, &at)?;
+		for line in store.lines(since)?.into_iter().filter(|line| &line.handle == handle) {
+			out.push(Item {
+				id: format!("{at}:{}", line.at),
+				source: at.platform.into(),
+				at: line.at,
+				kind: Kind::Post,
+				author: Author::Handle(handle.clone()),
+				text: line.text,
+				attachments: Vec::new(),
+				permalink: None,
+			});
+		}
+	}
+	out.sort_by_key(|item| item.at);
+	Ok(out)
 }
 
 fn spinner(prefix: &'static str) -> ProgressBar {
@@ -279,4 +378,49 @@ fn fzf<'a>(names: impl Iterator<Item = &'a String>, query: &str) -> Result<Optio
 		return Ok(None);
 	}
 	Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::BTreeMap;
+
+	use super::*;
+
+	/// What the venue axis is for, and the one thing it must never get wrong: a pull folds in this
+	/// person's lines and nobody else's, out of a transcript that keeps the whole conversation.
+	#[test]
+	fn a_pull_takes_only_its_own_lines_out_of_a_venue() {
+		let dir = std::env::temp_dir().join("social_networks_rolodex_venue_pull");
+		let _ = std::fs::remove_dir_all(&dir);
+		let venue = dir.join("venues").join("skool").join("20kmodrop");
+		std::fs::create_dir_all(&venue).unwrap();
+		std::fs::write(venue.join("meta.json"), "{}").unwrap();
+		std::fs::write(
+			venue.join("2026.md"),
+			"# skool:20kmodrop — 2026 (times UTC)\n\
+			 \n## 2026-03-04\n\n\
+			 - 10:00:00 [lory/skool@20kmodrop] shipped the thing\n  \
+			 and it works\n\
+			 - 11:00:00 [josh/skool@20kmodrop] congrats\n\
+			 \n## 2026-03-05\n\n\
+			 - 09:00:00 [lory/skool@20kmodrop] next one\n",
+		)
+		.unwrap();
+
+		let mut lory = Person::skeleton("lory-bellardant");
+		lory.handles = BTreeMap::from([("skool".to_string(), "lory".to_string())]);
+		let items = venue_items(&dir, &lory, None).unwrap();
+		assert_eq!(items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["shipped the thing\nand it works", "next one"]);
+		assert!(items.iter().all(|i| i.kind == Kind::Post && i.source == Source::Skool));
+
+		// the same file, read for somebody it does not name at all
+		let mut stranger = Person::skeleton("stranger");
+		stranger.handles = BTreeMap::from([("skool".to_string(), "nobody".to_string())]);
+		assert!(venue_items(&dir, &stranger, None).unwrap().is_empty());
+
+		// and what the extraction has already seen does not come back
+		let through = items.iter().map(|i| i.at).max();
+		assert_eq!(venue_items(&dir, &lory, through).unwrap().len(), 1, "`since` is inclusive of its own floor");
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
 }

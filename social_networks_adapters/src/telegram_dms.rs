@@ -1,22 +1,30 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, path::Path};
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use futures::future::{Either, select};
-use grammers_client::update::Update;
+use grammers_client::{
+	media::Media,
+	message::Message,
+	peer::{Peer, Role},
+	session::types::PeerRef,
+	update::Update,
+};
 use grammers_session::{Session as _, storages::SqliteSession};
 use grammers_tl_types as tl;
+use jiff::Timestamp;
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 pub use tg::TelegramDestination;
 use tokio::{
 	sync::mpsc::UnboundedSender,
 	time::{self, Duration},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
 	dm_event::DmEvent,
+	reach::{Attachment, Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window},
 };
 
 const SURFACE: &str = "telegram_dms";
@@ -188,6 +196,109 @@ impl TelegramDms {
 	}
 }
 
+/// The on-demand axis over a session the caller already holds. The MTProto runner has to be polled
+/// alongside every call here, so the client is borrowed rather than owned: whoever drives the runner
+/// owns it.
+pub struct Reach<'a> {
+	pub client: &'a grammers_client::Client,
+}
+impl Reach<'_> {
+	/// A handle is a public @username. Telegram has no other global address, which is also why a
+	/// group without one cannot be a [`VenueRef`].
+	async fn peer(&self, handle: &str) -> Result<PeerRef> {
+		let handle = handle.trim_start_matches('@');
+		let peer = self.client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
+		peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
+	}
+
+	/// `offset_id` walks strictly older and `0` means "from the newest", so both windows are the same
+	/// walk under different stops.
+	async fn walk(&self, peer: PeerRef, window: &Window, kind: Kind, assets: &Path, attribute: impl Fn(&Message) -> Author) -> Result<Page> {
+		let (after, offset) = match window {
+			Window::Above { after, .. } => (after.as_ref().map(|a| a.parse::<i32>()).transpose().wrap_err("a telegram checkpoint is a message id")?, 0),
+			Window::Below { before, .. } => (
+				None,
+				before
+					.as_ref()
+					.map(|b| b.parse::<i32>())
+					.transpose()
+					.wrap_err("a telegram backfill floor is a message id")?
+					.unwrap_or(0),
+			),
+		};
+		let limit = window.limit();
+		let mut iter = self.client.iter_messages(peer).offset_id(offset);
+		let mut raw: Vec<Message> = Vec::new();
+		let mut exhausted = false;
+		//LOOP: newest-first over a finite history, stopped by the checkpoint, the floor or `limit`
+		loop {
+			let Some(message) = iter.next().await? else {
+				exhausted = true;
+				break;
+			};
+			if after.is_some_and(|c| message.id() <= c) {
+				break;
+			}
+			if window.reached(at(&message)?) {
+				exhausted = true;
+				break;
+			}
+			raw.push(message);
+			if raw.len() >= limit {
+				break;
+			}
+		}
+
+		let mut items = Vec::with_capacity(raw.len());
+		for message in &raw {
+			items.push(Item {
+				id: message.id().to_string(),
+				source: Source::Telegram,
+				at: at(message)?,
+				kind,
+				author: attribute(message),
+				text: message.text().to_string(),
+				attachments: self.attachments(message, assets).await?,
+				// telegram DMs have no per-message URL, and a public venue's is built off its slug
+				permalink: None,
+			});
+		}
+		items.sort_by_key(|item| item.at);
+		Ok(Page {
+			newest: raw.iter().map(|m| m.id()).max().map(|id| id.to_string()),
+			oldest: raw.iter().map(|m| m.id()).min().map(|id| id.to_string()),
+			exhausted,
+			items,
+		})
+	}
+
+	/// One media per message: an album arrives as several messages, each carrying its own.
+	async fn attachments(&self, message: &Message, assets: &Path) -> Result<Vec<Attachment>> {
+		let Some(media) = message.media() else { return Ok(Vec::new()) };
+		let (name, mime) = match &media {
+			Media::Photo(_) => (format!("photo-{}.jpg", message.id()), "image/jpeg".to_string()),
+			Media::Document(document) => (document.name().unwrap_or("attachment").to_string(), document.mime_type().unwrap_or_default().to_string()),
+			// a sticker, a poll, a location: nothing with bytes worth a file, and still worth a mark
+			_ => ("attachment".to_string(), String::new()),
+		};
+
+		let file = format!("telegram-{}.avif", message.id());
+		if assets.join(&file).exists() {
+			return Ok(vec![Attachment::Image { file }]);
+		}
+		if !mime.starts_with("image/") {
+			return Ok(vec![Attachment::File { name }]);
+		}
+
+		let mut bytes = Vec::new();
+		let mut download = self.client.iter_download(&media);
+		while let Some(chunk) = download.next().await? {
+			bytes.extend_from_slice(&chunk);
+		}
+		Ok(vec![Attachment::keep(&bytes, &mime, name, assets, file)])
+	}
+}
+
 /// Updates that carry no users vector (`phoneCallRequested`, `updateShortMessage`) give only an id.
 /// Resolving it to the same username the full-update path reports is what lets the consumer collapse
 /// the two into one alert. Losing the name is not worth losing the event, so every failure degrades
@@ -226,6 +337,112 @@ impl AdapterClient for TelegramDms {
 			time::sleep(Duration::from_secs(30)).await;
 		}
 	}
+}
+
+impl Profiles for Reach<'_> {
+	/// Telegram publishes no per-person feed, so the window bounds nothing here.
+	async fn profile(&mut self, handle: &str, _window: Window) -> Result<Profile> {
+		let peer = self.peer(handle).await?;
+		let tl::enums::users::UserFull::Full(full) = self.client.invoke(&tl::functions::users::GetFullUser { id: peer.into() }).await?;
+		let tl::enums::UserFull::Full(user_full) = full.full_user;
+
+		let mut profile = Profile::default();
+		profile.state("telegram:about", user_full.about.as_deref());
+		// a handle only ever resolves to a user here; a group of that name is somebody else's mistake
+		if let Peer::User(user) = self.client.resolve_peer(peer).await? {
+			profile.display = Some(user.full_name()).filter(|name| !name.trim().is_empty());
+		}
+		Ok(profile)
+	}
+}
+
+impl Direct for Reach<'_> {
+	async fn direct(&mut self, handle: &str, window: Window, assets: &Path) -> Result<Page> {
+		let peer = self.peer(handle).await?;
+		let them = handle.trim_start_matches('@').to_string();
+		self.walk(peer, &window, Kind::Direct, assets, |message| match message.outgoing() {
+			true => Author::Me,
+			false => Author::Handle(them.clone()),
+		})
+		.await
+	}
+
+	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
+		let peer = self.peer(handle).await?;
+		self.client.send_message(peer, text).await?;
+		Ok(())
+	}
+}
+
+impl Venue for Reach<'_> {
+	/// Only the groups and channels carrying a public @username: that is the whole of telegram's
+	/// global address space, and a venue nobody can name again is not one a roster can be filed under.
+	async fn venues(&mut self) -> Result<Vec<VenueRef>> {
+		let mut out = Vec::new();
+		let mut unnamed = 0usize;
+		let mut dialogs = self.client.iter_dialogs();
+		//LOOP: over a finite dialog list
+		while let Some(dialog) = dialogs.next().await? {
+			let (title, username) = match &dialog.peer {
+				Peer::User(_) => continue,
+				Peer::Group(group) => (group.title().unwrap_or_default(), group.username()),
+				Peer::Channel(channel) => (channel.title(), channel.username()),
+			};
+			match username {
+				Some(username) => out.push(VenueRef {
+					platform: VenueSource::Telegram,
+					slug: username.to_string(),
+					display: title.to_string(),
+				}),
+				None => unnamed += 1,
+			}
+		}
+		if unnamed > 0 {
+			warn!("telegram: {unnamed} groups have no public @username and cannot be addressed");
+		}
+		Ok(out)
+	}
+
+	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>> {
+		let peer = self.peer(&at.slug).await?;
+		let mut out = Vec::new();
+		let mut participants = self.client.iter_participants(peer);
+		//LOOP: over a finite roster
+		while let Some(participant) = participants.next().await? {
+			let user = participant.user;
+			out.push(Member {
+				// an account without a public @username is addressable by nothing else telegram-wide
+				handle: user.username().map_or_else(|| user.id().bare_id_unchecked().to_string(), str::to_string),
+				display: user.full_name(),
+				joined: match &participant.role {
+					Role::User(normal) => Some(Timestamp::from_second(normal.date().timestamp()).wrap_err("a telegram join date is a unix second")?),
+					_ => None,
+				},
+			});
+		}
+		Ok(out)
+	}
+
+	async fn posts(&mut self, at: &VenueRef, window: Window, assets: &Path) -> Result<Page> {
+		let peer = self.peer(&at.slug).await?;
+		let slug = at.slug.clone();
+		self.walk(peer, &window, Kind::Post, assets, |message| match message.outgoing() {
+			true => Author::Me,
+			// a channel posts as itself, and a member without a public @username as their id
+			false => Author::Handle(
+				message
+					.sender()
+					.and_then(|s| s.username().map(str::to_string))
+					.or_else(|| message.sender_id().map(|id| id.bare_id_unchecked().to_string()))
+					.unwrap_or_else(|| slug.clone()),
+			),
+		})
+		.await
+	}
+}
+
+fn at(message: &Message) -> Result<Timestamp> {
+	Timestamp::from_second(message.date().timestamp()).wrap_err("a telegram message date is a unix second")
 }
 
 /// Inspect a `color_eyre` connect-time error string for auth-class failures.
