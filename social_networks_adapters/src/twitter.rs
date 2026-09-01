@@ -1,7 +1,7 @@
 use std::{collections::HashMap, convert::Infallible};
 
 use clap::Args;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration};
@@ -94,6 +94,36 @@ async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest
 		return Err(TwitterError::Auth(format!("{op}: {status}: {body}")));
 	}
 	Err(TwitterError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
+}
+
+/// Sent from the `[twitter.oauth]` account — the one that posts — while the lookup goes through the
+/// bearer token, which is all it needs.
+pub async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()> {
+	let oauth = config.oauth.as_ref().ok_or_else(|| eyre!("no `[twitter.oauth]` in the config"))?;
+	let client = reqwest::Client::new();
+
+	let user: serde_json::Value = client
+		.get(format!("https://api.twitter.com/2/users/by/username/{handle}"))
+		.bearer_auth(&config.bearer_token)
+		.send()
+		.await?
+		.error_for_status()?
+		.json()
+		.await?;
+	let id = user.pointer("/data/id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("no twitter user `{handle}`: {user}"))?;
+
+	let url = format!("https://api.twitter.com/2/dm_conversations/with/{id}/messages");
+	let response = client
+		.post(&url)
+		.header("Authorization", crate::twitter_schedule::oauth_header(&url, oauth)?)
+		.json(&serde_json::json!({ "text": text }))
+		.send()
+		.await?;
+	let status = response.status();
+	if !status.is_success() {
+		bail!("twitter DM to `{handle}` failed ({status}): {}", response.text().await.unwrap_or_default());
+	}
+	Ok(())
 }
 
 async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &TelegramConfig) -> Result<Infallible, TwitterError> {

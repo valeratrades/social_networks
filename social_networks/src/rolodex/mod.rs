@@ -1,10 +1,12 @@
 #![doc = include_str!("README.md")]
 mod delta;
+mod dm;
 mod person;
 mod sources;
 
 use std::{
 	collections::BTreeMap,
+	future::Future,
 	io::Write as _,
 	path::{Path, PathBuf},
 	process::{Command, Stdio},
@@ -18,6 +20,7 @@ use futures::future::{Either, select};
 use grammers_client::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use person::Person;
+use social_networks_adapters::telegram_dms::TelegramConfig;
 use social_networks_utils::{
 	db::Database,
 	telegram_utils::{self, ConnectionConfig, TelegramConnection},
@@ -37,8 +40,9 @@ pub struct RolodexArgs {
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
 	match args.command {
+		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
-		RolodexCommand::Pull { pattern } => pull(config, &dir, pattern.as_deref()).await,
+		RolodexCommand::Pull { pattern } => pull(&config, &dir, pattern.as_deref()).await,
 	}
 }
 /// `[rolodex] path` is the directory of person files. No default: a present-but-pathless section is
@@ -49,6 +53,13 @@ pub struct RolodexConfig {
 }
 #[derive(Subcommand)]
 enum RolodexCommand {
+	/// Send a message to exactly one matching person over one messenger
+	Dm {
+		#[command(flatten)]
+		messenger: dm::MessengerFlag,
+		pattern: String,
+		text: String,
+	},
 	/// Open a person file in $EDITOR, creating it when the pattern names nobody yet
 	Open { pattern: Option<String> },
 	/// Fetch what is new about matching people and fold it into their files
@@ -87,7 +98,7 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
-async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
+async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
 	let people: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
 	if people.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
@@ -95,24 +106,28 @@ async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()
 	let db = Database::try_new().await?;
 
 	if !people.iter().any(|p| p.handles.contains_key("telegram")) {
-		return pull_all(&config, &db, dir, people, None).await;
+		return pull_all(config, &db, dir, people, None).await;
 	}
+	with_telegram(&config.telegram, async |client| pull_all(config, &db, dir, people, Some(&client)).await).await
+}
 
-	// the dialog prefetch inside `connect` takes long enough to look like a hang
+/// The runner has to be polled alongside whatever uses the client, and the dialog prefetch inside
+/// `connect` takes long enough to look like a hang without the spinner.
+async fn with_telegram<T, F: Future<Output = Result<T>>>(config: &TelegramConfig, f: impl FnOnce(Client) -> F) -> Result<T> {
 	let connecting = spinner("telegram");
 	let TelegramConnection { client, mut runner, .. } = telegram_utils::connect(ConnectionConfig {
-		username: &config.telegram.username,
-		phone: &config.telegram.phone,
-		api_id: config.telegram.api_id,
-		api_hash: &config.telegram.api_hash,
+		username: &config.username,
+		phone: &config.phone,
+		api_id: config.api_id,
+		api_hash: &config.api_hash,
 		session_suffix: "_rolodex",
 		seed_from: Some("_dm"),
 	})
 	.await?;
 	connecting.finish_and_clear();
-	match select(std::pin::pin!(pull_all(&config, &db, dir, people, Some(&client))), runner.as_mut()).await {
+	match select(std::pin::pin!(f(client)), runner.as_mut()).await {
 		Either::Left((result, _)) => result,
-		Either::Right(((), _)) => Err(eyre!("MTProto runner exited during pull")),
+		Either::Right(((), _)) => Err(eyre!("MTProto runner exited mid-call")),
 	}
 }
 
