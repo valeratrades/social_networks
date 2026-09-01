@@ -1,5 +1,5 @@
-//! The read paths `pull` diffs against. Every fetch is scoped to one handle so a handle that has
-//! stopped resolving takes only itself down.
+//! The platform access `pull` diffs against and `dm` writes through. Every fetch is scoped to one
+//! handle so a handle that has stopped resolving takes only itself down.
 
 use std::collections::BTreeMap;
 
@@ -68,16 +68,34 @@ impl Discord {
 		}
 	}
 
-	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	/// Only channels that already exist: opening one takes a user id, which nothing outside an open
+	/// channel hands us.
+	async fn dm_channel(&self, handle: &str) -> Result<(String, String)> {
 		let channels: Vec<serde_json::Value> = self.get("https://discord.com/api/v10/users/@me/channels").await?;
-		let (channel_id, user_id) = channels
+		channels
 			.iter()
 			.find_map(|c| {
 				let channel_id = c.get("id")?.as_str()?;
 				let recipient = c.get("recipients")?.as_array()?.iter().find(|r| r.get("username").and_then(|u| u.as_str()) == Some(handle))?;
 				Some((channel_id.to_string(), recipient.get("id")?.as_str()?.to_string()))
 			})
-			.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))?;
+			.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))
+	}
+
+	pub async fn send(&self, handle: &str, text: &str) -> Result<()> {
+		let (channel_id, _) = self.dm_channel(handle).await?;
+		self.http
+			.post(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
+			.header("authorization", &self.token)
+			.json(&serde_json::json!({ "content": text }))
+			.send()
+			.await?
+			.error_for_status()?;
+		Ok(())
+	}
+
+	pub async fn fetch(&self, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+		let (channel_id, user_id) = self.dm_channel(handle).await?;
 
 		let mut fetched = Fetched::default();
 
@@ -193,9 +211,18 @@ impl Discord {
 	}
 }
 
-pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+pub async fn telegram_send(client: &Client, handle: &str, text: &str) -> Result<()> {
+	client.send_message(telegram_peer(client, handle).await?, text).await?;
+	Ok(())
+}
+
+async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
 	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
-	let peer_ref = peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))?;
+	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
+}
+
+pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	let peer_ref = telegram_peer(client, handle).await?;
 
 	let mut fetched = Fetched::default();
 

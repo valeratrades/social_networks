@@ -86,13 +86,13 @@ When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
 
-`rolodex` is the one surface-reading command that is not a daemon and notifies nobody — it reads the
-same sessions on demand and writes to disk:
+`rolodex` is the one surface command that is not a daemon and notifies nobody — it reads the same
+sessions on demand and writes to disk, and is the only place anything goes *out* over them:
 
 ```
-Discord ──┐
-Telegram ─┼──► rolodex ──► LLM extraction ──► <person>.nix
-GitHub ───┘
+Discord ──┐                                                    ┌──► Discord
+Telegram ─┼──► pull ──► LLM extraction ──► <person>.nix    dm ─┼──► Telegram
+GitHub ───┘                                                    └──► Twitter
 ```
 
 ## Key Entities
