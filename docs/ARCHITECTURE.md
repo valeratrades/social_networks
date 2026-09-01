@@ -95,7 +95,7 @@ sessions on demand and writes to disk, and is the only place anything goes *out*
 
 ```
 Discord ──┐                                                          ┌──► Discord
-Telegram ─┤              ┌─► history ────────► <person>/<year>.md     │
+Telegram ─┤              ┌─► history ────────► <person>/<year>.md     ├──► Skool
 GitHub ───┼──► pull ─────┤                                        dm ─┼──► Telegram
 LinkedIn ─┤              └─► LLM extraction ─► <person>.nix           └──► Twitter
 Skool ────┘
@@ -104,7 +104,7 @@ Skool ────┘
 The transcript is what a pull is for; the labels in `<person>.nix` are derived from it and can be
 regenerated from it.
 
-Skool is the one surface with no API at all: every read is the `__NEXT_DATA__` payload skool's SSR
+Skool publishes no API: every read is the `__NEXT_DATA__` payload skool's SSR
 embeds in the HTML, and the route it says it served is how it reports "not a member" / "not signed
 in". Only `/auth/*` sits behind an AWS-WAF JS challenge, so a headless chromium mints the session
 cookie and nothing else — reads stay on plain HTTP. Everything a profile carries is public, which is

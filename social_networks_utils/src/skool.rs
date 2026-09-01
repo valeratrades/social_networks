@@ -1,7 +1,9 @@
-//! Skool has no API. Every page is Next.js SSR, so the whole payload sits in `__NEXT_DATA__` and a
-//! plain GET is a complete read. Only `/auth/*` is gated behind an AWS-WAF JS challenge, so cookies
-//! can be minted by a browser and by nothing else — but the browser stays off the read path and runs
-//! about once per token rotation.
+//! Skool publishes no API. Every page is Next.js SSR, so the whole payload sits in `__NEXT_DATA__`
+//! and a plain GET is a complete read. Only `/auth/*` is gated behind an AWS-WAF JS challenge, so
+//! cookies can be minted by a browser and by nothing else — but the browser stays off the read path
+//! and runs about once per token rotation.
+//!
+//! Writes have nowhere to go but the undocumented REST API its own web client talks to.
 //!
 //! Everything a profile carries is public. The cookie only adds what membership can see, so a
 //! [`Skool`] built without credentials is a working reader rather than a degraded one.
@@ -25,6 +27,8 @@ use regex::Regex;
 use tracing::{info, instrument};
 
 const BASE: &str = "https://www.skool.com";
+/// Everything the SSR payload cannot say, and every write. Cookie-authenticated, same as [`BASE`].
+const API: &str = "https://api.skool.com";
 /// Long enough for a slow WAF challenge, short enough that a wedged browser does not hold a daemon.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -77,6 +81,61 @@ impl Skool {
 		Ok(payload)
 	}
 
+	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. A DM is
+	/// a channel away, and `chat-request` is what the web client's "Chat" button calls every time —
+	/// it hands back the channel already open with that person rather than a second one.
+	pub async fn dm(&mut self, handle: &str, text: &str) -> Result<()> {
+		let handle = handle.trim_start_matches('@');
+		let profile = self.page(&format!("/@{handle}")).await?;
+		let user = profile
+			.pointer("/props/pageProps/currentUser/id")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("no such skool handle: `{handle}`"))?
+			.to_string();
+
+		let requested = self.api(&format!("/users/{user}/chat-request"), &[], None).await?;
+		let requested: serde_json::Value = serde_json::from_str(&requested).wrap_err_with(|| format!("a chat request for `{handle}` answered {requested}"))?;
+		let channel = requested
+			.pointer("/channel/id")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("a chat request for `{handle}` came back without a channel: {requested}"))?
+			.to_string();
+
+		// `ct` is the client the message was typed in; the web chat calls itself `wdc`
+		self.api(&format!("/channels/{channel}/messages"), &[("ct", "wdc")], Some(serde_json::json!({ "content": text })))
+			.await
+			.map(|_| ())
+	}
+
+	/// Unlike the SSR pages, which answer a dead session by serving the signed-out view, the API says
+	/// 401 — so that, rather than the payload, is what rotation hangs off here.
+	async fn api(&mut self, path: &str, query: &[(&str, &str)], body: Option<serde_json::Value>) -> Result<String> {
+		let mut response = self.post(path, query, body.as_ref()).await?;
+		if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.creds.is_some() {
+			self.refresh().await?;
+			response = self.post(path, query, body.as_ref()).await?;
+		}
+		let status = response.status();
+		let payload = response.text().await?;
+		if !status.is_success() {
+			bail!("POST {path} answered {status}: {payload}");
+		}
+		Ok(payload)
+	}
+
+	async fn post(&self, path: &str, query: &[(&str, &str)], body: Option<&serde_json::Value>) -> Result<reqwest::Response> {
+		let mut request = self.http.post(format!("{API}{path}")).query(query);
+		if let Some(cookie) = &self.cookie {
+			request = request.header(reqwest::header::COOKIE, cookie);
+		}
+		// a bodyless POST still has to declare itself json, or the API answers 415
+		request = match body {
+			Some(body) => request.json(body),
+			None => request.header(reqwest::header::CONTENT_TYPE, "application/json"),
+		};
+		request.send().await.wrap_err_with(|| format!("POST {path}"))
+	}
+
 	async fn fetch(&self, path: &str) -> Result<serde_json::Value> {
 		let mut request = self.http.get(format!("{BASE}{path}"));
 		if let Some(cookie) = &self.cookie {
@@ -90,7 +149,7 @@ impl Skool {
 	/// with a CloudFront 403 until an AWS-WAF challenge has been solved in a JS runtime.
 	#[instrument(skip_all)]
 	async fn refresh(&mut self) -> Result<()> {
-		let creds = self.creds.clone().expect("`page` only refreshes when credentials are present");
+		let creds = self.creds.clone().expect("every caller checks for credentials before refreshing");
 		info!("minting a fresh skool cookie");
 		let config = BrowserConfig::builder().build().map_err(|e| eyre!("chromium config: {e}"))?;
 		let (browser, mut handler) = Browser::launch(config).await?;

@@ -6,6 +6,7 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
+use social_networks_utils::skool::Skool;
 use strum::AsRefStr;
 
 use super::{person, sources, with_telegram};
@@ -18,16 +19,19 @@ pub struct MessengerFlag {
 	#[arg(long)]
 	discord: bool,
 	#[arg(long)]
+	skool: bool,
+	#[arg(long)]
 	telegram: bool,
 	#[arg(long)]
 	twitter: bool,
 }
 impl From<&MessengerFlag> for Messenger {
 	fn from(flag: &MessengerFlag) -> Self {
-		match (flag.discord, flag.telegram, flag.twitter) {
-			(true, _, _) => Self::Discord,
-			(_, true, _) => Self::Telegram,
-			(_, _, true) => Self::Twitter,
+		match (flag.discord, flag.skool, flag.telegram, flag.twitter) {
+			(true, ..) => Self::Discord,
+			(_, true, ..) => Self::Skool,
+			(_, _, true, _) => Self::Telegram,
+			(_, _, _, true) => Self::Twitter,
 			_ => unreachable!("clap rejects the command before this when the group is unfilled"),
 		}
 	}
@@ -39,6 +43,7 @@ impl From<&MessengerFlag> for Messenger {
 #[strum(serialize_all = "lowercase")]
 pub enum Messenger {
 	Discord,
+	Skool,
 	Telegram,
 	Twitter,
 }
@@ -64,6 +69,14 @@ pub async fn send(config: &AppConfig, dir: &Path, messenger: Messenger, pattern:
 			sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone())
 				.send(handle, text)
 				.await?,
+		// the read path is happy anonymous, but a message is written as somebody
+		Messenger::Skool => {
+			let credentials = config
+				.skool
+				.as_ref()
+				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
+			Skool::try_new(Some(credentials.into()))?.dm(handle, text).await?
+		}
 		Messenger::Telegram => with_telegram(&config.telegram, async |client| sources::telegram_send(&client, handle, text).await).await?,
 		Messenger::Twitter => social_networks_adapters::twitter::send_dm(&config.twitter, handle, text).await?,
 	}
