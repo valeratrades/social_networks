@@ -7,6 +7,7 @@ use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use grammers_client::Client;
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
+use social_networks_utils::skool::Skool;
 use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
 
@@ -32,6 +33,7 @@ pub enum Source {
 	Telegram,
 	Github,
 	Linkedin,
+	Skool,
 }
 
 pub struct Msg {
@@ -374,6 +376,70 @@ async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client:
 	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
 }
 
+/// The profile fields skool serves to anybody. Their absence of a session is why this is the one
+/// source that needs no credentials at all: `postTrees` is the only part membership adds, and it
+/// comes back empty rather than failing.
+pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	let handle = handle.trim_start_matches('@');
+	let payload = client.page(&format!("/@{handle}")).await?;
+	let props = payload.pointer("/props/pageProps").ok_or_else(|| eyre!("skool served a page without pageProps"))?;
+	let user = props.get("currentUser").ok_or_else(|| eyre!("no such skool handle: `{handle}`"))?;
+
+	let mut fetched = Fetched::default();
+	let metadata = user.get("metadata");
+	let field = |name: &str| metadata.and_then(|m| m.get(name)).and_then(|v| v.as_str());
+	insert_nonempty(&mut fetched.sources, "skool:bio", field("bio"));
+	insert_nonempty(&mut fetched.sources, "skool:location", field("location"));
+	// read-only for a human, exactly like discord's connected accounts: none of these is a fetchable `Source`
+	for (link, platform) in LINKS {
+		if let Some(name) = field(link).and_then(handle_from_link) {
+			fetched.handles.insert(platform.to_string(), name);
+		}
+	}
+
+	// newest-first, and only ever populated for a session that shares a group with them
+	let posts = props.get("postTrees").and_then(|v| v.as_array()).ok_or_else(|| eyre!("skool `{handle}`: no postTrees"))?;
+	for node in posts {
+		let post = node.get("post").ok_or_else(|| eyre!("a skool postTree without a post: {node}"))?;
+		let id = post.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool post without an id: {post}"))?;
+		// ids are opaque hex, so the cursor can only be recognised, not compared — a post that has
+		// already scrolled off the first page is reported again rather than missed
+		if cursor == Some(id) {
+			break;
+		}
+		fetched.cursor.get_or_insert_with(|| id.to_string());
+		let created = post.get("createdAt").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without createdAt"))?;
+		let title = post.pointer("/metadata/title").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a title"))?;
+		let (group, name) = (post.pointer("/group/name").and_then(|v| v.as_str()), post.get("name").and_then(|v| v.as_str()));
+		let (Some(group), Some(name)) = (group, name) else {
+			return Err(eyre!("skool post {id} carries no group/name to build a permalink from: {post}"));
+		};
+		fetched.activity.push(Activity {
+			date: created.parse::<Timestamp>().wrap_err("skool timestamps are RFC3339")?.to_zoned(TimeZone::UTC).date().to_string(),
+			text: title.to_string(),
+			permalink: format!("https://www.skool.com/{group}/{name}"),
+		});
+	}
+	fetched.activity.reverse();
+	Ok(fetched)
+}
+
+const LINKS: [(&str, &str); 5] = [
+	("linkTwitter", "twitter"),
+	("linkYoutube", "youtube"),
+	("linkInstagram", "instagram"),
+	("linkLinkedin", "linkedin"),
+	("linkFacebook", "facebook"),
+];
+
+/// The last path segment of a profile URL, which is the handle on every platform skool links to.
+/// `None` for the empty string skool stores for a link nobody set, and for a bare domain.
+fn handle_from_link(url: &str) -> Option<String> {
+	let path = url.split(['?', '#']).next().expect("a split yields at least one piece");
+	let segment = path.trim_end_matches('/').rsplit('/').next().expect("a split yields at least one piece");
+	(!segment.is_empty() && !segment.contains('.')).then(|| segment.to_string())
+}
+
 #[derive(Clone, Copy)]
 enum Anchor {
 	Newest,
@@ -517,6 +583,17 @@ mod tests {
 		let walled = r##"<html><head><script type="application/ld+json">{"@context":"http://schema.org","@graph":[{"@type":"WebPage","url":"https://www.linkedin.com/authwall"}]}</script></head><body>Sign in</body></html>"##;
 		assert!(person_node(walled).is_err());
 		assert!(person_node("<html><body>Sign in</body></html>").is_err());
+	}
+
+	/// Skool stores an unset link as `""` rather than omitting it, and writes the ones it does hold
+	/// back in whatever shape the person pasted.
+	#[test]
+	fn a_link_is_not_a_handle() {
+		assert_eq!(handle_from_link(""), None);
+		assert_eq!(handle_from_link("https://twitter.com"), None);
+		assert_eq!(handle_from_link("https://x.com/valeratrades/"), Some("valeratrades".to_string()));
+		assert_eq!(handle_from_link("https://www.youtube.com/@skool-news?sub_confirmation=1"), Some("@skool-news".to_string()));
+		assert_eq!(handle_from_link("https://www.linkedin.com/in/somebody#about"), Some("somebody".to_string()));
 	}
 
 	#[test]
