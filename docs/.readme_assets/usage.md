@@ -8,7 +8,7 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../exam
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health status of all services, config, and directories |
 | `migrate-db` | Run database migrations |
-| `rolodex` | Per-person records from Discord, Telegram and GitHub |
+| `rolodex` | Per-person records from Discord, Telegram, GitHub and LinkedIn |
 | `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
 | `twitter` | Twitter operations |
 | `twitter-schedule` | Twitter scheduled posting |

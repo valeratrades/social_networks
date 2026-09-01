@@ -24,7 +24,7 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub
+│       └── rolodex/                        # per-person Nix files from Discord, Telegram, GitHub, LinkedIn
 │
 ├── social_networks_adapters/               # long-running surface adapters
 │   └── src/
@@ -92,7 +92,8 @@ sessions on demand and writes to disk, and is the only place anything goes *out*
 ```
 Discord ──┐                                                    ┌──► Discord
 Telegram ─┼──► pull ──► LLM extraction ──► <person>.nix    dm ─┼──► Telegram
-GitHub ───┘                                                    └──► Twitter
+GitHub ───┤                                                    └──► Twitter
+LinkedIn ─┘
 ```
 
 ## Key Entities

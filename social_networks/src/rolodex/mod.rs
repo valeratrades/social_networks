@@ -165,6 +165,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 				Source::Discord => discord.fetch(handle, cursor.as_deref()).await,
 				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, cursor.as_deref()).await,
 				Source::Github => github.fetch(handle, cursor.as_deref()).await,
+				Source::Linkedin => sources::linkedin(handle, cursor.as_deref()),
 			};
 			match result {
 				Ok(fetched) => {

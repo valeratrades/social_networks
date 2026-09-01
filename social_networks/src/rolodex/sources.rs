@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use grammers_client::Client;
 use grammers_tl_types as tl;
 use jiff::{Timestamp, tz::TimeZone};
@@ -18,6 +18,10 @@ const INITIAL_MESSAGES: usize = 200;
 const MAX_MESSAGES: usize = 500;
 /// Discord's own cap on `limit`; asking for more is a 400, not a bigger page.
 const PAGE: usize = 100;
+/// How long a fetched linkedin profile is taken as still current. The anonymous view budget is a
+/// handful of profiles before the authwall, so a pull has to touch a few people rather than all of
+/// them — which a headline that changes twice a year can afford.
+const PROFILE_REFRESH_DAYS: i32 = 30;
 /// The `handles` keys `pull` fetches. Separating this from the dispatch in `mod` would let a new
 /// source fall through to the no-fetch-path arm and silently do nothing.
 #[derive(AsRefStr, Clone, Copy, Debug, EnumIter, EnumString)]
@@ -27,6 +31,7 @@ pub enum Source {
 	Discord,
 	Telegram,
 	Github,
+	Linkedin,
 }
 
 pub struct Msg {
@@ -216,11 +221,6 @@ pub async fn telegram_send(client: &Client, handle: &str, text: &str) -> Result<
 	Ok(())
 }
 
-async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
-	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
-	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
-}
-
 pub async fn telegram(client: &Client, handle: &str, cursor: Option<&str>) -> Result<Fetched> {
 	let peer_ref = telegram_peer(client, handle).await?;
 
@@ -320,6 +320,60 @@ impl Github {
 	}
 }
 
+/// Logged out, so no credentials of any kind — and therefore no messages and no post feed, only the
+/// one fact no other source states: where a person works now.
+///
+/// The checkpoint is the date of the last success rather than an item id: there is nothing to page
+/// through, only a snapshot to re-take once it is old enough to be worth a view from the budget.
+///
+/// Through `curl` rather than the http client every other source shares, because linkedin answers on
+/// the TLS handshake as much as on the request: reqwest gets `999` where a curl carrying byte-identical
+/// headers gets the page.
+pub fn linkedin(handle: &str, cursor: Option<&str>) -> Result<Fetched> {
+	let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
+	if let Some(cursor) = cursor {
+		let last: jiff::civil::Date = cursor.parse().wrap_err("a linkedin checkpoint is a date")?;
+		// the empty `Fetched` carries no cursor, so a skip leaves the checkpoint where it is
+		if last.until((jiff::Unit::Day, today))?.get_days() < PROFILE_REFRESH_DAYS {
+			return Ok(Fetched::default());
+		}
+	}
+
+	// `%{stderr}` keeps the status code out of the body, so the wall is a code rather than a guess
+	let out = std::process::Command::new("curl")
+		.args([
+			"-sL",
+			"--max-time",
+			"30",
+			"-w",
+			"%{stderr}%{http_code}",
+			"-A",
+			"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+			&format!("https://www.linkedin.com/in/{handle}/"),
+		])
+		.output()
+		.wrap_err("failed to run `curl`")?;
+	if !out.status.success() {
+		bail!("curl {}", out.status);
+	}
+	let code = String::from_utf8_lossy(&out.stderr);
+	if code.trim() != "200" {
+		bail!("linkedin `{handle}`: HTTP {} — `999` is the wall, and it lifts on its own", code.trim());
+	}
+
+	let person = person_node(&String::from_utf8_lossy(&out.stdout)).wrap_err_with(|| format!("linkedin `{handle}`"))?;
+	let mut fetched = Fetched::default();
+	insert_nonempty(&mut fetched.sources, "linkedin:headline", Some(&headline(&person)));
+	insert_nonempty(&mut fetched.sources, "linkedin:about", person.get("description").and_then(|v| v.as_str()));
+	fetched.cursor = Some(today.to_string());
+	Ok(fetched)
+}
+
+async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
+	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
+	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
+}
+
 #[derive(Clone, Copy)]
 enum Anchor {
 	Newest,
@@ -364,6 +418,47 @@ fn describe(event: &serde_json::Value) -> Option<(String, String)> {
 	}
 }
 
+/// A public profile ships as an ld+json `@graph`; everything around it is obfuscated markup that
+/// changes far more often than the schema does. An authwalled page has no `Person` in it — erroring
+/// here rather than returning nothing is what keeps a wall distinguishable from an unchanged profile.
+fn person_node(body: &str) -> Result<serde_json::Value> {
+	const OPEN: &str = r#"<script type="application/ld+json">"#;
+	for block in body.split(OPEN).skip(1) {
+		let end = block.find("</script>").ok_or_else(|| eyre!("unterminated ld+json block"))?;
+		let value: serde_json::Value = serde_json::from_str(&block[..end]).wrap_err("ld+json block is not json")?;
+		let person = value
+			.get("@graph")
+			.and_then(|v| v.as_array())
+			.into_iter()
+			.flatten()
+			.find(|n| n.get("@type").and_then(|v| v.as_str()) == Some("Person"));
+		if let Some(person) = person {
+			return Ok(person.clone());
+		}
+	}
+	bail!("no ld+json Person: authwalled, or the profile is not public");
+}
+
+/// The current role only: the graph carries the whole position history, newest first, and the tail of
+/// it is a CV rather than the one fact worth diffing. A title without a company is still worth having,
+/// and so is the reverse.
+fn headline(person: &serde_json::Value) -> String {
+	/// A logged-out view withholds a value by starring it out rather than omitting the field, and how
+	/// much it withholds varies with how much it has already served — but no real title carries a `*`.
+	fn unmasked(value: Option<&serde_json::Value>) -> Option<&str> {
+		value?.as_str().map(str::trim).filter(|v| !v.is_empty() && !v.contains('*'))
+	}
+	// ld+json spells one value and a list of them the same way
+	let title = match person.get("jobTitle") {
+		Some(serde_json::Value::Array(titles)) => unmasked(titles.first()),
+		title => unmasked(title),
+	};
+	match (title, unmasked(person.pointer("/worksFor/0/name"))) {
+		(Some(title), Some(org)) => format!("{title} at {org}"),
+		(title, org) => title.or(org).unwrap_or_default().to_string(),
+	}
+}
+
 fn insert_nonempty(map: &mut BTreeMap<String, String>, key: &str, value: Option<&str>) {
 	if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
 		map.insert(key.to_string(), value.to_string());
@@ -405,6 +500,23 @@ mod tests {
 				source.as_ref()
 			);
 		}
+	}
+
+	/// The half that matters is the second: a parser that returns nothing on a wall or a reshaped page
+	/// is indistinguishable from an unchanged profile, and would freeze the source without a sound.
+	#[test]
+	fn linkedin_wall_is_not_silence() {
+		let public = r##"<html><head><script type="application/ld+json">{"@context":"http://schema.org","@graph":[{"@type":"WebPage","url":"https://www.linkedin.com/in/x"},{"@type":"Person","name":"X","jobTitle":["Staff Engineer","Intern"],"worksFor":[{"@type":"Organization","name":"Bar"},{"@type":"Organization","name":"Foo"}],"description":"Builds things."}]}</script></head><body></body></html>"##;
+		let person = person_node(public).unwrap();
+		assert_eq!(headline(&person), "Staff Engineer at Bar");
+		assert_eq!(person.get("description").unwrap(), "Builds things.");
+
+		let masked = serde_json::json!({"jobTitle": ["******** *** ***"], "worksFor": [{"name": "Bar"}]});
+		assert_eq!(headline(&masked), "Bar");
+
+		let walled = r##"<html><head><script type="application/ld+json">{"@context":"http://schema.org","@graph":[{"@type":"WebPage","url":"https://www.linkedin.com/authwall"}]}</script></head><body>Sign in</body></html>"##;
+		assert!(person_node(walled).is_err());
+		assert!(person_node("<html><body>Sign in</body></html>").is_err());
 	}
 
 	#[test]

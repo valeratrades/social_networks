@@ -17,8 +17,8 @@ pub struct Person {
 	/// File stem. Not in the file itself.
 	#[serde(skip)]
 	pub name: String,
-	/// Platform → handle. `discord` and `telegram` are the two `pull` knows how to fetch; the rest
-	/// come from discord's connected accounts and are there for a human to read.
+	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
+	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
 	pub handles: BTreeMap<String, String>,
 	#[serde(default)]

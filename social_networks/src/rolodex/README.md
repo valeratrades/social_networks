@@ -42,12 +42,17 @@ The flag names the `handles` key it sends through, so a person without that hand
 rather than a guess. Discord and telegram reuse the sessions `pull` reads with; twitter sends from
 the `[twitter.oauth]` account.
 
-`handles` maps platform → handle. `discord`, `telegram` and `github` are what `pull` fetches; the
+`handles` maps platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` fetches; the
 rest are seeded from discord's connected accounts and exist for a human to read. A handle that stops
 resolving takes only itself down — its checkpoint is left alone and the pull continues.
 
 Github contributes a bio and a public event feed. The feed is filtered to the event types that can
 carry signal before it reaches the prompt, which then holds it to a much higher bar than DMs.
+
+Linkedin is read logged out, under no credentials, for the headline and about text — where someone
+works now, which no other source states. Anonymous views are authwalled after a handful, so its
+checkpoint is the date of the last success and a profile fetched within 30 days is skipped: the wall
+turns into a queue that drains over successive pulls instead of a failure to design around.
 
 `pull` uses its own telegram session file, seeded from the `dms` daemon's on first use: same
 authorization, no write contention with the daemon.
