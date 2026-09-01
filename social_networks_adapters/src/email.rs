@@ -518,14 +518,6 @@ impl EmailMonitor {
 	}
 
 	async fn llm_classify(&self, message: &EmailMessage) -> Result<Action> {
-		if let Some(ref token) = self.config.claude_token {
-			// SAFETY: This is only called from the single-threaded main task, and is setting an env var
-			// that is only read by the ask_llm crate during the subsequent API call in this same function.
-			unsafe {
-				std::env::set_var("CLAUDE_TOKEN", token);
-			}
-		}
-
 		let prompt = format!(
 			r#"Analyze this email and determine if it's from a human or an automated system.
 

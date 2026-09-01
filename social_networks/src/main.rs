@@ -53,6 +53,14 @@ fn main() {
 	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
 	let config: AppConfig = exit_on_error(settings.config());
 
+	// `ask_llm` as a lib only ever reads the token from env; `~/.config/ask_llm.nix` is loaded by its cli binary alone
+	if let Some(token) = config.email.as_ref().and_then(|e| e.claude_token.as_ref()) {
+		// SAFETY: still single-threaded here, no runtime built yet
+		unsafe {
+			std::env::set_var("CLAUDE_TOKEN", token);
+		}
+	}
+
 	let result: Result<()> = match cli.command {
 		Commands::Health => health::main(config),
 		Commands::MigrateDb => {
