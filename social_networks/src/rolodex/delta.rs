@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
+use social_networks_adapters::llm::LlmConfig;
 use strum::IntoEnumIterator as _;
 
 use super::{
@@ -40,9 +41,9 @@ pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
 }
-pub async fn extract(delta: &Delta<'_>, claude_token: &str) -> Result<Extraction> {
+pub async fn extract(delta: &Delta<'_>, llm_config: &LlmConfig) -> Result<Extraction> {
 	let prompt = prompt(delta);
-	let response = llm(claude_token)
+	let response = llm(llm_config)
 		.ask(&prompt)
 		.await
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
@@ -53,12 +54,12 @@ pub async fn extract(delta: &Delta<'_>, claude_token: &str) -> Result<Extraction
 /// by the *next* pull, the same cadence discord's connected accounts already run on.
 ///
 /// Skipped when every [`Source`] is already covered — the set of possible additions is empty.
-pub async fn discover_handles(delta: &Delta<'_>, claude_token: &str) -> Result<Vec<(String, String)>> {
+pub async fn discover_handles(delta: &Delta<'_>, llm_config: &LlmConfig) -> Result<Vec<(String, String)>> {
 	if Source::iter().all(|source| delta.person.handles.contains_key(source.as_ref())) {
 		return Ok(Vec::new());
 	}
 	let prompt = discovery_prompt(delta);
-	let response = llm(claude_token)
+	let response = llm(llm_config)
 		.ask(&prompt)
 		.await
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
@@ -73,13 +74,8 @@ pub async fn discover_handles(delta: &Delta<'_>, claude_token: &str) -> Result<V
 		.filter(|(_, handle)| !handle.is_empty())
 		.collect())
 }
-fn llm(claude_token: &str) -> ask_llm::Client {
-	ask_llm::Client::new(ask_llm::config::AppConfig {
-		claude_token: Some(claude_token.to_owned()),
-		..Default::default()
-	})
-	.model(ask_llm::Model::Medium)
-	.force_json()
+fn llm(llm_config: &LlmConfig) -> ask_llm::Client {
+	ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Slow).force_json()
 }
 
 #[derive(Debug, Deserialize)]

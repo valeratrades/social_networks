@@ -16,6 +16,7 @@ use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowRet
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
+	llm::LlmConfig,
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
 };
@@ -103,29 +104,29 @@ pub struct OAuthAuth {
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
-	claude_token: String,
+	llm_config: LlmConfig,
 	notifier: TelegramNotifier,
 	db: Database,
 	rules: CompiledRules,
 }
 impl EmailMonitor {
-	pub fn try_new(config: EmailConfig, claude_token: String, notifier: TelegramNotifier, db: Database) -> Result<Self> {
+	pub fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let rules = CompiledRules::try_new(&config.rules)?;
 		Ok(Self {
 			config,
-			claude_token,
+			llm_config,
 			notifier,
 			db,
 			rules,
 		})
 	}
 
-	pub async fn try_from_configs(email_config: EmailConfig, claude_token: String, telegram_config: TelegramConfig) -> Result<Self> {
+	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Self::try_new(email_config, claude_token, notifier, db)
+		Self::try_new(email_config, llm_config, notifier, db)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -556,13 +557,11 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
-		let response = ask_llm::Client::new(ask_llm::config::AppConfig {
-			claude_token: Some(self.claude_token.clone()),
-			..Default::default()
-		})
-		.ask(&prompt)
-		.await
-		.with_context(|| format!("Failed to classify email from {}", message.from))?;
+		let response = ask_llm::Client::new((&self.llm_config).into())
+			.model(ask_llm::Model::Slow)
+			.ask(&prompt)
+			.await
+			.with_context(|| format!("Failed to classify email from {}", message.from))?;
 
 		let action = if response.text.trim().to_lowercase().starts_with("yes") {
 			Action::Important

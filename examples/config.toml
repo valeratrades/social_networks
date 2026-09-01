@@ -1,3 +1,5 @@
+[llm]
+# at least one; which one a surface needs follows from the `ask_llm::Model` tier it asks for
 claude_token = { env = "CLAUDE_TOKEN" }
 
 [dms]

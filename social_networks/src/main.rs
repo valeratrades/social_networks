@@ -52,6 +52,9 @@ fn main() {
 	let cli = Cli::parse();
 	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
 	let config: AppConfig = exit_on_error(settings.config());
+	if let Some(llm) = &config.llm {
+		exit_on_error(llm.assert_any_key());
+	}
 
 	let result: Result<()> = match cli.command {
 		Commands::Health => health::main(config),
@@ -73,23 +76,24 @@ fn main() {
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::Email(args) => run_async("email", || async {
-			v_utils::clientside!(Some("email"));
-			let email_config = config
-				.email
-				.clone()
-				.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
-				.map_err(adapter_from_eyre)?;
-			let mut monitor = EmailMonitor::try_from_configs(email_config, config.claude_token, config.telegram)
-				.await
-				.map_err(adapter_from_eyre)?;
-			if args.mark_all_read {
-				return monitor.mark_all_as_read().await.map_err(adapter_from_eyre);
-			}
-			let err = monitor.listen().await.unwrap_err();
-			alert(&err).await;
-			Err::<(), AdapterError>(err)
-		}),
+		Commands::Email(args) => {
+			let llm_config = exit_on_error(config.require_llm("email"));
+			run_async("email", || async {
+				v_utils::clientside!(Some("email"));
+				let email_config = config
+					.email
+					.clone()
+					.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
+					.map_err(adapter_from_eyre)?;
+				let mut monitor = EmailMonitor::try_from_configs(email_config, llm_config, config.telegram).await.map_err(adapter_from_eyre)?;
+				if args.mark_all_read {
+					return monitor.mark_all_as_read().await.map_err(adapter_from_eyre);
+				}
+				let err = monitor.listen().await.unwrap_err();
+				alert(&err).await;
+				Err::<(), AdapterError>(err)
+			})
+		}
 		Commands::Rolodex(args) => run_async("rolodex", || async {
 			v_utils::clientside!(Some("rolodex"));
 			rolodex::main(args, config).await
@@ -115,13 +119,16 @@ fn main() {
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
-		Commands::Youtube(_) => run_async("youtube", || async {
-			v_utils::clientside!(Some("youtube"));
-			let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram, config.claude_token);
-			let err = adapter.listen().await.unwrap_err();
-			alert(&err).await;
-			Err::<(), AdapterError>(err)
-		}),
+		Commands::Youtube(_) => {
+			let llm_config = exit_on_error(config.require_llm("youtube"));
+			run_async("youtube", || async {
+				v_utils::clientside!(Some("youtube"));
+				let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram, llm_config);
+				let err = adapter.listen().await.unwrap_err();
+				alert(&err).await;
+				Err::<(), AdapterError>(err)
+			})
+		}
 	};
 
 	exit_on_error(result);

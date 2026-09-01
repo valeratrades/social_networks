@@ -1,13 +1,14 @@
-use social_networks_adapters::{email::EmailConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
 use crate::{dms::DmsConfig, rolodex::RolodexConfig};
 
 #[derive(Clone, Debug, Default, LiveSettings, MyConfigPrimitives, Settings)]
 pub struct AppConfig {
-	/// Required: youtube sentiment, email classification and rolodex deltas all go through `ask_llm`
+	/// Required by the surfaces that reason: youtube, email and rolodex
 	#[settings(skip)]
-	pub claude_token: String,
+	#[serde(default)]
+	pub llm: Option<LlmConfig>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub dms: DmsConfig,
@@ -26,4 +27,12 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub rolodex: Option<RolodexConfig>,
+}
+
+impl AppConfig {
+	pub fn require_llm(&self, surface: &'static str) -> color_eyre::Result<LlmConfig> {
+		self.llm
+			.clone()
+			.ok_or_else(|| color_eyre::eyre::eyre!("the {surface} surface reasons about what it sees, so it needs an `[llm]` section in the config"))
+	}
 }

@@ -12,6 +12,7 @@ use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
 	client::{AdapterError, Client},
+	llm::LlmConfig,
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
 };
@@ -29,15 +30,15 @@ pub struct YoutubeConfig {
 pub struct YoutubeMonitor {
 	youtube_config: YoutubeConfig,
 	telegram_config: TelegramConfig,
-	claude_token: String,
+	llm_config: LlmConfig,
 }
 
 impl YoutubeMonitor {
-	pub fn new(youtube_config: YoutubeConfig, telegram_config: TelegramConfig, claude_token: String) -> Self {
+	pub fn new(youtube_config: YoutubeConfig, telegram_config: TelegramConfig, llm_config: LlmConfig) -> Self {
 		Self {
 			youtube_config,
 			telegram_config,
-			claude_token,
+			llm_config,
 		}
 	}
 }
@@ -52,7 +53,7 @@ impl Client for YoutubeMonitor {
 		info!("Monitoring channels: {:?}", self.youtube_config.channels.keys());
 
 		loop {
-			match run_youtube_monitor(&self.youtube_config, &self.telegram_config, &self.claude_token).await {
+			match run_youtube_monitor(&self.youtube_config, &self.telegram_config, &self.llm_config).await {
 				Err(YoutubeError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
 				Err(YoutubeError::Recoverable(e)) => {
 					error!("YouTube monitor error: {e:#}");
@@ -93,7 +94,7 @@ struct LastUploadedTitles {
 }
 
 #[instrument(skip_all)]
-async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig, claude_token: &str) -> Result<Infallible, YoutubeError> {
+async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig, llm_config: &LlmConfig) -> Result<Infallible, YoutubeError> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
@@ -112,7 +113,7 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 	//LOOP: daemon - runs until process termination
 	loop {
 		for (channel_name, channel_id) in &youtube_config.channels {
-			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram, claude_token).await {
+			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram, llm_config).await {
 				Ok(_) => debug!("Checked channel: {channel_name}"),
 				Err(YoutubeError::Auth(detail)) => return Err(YoutubeError::Auth(detail)),
 				Err(YoutubeError::Recoverable(e)) => error!("Error checking channel {channel_name}: {e:#}"),
@@ -126,14 +127,14 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 	}
 }
 
-#[instrument(skip(client, last_uploaded, telegram, claude_token))]
+#[instrument(skip(client, last_uploaded, telegram, llm_config))]
 async fn check_channel(
 	client: &reqwest::Client,
 	channel_id: &str,
 	channel_name: &str,
 	last_uploaded: &mut LastUploadedTitles,
 	telegram: &TelegramNotifier,
-	claude_token: &str,
+	llm_config: &LlmConfig,
 ) -> Result<(), YoutubeError> {
 	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
 
@@ -155,7 +156,7 @@ async fn check_channel(
 		}
 
 		// nothing is reported or recorded until the notification is out, so a failed cycle is simply retried on the next one
-		let sentiment = analyze_sentiment(&title, claude_token).await?;
+		let sentiment = analyze_sentiment(&title, llm_config).await?;
 		telegram.send_youtube_notification(channel_name, &title, &sentiment, &video_id).await?;
 
 		println!("YouTube: [{channel_name}] uploaded: {title}");
@@ -217,7 +218,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 	Err(eyre!("No video entry found in RSS feed"))
 }
 
-async fn analyze_sentiment(title: &str, claude_token: &str) -> Result<String> {
+async fn analyze_sentiment(title: &str, llm_config: &LlmConfig) -> Result<String> {
 	let btc_price = btc_price(3).await?;
 
 	let prompt = format!(
@@ -227,12 +228,7 @@ async fn analyze_sentiment(title: &str, claude_token: &str) -> Result<String> {
 		Title of the video: {title}"
 	);
 
-	let response = ask_llm::Client::new(ask_llm::config::AppConfig {
-		claude_token: Some(claude_token.to_owned()),
-		..Default::default()
-	})
-	.ask(&prompt)
-	.await?;
+	let response = ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Slow).ask(&prompt).await?;
 
 	let sentiment = response.text.split_whitespace().next().ok_or_else(|| eyre!("LLM returned an empty sentiment for {title:?}"))?;
 

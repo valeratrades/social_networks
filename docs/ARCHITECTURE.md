@@ -109,12 +109,12 @@ GitHub ───┘
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
-- **Credentials are config, not environment**: `claude_token` is a required top-level key handed to `ask_llm::Client::new`; a missing one fails at config build rather than on first use.
+- **Credentials are config, not environment**: provider keys live in `[llm]` and are handed to `ask_llm::Client::new`. The section is required by the surfaces that reason (youtube, email, `rolodex pull`) and refused empty, so a surface that needs a key fails at startup rather than on first use.
 
 ## Cross-Cutting Concerns
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
 - **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex person files live in a user-chosen directory, everything machine-only stays in the db.
-- **LLM integration**: email classification, YouTube sentiment, and rolodex extraction via Claude (`ask_llm` crate).
+- **LLM integration**: email classification, YouTube sentiment, and rolodex extraction go through `ask_llm`, all asking for `Model::Slow` — the tier that resolves to Anthropic, which is the key we provision. Pointing a surface at another tier means provisioning that provider's key in `[llm]` too.
 - **Systemd deployment**: each command runs as an independent systemd user service.

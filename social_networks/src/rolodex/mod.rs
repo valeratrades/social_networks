@@ -117,6 +117,7 @@ async fn pull(config: AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()
 }
 
 async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
+	let llm_config = config.require_llm("rolodex")?;
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let github = sources::Github::default();
 
@@ -176,7 +177,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			continue;
 		};
 		pb.set_message(format!("{} extracting", person.name));
-		let extraction = match delta::extract(&delta, &config.claude_token).await {
+		let extraction = match delta::extract(&delta, &llm_config).await {
 			Ok(extraction) => extraction,
 			Err(e) => {
 				pb.abandon();
@@ -185,7 +186,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 		};
 
 		pb.set_message(format!("{} discovering handles", person.name));
-		let discovered = match delta::discover_handles(&delta, &config.claude_token).await {
+		let discovered = match delta::discover_handles(&delta, &llm_config).await {
 			Ok(discovered) => discovered,
 			Err(e) => {
 				pb.abandon();
