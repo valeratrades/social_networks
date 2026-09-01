@@ -14,6 +14,7 @@ repository = "https://github.com/valeratrades/social_networks"
 tag = false
 
 [dependencies]
+chromiumoxide.workspace = true
 color-eyre.workspace = true
 exchange_interactions.workspace = true
 futures.workspace = true
@@ -22,6 +23,11 @@ grammers-mtsender.workspace = true
 grammers-session.workspace = true
 libsql.workspace = true
 psm.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 xdg.workspace = true
 

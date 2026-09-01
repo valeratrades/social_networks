@@ -36,12 +36,17 @@ Checkpoints live in sqlite rather than the file, so regenerating a person cannot
 `open [pattern]` and `pull [pattern]`. A pattern matches the file stem or any handle, so
 `pull dev_ardi` reaches `orion.nix`. No pattern means fzf for `open`, everybody for `pull`.
 
-`handles` maps platform → handle. `discord`, `telegram` and `github` are what `pull` fetches; the
-rest are seeded from discord's connected accounts and exist for a human to read. A handle that stops
-resolving takes only itself down — its checkpoint is left alone and the pull continues.
+`handles` maps platform → handle. `discord`, `telegram`, `github` and `skool` are what `pull`
+fetches; the rest are seeded from discord's connected accounts and skool's profile links, and exist
+for a human to read. A handle that stops resolving takes only itself down — its checkpoint is left
+alone and the pull continues.
 
 Github contributes a bio and a public event feed. The feed is filtered to the event types that can
 carry signal before it reaches the prompt, which then holds it to a much higher bar than DMs.
+
+Skool contributes a bio, a location and the profile's outbound links. It is the one source that
+never needs credentials: a `[skool]` section only adds the posts of groups it shares with them, and
+their absence reads as no activity rather than as a failure.
 
 `pull` uses its own telegram session file, seeded from the `dms` daemon's on first use: same
 authorization, no write contention with the daemon.
