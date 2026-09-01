@@ -16,7 +16,8 @@ tag = false
 
 [[bin]]
 name = "recon"
-path = "src/bin/recon.rs"
+# not `src/bin/`: the repo ignores `**/bin/`, and a source file that never reaches git is worse
+path = "src/recon.rs"
 
 [dependencies]
 clap.workspace = true
