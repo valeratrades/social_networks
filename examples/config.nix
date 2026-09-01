@@ -76,11 +76,6 @@ Sentiment check: $BTC, how are we feeling?
   skool = {
     email = { env = "DEFAULT_MAIL"; };
     password = { env = "DEFAULT_PASSWORD"; };
-    # what the `skool` daemon watches; `rolodex dm --skool` needs none of them
-    groups = [
-      "20kmodropservicingblueprint"
-      "josh-lessard-4483"
-    ];
   };
 
   email = {

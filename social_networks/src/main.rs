@@ -11,9 +11,8 @@ use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::DmsArgs;
 use rolodex::RolodexArgs;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, SkoolWatch, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
-	install_panic_alert, skool::SkoolArgs, telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs,
-	youtube::YoutubeArgs,
+	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs, install_panic_alert,
+	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
 use v_utils::utils::exit_on_error;
@@ -39,8 +38,6 @@ enum Commands {
 	MigrateDb,
 	/// Per-person records, fed from Discord and Telegram
 	Rolodex(RolodexArgs),
-	/// Skool group feed watching
-	Skool(SkoolArgs),
 	/// Telegram channel watching (poll/info forwarding)
 	TelegramChannelWatch(TelegramArgs),
 	/// Twitter operations
@@ -100,21 +97,6 @@ fn main() {
 		Commands::Rolodex(args) => run_async("rolodex", || async {
 			v_utils::clientside!(Some("rolodex"));
 			rolodex::main(args, config).await
-		}),
-		Commands::Skool(_) => run_async("skool", || async {
-			v_utils::clientside!(Some("skool"));
-			let skool_config = config
-				.skool
-				.clone()
-				.ok_or_else(|| color_eyre::eyre::eyre!("no `[skool]` section in the config"))
-				.map_err(|e| AdapterError::Unhandled {
-					surface: "skool",
-					detail: format!("{e:#}"),
-				})?;
-			let mut adapter = SkoolWatch::new(skool_config, config.telegram);
-			let err = adapter.listen().await.unwrap_err();
-			alert(&err).await;
-			Err::<(), AdapterError>(err)
 		}),
 		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
 			v_utils::clientside!(Some("telegram_channel_watch"));

@@ -10,7 +10,6 @@ const SIZE_THRESHOLD_GB: f64 = 10.0;
 const SERVICES: &[(&str, &str)] = &[
 	("dms", "DMs (Discord + Telegram)"),
 	("email", "Email"),
-	("skool", "Skool Watch"),
 	("telegram-channel-watch", "Telegram Channel Watch"),
 	("twitter", "Twitter Monitor"),
 	("twitter-schedule", "Twitter Schedule"),

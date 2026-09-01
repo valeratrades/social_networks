@@ -35,11 +35,6 @@ impl TelegramNotifier {
 		self.send_message_to_output(&message).await
 	}
 
-	pub async fn send_skool_post(&self, group: &str, title: &str, post_name: &str) -> Result<()> {
-		let message = format!("[{group}] new post: {title}\n\nhttps://www.skool.com/{group}/{post_name}");
-		self.send_message_to_output(&message).await
-	}
-
 	pub async fn send_youtube_notification(&self, channel_name: &str, title: &str, sentiment: &str, video_id: &str) -> Result<()> {
 		let message = format!("[{channel_name}] uploaded a new video: [{title}]\nPerception: {sentiment}\n\nhttps://youtube.com/watch?v={video_id}");
 		self.send_message_to_output(&message).await

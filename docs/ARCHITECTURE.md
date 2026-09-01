@@ -4,7 +4,7 @@
 
 ## Overview
 
-Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitter, YouTube, Skool and Gmail for relevant events, routes notifications through Telegram.
+Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitter, YouTube and Gmail for relevant events, routes notifications through Telegram. Skool is read and written on demand by `rolodex`, and has no daemon.
 
 The repository is a Cargo workspace with three members:
 
@@ -36,14 +36,13 @@ social_networks/
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email.rs                        # Gmail IMAP/OAuth, LLM classification
-│       ├── skool.rs                        # Group feed polling
 │       └── youtube.rs                      # RSS monitoring, sentiment analysis
 │
 └── social_networks_utils/                  # shared primitives
     └── src/
         ├── lib.rs
         ├── db.rs                           # SQLite client (libsql): email dedup
-        ├── skool.rs                        # `__NEXT_DATA__` reads, browser-minted session cookie
+        ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie
         ├── telegram_notifier.rs            # central notification hub
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
@@ -74,7 +73,6 @@ pub trait Client {
 | Twitter monitor / schedule | 429, 5xx, network errors | **401, 403** |
 | Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; OAuth refresh 401/403 |
 | YouTube | 429, 5xx | 401/403 |
-| Skool | network errors, a stale cookie (re-minted in a browser and retried) | a group feed still answering `/login` or `/[group]/about` after that |
 
 ## Data Flow
 
@@ -83,8 +81,7 @@ Discord ──┐                              ┌── Alerts Channel (pings, 
 Telegram ─┤                              │
 Twitter ──┼──► TelegramNotifier ─────────┤
 YouTube ──┤                              │
-Skool ────┤                              └── Output Channel (polls, videos, emails, skool posts)
-Gmail ────┘
+Gmail ────┘                              └── Output Channel (polls, videos, emails)
 
 When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
@@ -108,7 +105,7 @@ Skool publishes no API: every read is the `__NEXT_DATA__` payload skool's SSR
 embeds in the HTML, and the route it says it served is how it reports "not a member" / "not signed
 in". Only `/auth/*` sits behind an AWS-WAF JS challenge, so a headless chromium mints the session
 cookie and nothing else — reads stay on plain HTTP. Everything a profile carries is public, which is
-why the rolodex source needs no credentials and the daemon's cookie only widens what it sees.
+why the rolodex source needs no credentials; a cookie only widens what it sees.
 
 Writing has nowhere to go but the undocumented REST API at `api.skool.com` that skool's own web
 client talks to, authenticated by the same cookie. A DM is addressed to a *channel*, and skool has

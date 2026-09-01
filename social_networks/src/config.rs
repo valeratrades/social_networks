@@ -1,4 +1,5 @@
-use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, skool::SkoolConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_utils::skool::SkoolCredentials;
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
 use crate::{dms::DmsConfig, rolodex::RolodexConfig};
@@ -24,13 +25,29 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub email: Option<EmailConfig>,
-	/// Only the `skool` daemon needs it — the rolodex source reads what is public either way
+	/// Only `rolodex dm --skool` needs it — reads are what is public either way
 	#[settings(skip)]
 	#[serde(default)]
 	pub skool: Option<SkoolConfig>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub rolodex: Option<RolodexConfig>,
+}
+
+/// Lives here rather than beside [`SkoolCredentials`] because the env indirection is the binary's
+/// config machinery, which `social_networks_utils` does not depend on.
+#[derive(Clone, Debug, MyConfigPrimitives)]
+pub struct SkoolConfig {
+	pub email: String,
+	pub password: String,
+}
+impl From<&SkoolConfig> for SkoolCredentials {
+	fn from(config: &SkoolConfig) -> Self {
+		Self {
+			email: config.email.clone(),
+			password: config.password.clone(),
+		}
+	}
 }
 
 impl AppConfig {
