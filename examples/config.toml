@@ -1,6 +1,7 @@
 [llm]
 # at least one; which one a surface needs follows from the `ask_llm::Model` tier it asks for
 claude_token = { env = "CLAUDE_TOKEN" }
+openai_token = { env = "OPENAI_API_KEY" }
 
 [dms]
 monitored_users = ["play_me_once", "deevsdeevs"]
