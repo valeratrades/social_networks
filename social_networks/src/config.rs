@@ -1,4 +1,4 @@
-use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, skool::SkoolConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
 use crate::{dms::DmsConfig, rolodex::RolodexConfig};
@@ -24,6 +24,10 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub email: Option<EmailConfig>,
+	/// Only the `skool` daemon needs it — the rolodex source reads what is public either way
+	#[settings(skip)]
+	#[serde(default)]
+	pub skool: Option<SkoolConfig>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub rolodex: Option<RolodexConfig>,

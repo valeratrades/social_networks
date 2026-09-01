@@ -133,6 +133,8 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 	let llm_config = config.require_llm("rolodex")?;
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let github = sources::Github::default();
+	// credentials only widen what skool answers; without them the public profile is still a whole result
+	let mut skool = social_networks_utils::skool::Skool::try_new(config.skool.as_ref().map(Into::into))?;
 
 	let total = people.len();
 	let width = people.iter().map(|p| p.name.chars().count()).max().expect("`pull` bails on an empty selection");
@@ -166,6 +168,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, &mut cursor, &assets).await,
 				Source::Github => github.fetch(handle, &mut cursor).await,
 				Source::Linkedin => sources::linkedin(handle, &mut cursor),
+				Source::Skool => sources::skool(&mut skool, handle, &mut cursor).await,
 			};
 			match result {
 				Ok(fetched) => {
