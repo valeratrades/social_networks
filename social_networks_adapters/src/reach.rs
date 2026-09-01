@@ -214,6 +214,15 @@ impl Window {
 		Self::Below { before, limit: PAGE }
 	}
 
+	/// One item, asked only to learn whether there is one at all.
+	pub fn probe() -> Self {
+		Self::Above {
+			after: None,
+			not_before: None,
+			limit: 1,
+		}
+	}
+
 	pub fn since(at: Timestamp) -> Self {
 		Self::Above {
 			after: None,

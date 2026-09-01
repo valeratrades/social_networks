@@ -45,7 +45,7 @@ pub struct RolodexArgs {
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
 	match args.command {
-		RolodexCommand::Cold { pattern } => cold(&dir, pattern.as_deref()),
+		RolodexCommand::Cold { pattern } => cold(&config, &dir, pattern.as_deref()).await,
 		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
@@ -104,52 +104,82 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
-/// Everybody the rolodex has looked for a conversation with and found none. What a person said in a
-/// venue is not a conversation with them — it stayed in the venue's transcript, and is why the
-/// members `discover` wrote a file for come out cold until somebody writes to them.
-fn cold(dir: &Path, pattern: Option<&str>) -> Result<()> {
+/// Everybody no conversation is on record with, on any platform that could hold one. What a person
+/// said in a venue is not a conversation with them — it stayed in the venue's transcript, and is why
+/// the members `discover` wrote a file for come out cold until somebody writes to them.
+async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
 	let selected: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
 	let total = selected.len();
-	let (cold, outstanding) = sift(dir, selected)?;
+	let candidates = sift(dir, selected)?;
 
-	let width = cold.iter().chain(outstanding.iter().map(|(p, _)| p)).map(|p| p.name.chars().count()).max().unwrap_or(0);
+	let telegram = candidates.iter().any(|(_, ask)| ask.contains(&Source::Telegram));
+	let cold = match telegram {
+		true => with_telegram(&config.telegram, async |client| probe_all(config, dir, candidates, Some(&client)).await).await?,
+		false => probe_all(config, dir, candidates, None).await?,
+	};
+
+	let width = cold.iter().map(|p| p.name.chars().count()).max().unwrap_or(0);
 	for person in &cold {
 		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
 		println!("   {} {:<width$} {}", "·".dimmed(), person.name, handles.join(" ").dimmed());
 	}
-	for (person, source) in &outstanding {
-		println!(
-			"   {} {:<width$} {}",
-			"?".yellow(),
-			person.name,
-			format!("{}/{} has never been pulled", source.as_ref(), person.handles[source.as_ref()]).dimmed()
-		);
-	}
-	println!("   {} of {total} cold, {} unanswered", cold.len(), outstanding.len());
+	println!("   {} of {total} cold", cold.len());
 	Ok(())
 }
 
-/// The cold, and those whose answer is still owed: a source that can hold a conversation and has
-/// never been asked is not evidence of silence, so it disqualifies rather than counts.
-fn sift(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<(Person, Source)>)> {
-	let (mut cold, mut outstanding) = (Vec::new(), Vec::new());
+/// Everybody the record does not already place a conversation with, and per person the sources it
+/// says nothing either way about — those are what [`probe_all`] then asks.
+fn sift(dir: &Path, people: Vec<Person>) -> Result<Vec<(Person, Vec<Source>)>> {
+	let mut candidates = Vec::new();
 	for person in people {
 		let meta = history::Meta::load(&dir.join(&person.name))?;
-		let asked: Vec<(Source, Option<usize>)> = person
-			.handles
-			.keys()
-			.filter_map(|platform| platform.parse::<Source>().ok())
-			.map(|source| (source, meta.messages(source)))
-			.collect();
-		if asked.iter().any(|(_, messages)| messages.is_some_and(|n| n > 0)) {
+		let sources: Vec<Source> = person.handles.keys().filter_map(|platform| platform.parse::<Source>().ok()).collect();
+		if sources.iter().any(|source| meta.messages(*source).is_some_and(|messages| messages > 0)) {
 			continue;
 		}
-		match asked.iter().find(|(source, messages)| source.has_history() && messages.is_none()) {
-			Some((source, _)) => outstanding.push((person, *source)),
-			None => cold.push(person),
+		let ask = sources.into_iter().filter(|source| source.has_history() && meta.messages(*source).is_none()).collect();
+		candidates.push((person, ask));
+	}
+	Ok(candidates)
+}
+
+/// One message per source, which is all it takes to answer whether there is a conversation. Nothing
+/// is written: what the messages *say* is `pull`'s, and a probe that turned into an archive would
+/// leave a transcript no backfill may finish.
+async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<Source>)>, telegram: Option<&Client>) -> Result<Vec<Person>> {
+	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
+	let mut cold = Vec::new();
+	for (person, ask) in candidates {
+		let assets = dir.join(&person.name).join("assets");
+		// a source that cannot answer is not an answer either: it leaves them off the list rather
+		// than on it
+		let mut exclude = false;
+		for source in ask {
+			let handle = &person.handles[source.as_ref()];
+			let page = match source {
+				Source::Discord => discord.direct(handle, Window::probe(), &assets).await,
+				Source::Telegram => {
+					let mut client = telegram_dms::Reach {
+						client: telegram.expect("a telegram client is connected iff a telegram handle is being asked"),
+					};
+					client.direct(handle, Window::probe(), &assets).await
+				}
+				// `has_history` is what put a source in the list
+				Source::Github | Source::Linkedin | Source::Skool => unreachable!("{} holds no conversation", source.as_ref()),
+			};
+			match page {
+				Ok(page) => exclude |= !page.items.is_empty(),
+				Err(e) => {
+					exclude = true;
+					println!("   {} {} {}/{handle}: {e:#}", "✗".red(), person.name, source.as_ref());
+				}
+			}
+		}
+		if !exclude {
+			cold.push(person);
 		}
 	}
-	Ok((cold, outstanding))
+	Ok(cold)
 }
 
 async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
@@ -437,10 +467,10 @@ mod tests {
 
 	use super::*;
 
-	/// Silence and ignorance are different answers, and the outreach list is only worth anything if
-	/// it holds the first and not the second.
+	/// The record answers for whatever it has been kept for, and a source it has never been kept for
+	/// is what costs a request — never the other way round.
 	#[test]
-	fn a_source_nobody_asked_is_not_a_source_that_said_nothing() {
+	fn only_a_source_the_record_cannot_answer_for_is_asked() {
 		let dir = std::env::temp_dir().join("social_networks_rolodex_cold");
 		let _ = std::fs::remove_dir_all(&dir);
 		let meta = |name: &str, json: &str| {
@@ -467,11 +497,17 @@ mod tests {
 			person("half", &[("skool", "half-2"), ("telegram", "half")]),
 			person("never", &[("telegram", "never")]),
 		];
-		let (cold, outstanding) = sift(&dir, people).unwrap();
-		assert_eq!(cold.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["asked", "silent"]);
+		let candidates = sift(&dir, people).unwrap();
+		let asked: Vec<(&str, Vec<&str>)> = candidates.iter().map(|(p, ask)| (p.name.as_str(), ask.iter().map(|s| s.as_ref()).collect())).collect();
 		assert_eq!(
-			outstanding.iter().map(|(p, s)| (p.name.as_str(), s.as_ref())).collect::<Vec<_>>(),
-			[("half", "telegram"), ("never", "telegram")]
+			asked,
+			[
+				("asked", vec![]),
+				("silent", vec![]),
+				// `spoke` is not here at all: the record already places a conversation
+				("half", vec!["telegram"]),
+				("never", vec!["telegram"]),
+			]
 		);
 		std::fs::remove_dir_all(&dir).unwrap();
 	}

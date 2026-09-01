@@ -33,10 +33,10 @@ A pattern finds a person by file name or by any handle. Without a pattern, `open
 first `pull` gets the full history of each conversation, and can take a long time. If you stop it,
 the next `pull` continues from the same place.
 
-`cold` reads those messages. A person is cold when the messages hold no conversation with them. A
-line that a person wrote in a group is not a conversation, so each member that `discover` added
-stays cold. Discord and Telegram can hold a conversation. If you keep a Discord or a Telegram handle
-for a person, and no `pull` read it, `cold` shows that person apart. Do a `pull` to get the answer.
+`cold` finds each person that holds no conversation with you. A line that a person wrote in a group
+is not a conversation, so each member that `discover` added stays cold. `cold` checks every platform
+that you keep a handle for. It uses the messages that `pull` kept. If `pull` read no messages from a
+platform, `cold` asks that platform for one message. It keeps no message that it gets.
 
 ### `recon`
 

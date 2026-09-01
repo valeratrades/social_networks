@@ -370,17 +370,13 @@ impl Rest {
 	}
 
 	/// Only channels that already exist: opening one takes a user id, which nothing outside an open
-	/// channel hands us.
-	async fn dm_channel(&self, handle: &str) -> Result<(String, String)> {
-		self.channels()
-			.await?
-			.iter()
-			.find_map(|c| {
-				let channel_id = c.get("id")?.as_str()?;
-				let recipient = c.get("recipients")?.as_array()?.iter().find(|r| r.get("username").and_then(|u| u.as_str()) == Some(handle))?;
-				Some((channel_id.to_string(), recipient.get("id")?.as_str()?.to_string()))
-			})
-			.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))
+	/// channel hands us. `None` is therefore "never talked to them", not a failure.
+	async fn dm_channel(&self, handle: &str) -> Result<Option<(String, String)>> {
+		Ok(self.channels().await?.iter().find_map(|c| {
+			let channel_id = c.get("id")?.as_str()?;
+			let recipient = c.get("recipients")?.as_array()?.iter().find(|r| r.get("username").and_then(|u| u.as_str()) == Some(handle))?;
+			Some((channel_id.to_string(), recipient.get("id")?.as_str()?.to_string()))
+		}))
 	}
 
 	async fn messages(&self, channel_id: &str, anchor: Anchor, limit: usize) -> Result<Vec<(u64, serde_json::Value)>> {
@@ -524,7 +520,7 @@ impl Profiles for Rest {
 	/// Discord publishes no feed a person's own activity could be read off, so the window bounds
 	/// nothing here.
 	async fn profile(&mut self, handle: &str, _window: Window) -> Result<Profile> {
-		let (_, user_id) = self.dm_channel(handle).await?;
+		let (_, user_id) = self.dm_channel(handle).await?.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))?;
 		let mut profile = Profile::default();
 
 		// 404 here means no note is set, not that the user is gone.
@@ -549,8 +545,12 @@ impl Profiles for Rest {
 }
 
 impl Direct for Rest {
+	/// A handle with no DM channel has an empty conversation rather than an unreadable one — the
+	/// handle itself is what [`Profiles::profile`] still fails on.
 	async fn direct(&mut self, handle: &str, window: Window, assets: &Path) -> Result<Page> {
-		let (channel_id, _) = self.dm_channel(handle).await?;
+		let Some((channel_id, _)) = self.dm_channel(handle).await? else {
+			return Ok(Page { exhausted: true, ..Page::default() });
+		};
 		let limit = window.limit();
 		let mut raw: Vec<(u64, serde_json::Value)> = Vec::new();
 		let mut exhausted = false;
@@ -621,7 +621,7 @@ impl Direct for Rest {
 	}
 
 	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
-		let (channel_id, _) = self.dm_channel(handle).await?;
+		let (channel_id, _) = self.dm_channel(handle).await?.ok_or_else(|| eyre!("no discord DM channel with `{handle}`"))?;
 		self.request(|| {
 			self.http
 				.post(format!("https://discord.com/api/v10/channels/{channel_id}/messages"))
