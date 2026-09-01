@@ -10,6 +10,7 @@ const SIZE_THRESHOLD_GB: f64 = 10.0;
 const SERVICES: &[(&str, &str)] = &[
 	("dms", "DMs (Discord + Telegram)"),
 	("email", "Email"),
+	("skool", "Skool Watch"),
 	("telegram-channel-watch", "Telegram Channel Watch"),
 	("twitter", "Twitter Monitor"),
 	("twitter-schedule", "Twitter Schedule"),
@@ -130,6 +131,21 @@ fn check_env_vars(config: &AppConfig) {
 	// Check SQLite db
 	let db_ok = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("db.sqlite3").is_some();
 	println!("  {} SQLite database", status_icon(db_ok));
+
+	check_skool_cookie();
+}
+
+/// Skool rotates the session about every 3.5 days and only a headless chromium can mint the next
+/// one, so its age is the one number that says whether that path still works.
+fn check_skool_cookie() {
+	let Some(path) = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("skool_cookies.json") else {
+		println!("  {} Skool cookie (never minted)", status_icon(false));
+		return;
+	};
+	match path.metadata().and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default()) {
+		Ok(age) => println!("  {} Skool cookie ({:.1}d old)", status_icon(true), age.as_secs_f64() / 86_400.0),
+		Err(_) => println!("  {} Skool cookie (never minted)", status_icon(false)),
+	}
 }
 
 fn check_directories(config: &AppConfig) {

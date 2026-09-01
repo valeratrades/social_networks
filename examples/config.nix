@@ -69,6 +69,12 @@ Sentiment check: $BTC, how are we feeling?
     };
   };
 
+  skool = {
+    email = "valeratrades@gmail.com";
+    password = { env = "SKOOL_PASSWORD"; };
+    groups = [ "somegroup" ];
+  };
+
   rolodex = {
     path = "/home/v/s/g/rolodex/";
   };

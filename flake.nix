@@ -99,6 +99,7 @@
                 cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
               '';
             packages = [
+              chromium # skool mints its session cookie by driving one; the systemd unit needs it on PATH too
               mold
               openssl
               pkg-config
