@@ -136,8 +136,12 @@ impl Venue for Github {
 				Ok(Member {
 					handle: handle.to_string(),
 					display: handle.to_string(),
-					// neither listing states when they joined
+					// a members/contributors listing states none of these; `/users/{login}` states a
+					// free-text `location`, at one request per person
 					joined: None,
+					lat: None,
+					lon: None,
+					zone: None,
 				})
 			})
 			.collect()

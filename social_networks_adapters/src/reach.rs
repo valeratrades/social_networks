@@ -145,8 +145,16 @@ impl FromStr for VenueRef {
 pub struct Member {
 	pub handle: String,
 	pub display: String,
-	/// `None` when the platform does not state one.
+	/// When they joined *this venue*, which is not when they made the account. `None` when the
+	/// platform does not state it.
 	pub joined: Option<Timestamp>,
+	/// Where the platform puts them, when it puts them anywhere. Deliberately coarse: skool offsets
+	/// every pin by 10+ miles, so this answers "which part of the world" and nothing finer.
+	pub lat: Option<f64>,
+	pub lon: Option<f64>,
+	/// An IANA zone — `Europe/Paris`. Where a pin is missing, this is often the only signal left, and
+	/// its first component is the continent.
+	pub zone: Option<String>,
 }
 
 /// What a platform states about one person, and what they did in public above the window asked for.

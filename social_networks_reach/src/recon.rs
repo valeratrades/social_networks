@@ -98,7 +98,9 @@ impl Command {
 
 fn main() -> Result<()> {
 	color_eyre::install()?;
-	tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string())).init();
+	// `info` by default: a hand-run command that spends a request per member owes the operator a
+	// running account of what it is doing
+	tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())).init();
 	let cli = Cli::parse();
 	let config = ReconConfig::try_build(cli.settings).map_err(|e| eyre!("{e}"))?;
 	let dir = config

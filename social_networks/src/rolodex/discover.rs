@@ -176,6 +176,9 @@ mod tests {
 			handle: handle.to_string(),
 			display: display.to_string(),
 			joined: None,
+			lat: None,
+			lon: None,
+			zone: None,
 		};
 		let mut taken = BTreeSet::from(["lory-bellardant".to_string()]);
 		assert_eq!(stem(&member("Lory Bellardant", "lory-bellardant-1253"), &mut taken), "lory-bellardant-2");

@@ -48,3 +48,50 @@ starts it: each command uses part of your rate limit, so you must start it yours
 The group files go under `<rolodex path>/venues/<platform>/<slug>/`. `rolodex pull` then reads the
 lines of each person you keep a file for. `recon` gets the posts one time, and every `pull` after
 that is free.
+
+### Select members with SQL
+
+`--where` takes a SQL `WHERE` clause. It also takes a path to a file that holds one. `recon roster`
+and `rolodex discover` use the same clause and the same table.
+
+| Column | Type | Content |
+|--------|------|---------|
+| `handle` | text | The name the platform uses. |
+| `display` | text | The name the platform prints. |
+| `joined` | text | The date the person joined the group. RFC3339. |
+| `lat`, `lon` | number | The position the platform gives. |
+| `zone` | text | The time zone name, for example `Europe/Berlin`. |
+| `posts` | number | The lines in the group transcript that this person wrote. |
+| `first_post`, `last_post` | text | The dates of those lines. RFC3339. |
+
+Dates are text. SQLite puts RFC3339 text in date order, so `last_post >= '2026-06-01'` is correct.
+
+Skool gives a position for each member of a group. It moves each position more than 10 miles, to
+protect the person. Use a box, because a box is as exact as the data. To get the members in Europe,
+with the UK:
+
+```sql
+-- ~/rolodex/queries/europe.sql
+lat BETWEEN 34 AND 72 AND lon BETWEEN -25 AND 45
+```
+
+```
+recon members  skool:<group>
+recon posts    skool:<group>
+rolodex discover skool:<group> --where ~/rolodex/queries/europe.sql --dry-run
+rolodex discover skool:<group> --where ~/rolodex/queries/europe.sql
+rolodex pull <stem>
+```
+
+`discover` writes a file for each selected person who has no file. `pull` then fills each file.
+
+Two limits apply to skool, and both make the member list shorter than the group:
+
+- Skool gives a position only for the members who gave one. In a group of 406, 325 gave one.
+- Skool does not page its member list. The page parameter changes the page number in the payload,
+  but the payload always holds the first 30 members.
+
+`recon members` uses the group map and the member page together. It reads one page for the map and
+one request for each member on it, so it is slow and it waits between requests. Do it one time for
+each group. The `zone` column is a second signal, but the person sets it in the browser, so it can
+disagree with the position.

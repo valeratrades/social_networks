@@ -14,7 +14,7 @@
 //! `recon` for a group.
 
 use std::{
-	collections::BTreeSet,
+	collections::{BTreeMap, HashMap},
 	io::Write as _,
 	os::unix::fs::OpenOptionsExt as _,
 	path::{Path, PathBuf},
@@ -34,7 +34,7 @@ use regex::Regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio::time;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window};
@@ -45,8 +45,14 @@ const API: &str = "https://api.skool.com";
 /// Long enough for a slow WAF challenge, short enough that a wedged browser does not hold a daemon.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-/// A roster that keeps answering past this is one the pagination parameter is not steering.
-const MEMBER_PAGES: usize = 200;
+/// Skool publishes no rate limit, and CloudFront answers a burst with a 403 block page rather than a
+/// status worth classifying — measured: a few hundred calls back to back trips it, and it lifts on
+/// its own a minute or two later. A roster sweep is the only thing here that makes more than a
+/// handful of calls, so it paces itself rather than find out again.
+const PACE: Duration = Duration::from_millis(700);
+/// Doubling from [`PACE`], this waits about two minutes out in total — longer than the block above
+/// was measured to last. A read still refused after it is not being throttled.
+const READ_RETRIES: usize = 7;
 /// Read-only for a human, exactly like discord's connected accounts: none of these is a fetchable
 /// [`Source`].
 const LINKS: [(&str, &str); 5] = [
@@ -191,6 +197,62 @@ impl Skool {
 			.collect()
 	}
 
+	/// The first page of the member list, keyed by user id, and how many members the group says it
+	/// has. Everything here is free; everything past it costs a request per person.
+	async fn listed(&mut self, at: &VenueRef) -> Result<(BTreeMap<String, Member>, usize)> {
+		let payload = self.group_page(&at.slug, "-/members").await?;
+		let props = payload.pointer("/props/pageProps").ok_or_else(|| eyre!("skool served a member page without pageProps"))?;
+		let users = props.get("users").and_then(|v| v.as_array()).ok_or_else(|| {
+			eyre!(
+				"skool `{}`: the member page carries no `users` — it holds {:?}. \
+				 `cargo r -p social_networks_adapters --example skool_probe -- {} -/members` dumps the payload; point this at the right key.",
+				at.slug,
+				props.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default(),
+				at.slug
+			)
+		})?;
+		let total = props.get("totalMembers").and_then(serde_json::Value::as_u64).unwrap_or(users.len() as u64) as usize;
+
+		let mut roster = BTreeMap::new();
+		for user in users {
+			let id = user.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool member without an id: {user}"))?;
+			roster.insert(id.to_string(), member(user)?);
+		}
+		Ok((roster, total))
+	}
+
+	/// One member off the API, which spells the same fields in snake_case that the SSR pages spell in
+	/// camelCase. The only way to a handle for somebody the member page never served.
+	async fn user(&mut self, id: &str) -> Result<Member> {
+		let payload = self.api(Method::GET, &format!("/users/{id}"), &[], None).await?;
+		member(&serde_json::from_str(&payload).wrap_err_with(|| format!("skool user {id} is not json"))?)
+	}
+
+	/// A group's map, keyed by user id. Skool renders the pins out of a signed blob on its CDN rather
+	/// than out of the page, so the page is read for the URL and the URL for the data — and it is
+	/// served gzipped, which is why `reqwest` carries that feature.
+	///
+	/// Every pin is offset by 10+ miles, which skool says outright. Empty for a group with the map
+	/// turned off, and for the members who never gave a location — 325 pins over 406 members here.
+	async fn pins(&mut self, at: &VenueRef) -> Result<HashMap<String, (f64, f64)>> {
+		let payload = self.group_page(&at.slug, "-/map").await?;
+		let Some(url) = payload.pointer("/props/pageProps/dataUrl").and_then(|v| v.as_str()) else {
+			warn!("skool `{}`: no map on the group, so no member carries a position", at.slug);
+			return Ok(HashMap::new());
+		};
+		// the URL is signed, so it takes the cookie no more than it takes the user agent
+		let pins: Vec<Pin> = self
+			.http
+			.get(url)
+			.send()
+			.await?
+			.error_for_status()?
+			.json()
+			.await
+			.wrap_err("the skool map blob is a list of pins")?;
+		pins.into_iter().map(|pin| Ok((pin.u, (pin.p[0], pin.p[1])))).collect()
+	}
+
 	async fn user_id(&mut self, handle: &str) -> Result<String> {
 		let handle = handle.trim_start_matches('@');
 		let profile = self.page(&format!("/@{handle}")).await?;
@@ -207,6 +269,19 @@ impl Skool {
 		let mut response = self.send_api(method.clone(), path, query, body.as_ref()).await?;
 		if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.creds.is_some() {
 			self.refresh().await?;
+			response = self.send_api(method.clone(), path, query, body.as_ref()).await?;
+		}
+		// A GET is idempotent, so a refusal is worth waiting out; a write is not, and one that lands
+		// twice is worse than one that fails.
+		let mut backoff = PACE * 2;
+		//LOOP: bounded by `READ_RETRIES`
+		for _ in 0..READ_RETRIES {
+			if response.status().is_success() || method != Method::GET {
+				break;
+			}
+			warn!("skool: {method} {path} answered {}, holding off {backoff:?}", response.status());
+			time::sleep(backoff).await;
+			backoff *= 2;
 			response = self.send_api(method.clone(), path, query, body.as_ref()).await?;
 		}
 		let status = response.status();
@@ -298,7 +373,7 @@ impl Profiles for Skool {
 
 		// newest-first, and only ever populated for a session that shares a group with them
 		let posts = props.get("postTrees").and_then(|v| v.as_array()).ok_or_else(|| eyre!("skool `{handle}`: no postTrees"))?;
-		profile.activity = page_of(posts, &window, Kind::Activity, |_| Author::Handle(handle.to_string()))?;
+		profile.activity = page_of(posts, &window, Kind::Activity, None, |_| Author::Handle(handle.to_string()))?;
 		Ok(profile)
 	}
 }
@@ -345,45 +420,51 @@ impl Venue for Skool {
 			.collect())
 	}
 
+	/// The roster, which skool serves in two halves and pages through in neither.
+	///
+	/// The member page is the only thing that states a *group* join date, but `?p=` is echoed back
+	/// into `page` and otherwise ignored, so it never hands over more than its first 30. The group's
+	/// map covers far more of it and keys on the same user id, and the API turns an id into a handle.
+	/// The union of the two is what a roster can be here, and the warning says how much of the group
+	/// it reached.
 	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>> {
-		let mut out = Vec::new();
-		let mut seen = BTreeSet::new();
-		//LOOP: pages the roster until one adds nobody, capped by `MEMBER_PAGES`
-		for page in 1..=MEMBER_PAGES {
-			let payload = self.group_page(&at.slug, &format!("-/members?p={page}")).await?;
-			let props = payload.pointer("/props/pageProps").ok_or_else(|| eyre!("skool served a member page without pageProps"))?;
-			let users = props.get("users").and_then(|v| v.as_array()).ok_or_else(|| {
-				eyre!(
-					"skool `{}`: the member page carries no `users` — it holds {:?}. \
-					 `cargo r -p social_networks_adapters --example skool_probe -- {} members` dumps the payload; point this at the right key.",
-					at.slug,
-					props.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default(),
-					at.slug
-				)
-			})?;
-			let before = out.len();
-			for user in users {
-				let handle = user.get("name").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool member without a name: {user}"))?;
-				if !seen.insert(handle.to_string()) {
-					continue;
+		let (mut roster, total) = self.listed(at).await?;
+		let pins = self.pins(at).await?;
+		info!("skool `{}`: {} on the member page, {} on the map, of {total}", at.slug, roster.len(), pins.len());
+
+		let mut refused = 0usize;
+		for (id, (lat, lon)) in &pins {
+			if !roster.contains_key(id) {
+				time::sleep(PACE).await;
+				// one pin skool will not resolve costs that pin: a member without a handle is one
+				// nothing downstream could address anyway, and the rest of the sweep is worth keeping
+				match self.user(id).await {
+					Ok(member) => {
+						roster.insert(id.clone(), member);
+					}
+					Err(e) => {
+						refused += 1;
+						warn!("skool `{}`: {id} would not resolve, skipping: {e:#}", at.slug);
+						continue;
+					}
 				}
-				out.push(Member {
-					display: full_name(user).unwrap_or_else(|| handle.to_string()),
-					handle: handle.to_string(),
-					joined: user
-						.get("createdAt")
-						.and_then(|v| v.as_str())
-						.map(str::parse::<Timestamp>)
-						.transpose()
-						.wrap_err("skool timestamps are RFC3339")?,
-				});
 			}
-			// a pagination parameter skool ignores serves page 1 forever
-			if out.len() == before {
-				break;
-			}
+			let member = roster.get_mut(id).expect("inserted above when absent");
+			member.lat = Some(*lat);
+			member.lon = Some(*lon);
 		}
-		Ok(out)
+		if refused > 0 {
+			warn!("skool `{}`: {refused} of {} pins would not resolve", at.slug, pins.len());
+		}
+
+		if roster.len() < total {
+			warn!(
+				"skool `{}`: {} of {total} members — the rest carry no map pin, and skool pages its member list nowhere",
+				at.slug,
+				roster.len()
+			);
+		}
+		Ok(roster.into_values().collect())
 	}
 
 	/// The group feed, which is the same `postTrees` array a profile carries — one parse for both.
@@ -394,7 +475,7 @@ impl Venue for Skool {
 			.and_then(|v| v.as_array())
 			.ok_or_else(|| eyre!("skool `{}`: no postTrees", at.slug))?;
 		let slug = at.slug.clone();
-		page_of(posts, &window, Kind::Post, |node| {
+		page_of(posts, &window, Kind::Post, Some(&at.slug), |node| {
 			// the author rides on the tree node; a post whose author skool withheld is still the group's
 			Author::Handle(
 				node.pointer("/user/name")
@@ -408,11 +489,12 @@ impl Venue for Skool {
 }
 
 /// One `postTrees` array, newest-first, turned into a page: a group feed and a profile serve the
-/// same nodes, so they take the same parse.
+/// same nodes, so they take the same parse. `of` is the group whose feed this is, and is what a post
+/// that leaves its own group implied is filed under.
 ///
 /// Ids are opaque hex, so the cursor can only be *recognised*, not compared — a post that has already
 /// scrolled off the first page is reported again rather than missed.
-fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, attribute: impl Fn(&serde_json::Value) -> Author) -> Result<Page> {
+fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, of: Option<&str>, attribute: impl Fn(&serde_json::Value) -> Author) -> Result<Page> {
 	let after = match window {
 		Window::Above { after, .. } => after.as_deref(),
 		// a skool feed is a snapshot: there is nothing under the first page to walk down to
@@ -432,8 +514,9 @@ fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, attribute: 
 			break;
 		}
 		let title = post.pointer("/metadata/title").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a title"))?;
-		let (group, name) = (post.pointer("/group/name").and_then(|v| v.as_str()), post.get("name").and_then(|v| v.as_str()));
-		let (Some(group), Some(name)) = (group, name) else {
+		// a group's own feed leaves the group implied; a profile carries one per post, from any group
+		let group = post.pointer("/group/name").and_then(|v| v.as_str()).or(of);
+		let (Some(group), Some(name)) = (group, post.get("name").and_then(|v| v.as_str())) else {
 			bail!("skool post {id} carries no group/name to build a permalink from: {post}");
 		};
 		let body = post.pointer("/metadata/content").and_then(|v| v.as_str()).unwrap_or_default().trim();
@@ -459,14 +542,46 @@ fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, attribute: 
 	Ok(page)
 }
 
+/// A user, off an SSR page or off the API. The two spell the same fields in camelCase and in
+/// snake_case respectively, which is the whole of the difference between them.
+fn member(user: &serde_json::Value) -> Result<Member> {
+	let handle = user.get("name").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool member without a name: {user}"))?;
+	Ok(Member {
+		display: full_name(user).unwrap_or_else(|| handle.to_string()),
+		handle: handle.to_string(),
+		// `member` is their membership of *this* group; a bare `createdAt` is their account
+		joined: user
+			.pointer("/member/createdAt")
+			.and_then(|v| v.as_str())
+			.map(str::parse::<Timestamp>)
+			.transpose()
+			.wrap_err("skool timestamps are RFC3339")?,
+		lat: None,
+		lon: None,
+		zone: field(user, "timeZone", "time_zone").map(str::to_string),
+	})
+}
+
 /// Skool keeps the two halves apart and prints neither on its own. `None` when somebody filled in
 /// no name at all, which is not the same as their handle.
 fn full_name(user: &serde_json::Value) -> Option<String> {
-	let named = |key: &str| user.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
-	match (named("firstName"), named("lastName")) {
+	match (field(user, "firstName", "first_name"), field(user, "lastName", "last_name")) {
 		(Some(first), Some(last)) => Some(format!("{first} {last}")),
 		(first, last) => first.or(last).map(str::to_string),
 	}
+}
+
+fn field<'a>(user: &'a serde_json::Value, camel: &str, snake: &str) -> Option<&'a str> {
+	[camel, snake]
+		.into_iter()
+		.find_map(|key| user.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()))
+}
+
+/// One member's position on a group's map: `u` is their user id, `p` is `[lat, lon]`.
+#[derive(Deserialize)]
+struct Pin {
+	u: String,
+	p: [f64; 2],
 }
 
 /// A session cookie is a bearer credential, so the file it lives in is `0600`.
@@ -579,15 +694,15 @@ mod tests {
 		};
 		let nodes = [node("c", "2026-03-03T00:00:00Z"), node("b", "2026-03-02T00:00:00Z"), node("a", "2026-03-01T00:00:00Z")];
 
-		let all = page_of(&nodes, &Window::above(None), Kind::Post, |_| Author::Me).unwrap();
+		let all = page_of(&nodes, &Window::above(None), Kind::Post, None, |_| Author::Me).unwrap();
 		assert_eq!(all.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c"], "oldest-first");
 		assert_eq!(all.newest.as_deref(), Some("c"));
 		assert_eq!(all.items[0].permalink.as_deref(), Some("https://www.skool.com/g/a-post"));
 
-		let since = page_of(&nodes, &Window::above(Some("b".to_string())), Kind::Post, |_| Author::Me).unwrap();
+		let since = page_of(&nodes, &Window::above(Some("b".to_string())), Kind::Post, None, |_| Author::Me).unwrap();
 		assert_eq!(since.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["c"]);
 
-		let dated = page_of(&nodes, &Window::since("2026-03-02T00:00:00Z".parse().unwrap()), Kind::Post, |_| Author::Me).unwrap();
+		let dated = page_of(&nodes, &Window::since("2026-03-02T00:00:00Z".parse().unwrap()), Kind::Post, None, |_| Author::Me).unwrap();
 		assert_eq!(dated.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["b", "c"]);
 	}
 

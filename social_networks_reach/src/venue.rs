@@ -175,13 +175,15 @@ pub fn all(root: &Path) -> Result<Vec<VenueRef>> {
 /// written in SQL rather than in a grammar of our own. Nothing is persisted — the markdown is the
 /// store, and this table is rebuilt from it on every call.
 ///
-/// Columns: `handle`, `display`, `joined`, `posts`, `first_post`, `last_post`. Dates are RFC3339
-/// text, which sqlite compares lexicographically in the same order it compares them chronologically.
+/// Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `posts`, `first_post`, `last_post`.
+/// Dates are RFC3339 text, which sqlite compares lexicographically in the same order it compares them
+/// chronologically. `lat`/`lon` are coarse by construction, so a bounding box is the honest shape of
+/// a question over them.
 pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Result<Vec<Member>> {
 	let db = libsql::Builder::new_local(":memory:").build().await.wrap_err("failed to open the roster table")?;
 	let conn = db.connect().wrap_err("failed to connect to the roster table")?;
 	conn.execute(
-		"CREATE TABLE members (handle TEXT PRIMARY KEY, display TEXT NOT NULL, joined TEXT, posts INTEGER NOT NULL, first_post TEXT, last_post TEXT)",
+		"CREATE TABLE members (handle TEXT PRIMARY KEY, display TEXT NOT NULL, joined TEXT, lat REAL, lon REAL, zone TEXT, posts INTEGER NOT NULL, first_post TEXT, last_post TEXT)",
 		(),
 	)
 	.await?;
@@ -189,11 +191,14 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	for member in members {
 		let of_theirs: Vec<&Line> = lines.iter().filter(|line| line.handle == member.handle).collect();
 		conn.execute(
-			"INSERT INTO members VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			"INSERT INTO members VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
 			libsql::params![
 				member.handle.clone(),
 				member.display.clone(),
 				member.joined.map(|t| t.to_string()),
+				member.lat,
+				member.lon,
+				member.zone.clone(),
 				of_theirs.len() as i64,
 				of_theirs.iter().map(|l| l.at).min().map(|t| t.to_string()),
 				of_theirs.iter().map(|l| l.at).max().map(|t| t.to_string()),
@@ -205,7 +210,7 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	let mut rows = conn
 		.query(&format!("SELECT handle FROM members WHERE {predicate}"), ())
 		.await
-		.wrap_err_with(|| format!("`{predicate}` is not a WHERE clause over (handle, display, joined, posts, first_post, last_post)"))?;
+		.wrap_err_with(|| format!("`{predicate}` is not a WHERE clause over (handle, display, joined, lat, lon, zone, posts, first_post, last_post)"))?;
 	let mut chosen = Vec::new();
 	//LOOP: over a finite result set
 	while let Some(row) = rows.next().await.wrap_err("failed to read a roster row")? {

@@ -418,6 +418,10 @@ impl Venue for Reach<'_> {
 					Role::User(normal) => Some(Timestamp::from_second(normal.date().timestamp()).wrap_err("a telegram join date is a unix second")?),
 					_ => None,
 				},
+				// telegram states where nobody is
+				lat: None,
+				lon: None,
+				zone: None,
 			});
 		}
 		Ok(out)
