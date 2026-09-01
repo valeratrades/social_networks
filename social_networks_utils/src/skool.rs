@@ -24,6 +24,7 @@ use futures::{
 	future::{Either, select},
 };
 use regex::Regex;
+use reqwest::Method;
 use tracing::{info, instrument};
 
 const BASE: &str = "https://www.skool.com";
@@ -81,9 +82,8 @@ impl Skool {
 		Ok(payload)
 	}
 
-	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. A DM is
-	/// a channel away, and `chat-request` is what the web client's "Chat" button calls every time —
-	/// it hands back the channel already open with that person rather than a second one.
+	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. The
+	/// handle is public, the id it resolves to is what every chat route speaks.
 	pub async fn dm(&mut self, handle: &str, text: &str) -> Result<()> {
 		let handle = handle.trim_start_matches('@');
 		let profile = self.page(&format!("/@{handle}")).await?;
@@ -93,38 +93,99 @@ impl Skool {
 			.ok_or_else(|| eyre!("no such skool handle: `{handle}`"))?
 			.to_string();
 
-		let requested = self.api(&format!("/users/{user}/chat-request"), &[], None).await?;
-		let requested: serde_json::Value = serde_json::from_str(&requested).wrap_err_with(|| format!("a chat request for `{handle}` answered {requested}"))?;
-		let channel = requested
-			.pointer("/channel/id")
-			.and_then(|v| v.as_str())
-			.ok_or_else(|| eyre!("a chat request for `{handle}` came back without a channel: {requested}"))?
-			.to_string();
-
+		let channel = self.channel_with(&user).await.wrap_err_with(|| format!("no chat to send to `{handle}` over"))?;
 		// `ct` is the client the message was typed in; the web chat calls itself `wdc`
-		self.api(&format!("/channels/{channel}/messages"), &[("ct", "wdc")], Some(serde_json::json!({ "content": text })))
-			.await
-			.map(|_| ())
+		self.api(
+			Method::POST,
+			&format!("/channels/{channel}/messages"),
+			&[("ct", "wdc")],
+			Some(serde_json::json!({ "content": text })),
+		)
+		.await
+		.map(|_| ())
+	}
+
+	/// Skool has no global address book: a chat is *opened* through a group you are both in, and
+	/// `chat-request` is a 400 anywhere else. A channel outlives the membership that opened it, so
+	/// the ones already open are the first place to look and the only ones that survive leaving a
+	/// group. Which group the request goes through does not matter, and only skool knows which are
+	/// shared, so they are tried until one answers.
+	async fn channel_with(&mut self, user: &str) -> Result<String> {
+		let open = self.api(Method::GET, "/self/chat-channels", &[("limit", "100")], None).await?;
+		let open: serde_json::Value = serde_json::from_str(&open).wrap_err("listing open chat channels")?;
+		// `channels: null` is how skool spells an empty list
+		let open = open.get("channels").ok_or_else(|| eyre!("a chat channel listing without `channels`: {open}"))?;
+		let mine = open
+			.as_array()
+			.unwrap_or(&Vec::new())
+			.iter()
+			.find(|channel| {
+				channel
+					.pointer("/user_ids")
+					.and_then(|ids| ids.as_array())
+					.is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(user)))
+			})
+			.cloned();
+		if let Some(channel) = mine {
+			return channel
+				.get("id")
+				.and_then(|v| v.as_str())
+				.map(str::to_string)
+				.ok_or_else(|| eyre!("a chat channel without an id: {channel}"));
+		}
+
+		let groups = self.api(Method::GET, "/self/groups", &[("limit", "50")], None).await?;
+		let groups: serde_json::Value = serde_json::from_str(&groups).wrap_err("listing my groups")?;
+		let groups = groups
+			.get("groups")
+			.and_then(|v| v.as_array())
+			.ok_or_else(|| eyre!("a group listing without `groups`: {groups}"))?;
+		let groups: Vec<String> = groups
+			.iter()
+			.map(|group| {
+				group
+					.get("id")
+					.and_then(|v| v.as_str())
+					.map(str::to_string)
+					.ok_or_else(|| eyre!("a skool group without an id: {group}"))
+			})
+			.collect::<Result<_>>()?;
+
+		let mut refused = Vec::with_capacity(groups.len());
+		for group in groups {
+			match self.api(Method::POST, &format!("/users/{user}/chat-request"), &[("g", &group)], None).await {
+				Ok(opened) => {
+					let opened: serde_json::Value = serde_json::from_str(&opened).wrap_err("opening a chat channel")?;
+					return opened
+						.pointer("/channel/id")
+						.and_then(|v| v.as_str())
+						.map(str::to_string)
+						.ok_or_else(|| eyre!("a chat request came back without a channel: {opened}"));
+				}
+				Err(e) => refused.push(format!("{e:#}")),
+			}
+		}
+		Err(eyre!("no group of mine opens a chat with them:\n{}", refused.join("\n")))
 	}
 
 	/// Unlike the SSR pages, which answer a dead session by serving the signed-out view, the API says
 	/// 401 — so that, rather than the payload, is what rotation hangs off here.
-	async fn api(&mut self, path: &str, query: &[(&str, &str)], body: Option<serde_json::Value>) -> Result<String> {
-		let mut response = self.post(path, query, body.as_ref()).await?;
+	async fn api(&mut self, method: Method, path: &str, query: &[(&str, &str)], body: Option<serde_json::Value>) -> Result<String> {
+		let mut response = self.send(method.clone(), path, query, body.as_ref()).await?;
 		if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.creds.is_some() {
 			self.refresh().await?;
-			response = self.post(path, query, body.as_ref()).await?;
+			response = self.send(method.clone(), path, query, body.as_ref()).await?;
 		}
 		let status = response.status();
 		let payload = response.text().await?;
 		if !status.is_success() {
-			bail!("POST {path} answered {status}: {payload}");
+			bail!("{method} {path} answered {status}: {payload}");
 		}
 		Ok(payload)
 	}
 
-	async fn post(&self, path: &str, query: &[(&str, &str)], body: Option<&serde_json::Value>) -> Result<reqwest::Response> {
-		let mut request = self.http.post(format!("{API}{path}")).query(query);
+	async fn send(&self, method: Method, path: &str, query: &[(&str, &str)], body: Option<&serde_json::Value>) -> Result<reqwest::Response> {
+		let mut request = self.http.request(method.clone(), format!("{API}{path}")).query(query);
 		if let Some(cookie) = &self.cookie {
 			request = request.header(reqwest::header::COOKIE, cookie);
 		}
@@ -133,7 +194,7 @@ impl Skool {
 			Some(body) => request.json(body),
 			None => request.header(reqwest::header::CONTENT_TYPE, "application/json"),
 		};
-		request.send().await.wrap_err_with(|| format!("POST {path}"))
+		request.send().await.wrap_err_with(|| format!("{method} {path}"))
 	}
 
 	async fn fetch(&self, path: &str) -> Result<serde_json::Value> {
@@ -193,6 +254,7 @@ async fn login(browser: &Browser, creds: &SkoolCredentials) -> Result<String> {
 	// the form navigates away on success and re-renders in place on a rejected password, so the URL is
 	// the only signal that separates the two
 	let deadline = Instant::now() + LOGIN_TIMEOUT;
+	//LOOP: polls until the frame commits a navigation, bounded by `deadline`
 	let url = loop {
 		// `None` is a frame that has not committed a navigation yet, which is not somewhere to be
 		match page.url().await? {

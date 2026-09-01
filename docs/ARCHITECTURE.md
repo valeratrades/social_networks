@@ -110,6 +110,12 @@ in". Only `/auth/*` sits behind an AWS-WAF JS challenge, so a headless chromium 
 cookie and nothing else — reads stay on plain HTTP. Everything a profile carries is public, which is
 why the rolodex source needs no credentials and the daemon's cookie only widens what it sees.
 
+Writing has nowhere to go but the undocumented REST API at `api.skool.com` that skool's own web
+client talks to, authenticated by the same cookie. A DM is addressed to a *channel*, and skool has
+no global address book: a channel can only be opened through a group both parties are in, so
+`dm --skool` searches the already-open channels first and falls back to trying each of my groups
+until one is shared. Nobody outside a shared group is reachable — that is skool's rule, not ours.
+
 ## Key Entities
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.

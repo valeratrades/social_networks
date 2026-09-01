@@ -66,6 +66,12 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 [rolodex]
 path = "~/Sync/rolodex"
 
+[skool]
+email = { env = "DEFAULT_MAIL" }
+password = { env = "DEFAULT_PASSWORD" }
+# what the `skool` daemon watches; `rolodex dm --skool` needs none of them
+groups = []
+
 [email]
 email = "valeratrades@gmail.com"
 

@@ -73,6 +73,13 @@ Sentiment check: $BTC, how are we feeling?
     path = "/home/v/s/g/rolodex/";
   };
 
+  skool = {
+    email = { env = "DEFAULT_MAIL"; };
+    password = { env = "DEFAULT_PASSWORD"; };
+    # what the `skool` daemon watches; `rolodex dm --skool` needs none of them
+    groups = [ ];
+  };
+
   email = {
     email = "valeratrades@gmail.com";
     # regex; checked in order important > read_later > discard, unmatched -> LLM
