@@ -33,6 +33,13 @@ pub struct AppConfig {
 	#[serde(default)]
 	pub rolodex: Option<RolodexConfig>,
 }
+impl AppConfig {
+	pub fn require_llm(&self, surface: &'static str) -> color_eyre::Result<LlmConfig> {
+		self.llm
+			.clone()
+			.ok_or_else(|| color_eyre::eyre::eyre!("the {surface} surface reasons about what it sees, so it needs an `[llm]` section in the config"))
+	}
+}
 
 /// Lives here rather than beside [`SkoolCredentials`] because the env indirection is the binary's
 /// config machinery, which `social_networks_utils` does not depend on.
@@ -47,13 +54,5 @@ impl From<&SkoolConfig> for SkoolCredentials {
 			email: config.email.clone(),
 			password: config.password.clone(),
 		}
-	}
-}
-
-impl AppConfig {
-	pub fn require_llm(&self, surface: &'static str) -> color_eyre::Result<LlmConfig> {
-		self.llm
-			.clone()
-			.ok_or_else(|| color_eyre::eyre::eyre!("the {surface} surface reasons about what it sees, so it needs an `[llm]` section in the config"))
 	}
 }
