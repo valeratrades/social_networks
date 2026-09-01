@@ -156,8 +156,6 @@ pub struct Profile {
 	pub sources: BTreeMap<String, String>,
 	/// Other platforms this one names, keyed by platform.
 	pub handles: BTreeMap<String, String>,
-	/// The name the platform prints, when it states one apart from the handle.
-	pub display: Option<String>,
 	/// Where the platform says they are a member.
 	pub venues: Vec<VenueRef>,
 	pub activity: Page,

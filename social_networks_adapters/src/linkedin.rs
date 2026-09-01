@@ -59,7 +59,7 @@ impl Profiles for Linkedin {
 		let mut profile = Profile::default();
 		profile.state("linkedin:headline", Some(&headline(&person)));
 		profile.state("linkedin:about", person.get("description").and_then(|v| v.as_str()));
-		profile.display = person.get("name").and_then(|v| v.as_str()).map(str::to_string);
+		profile.state("linkedin:name", person.get("name").and_then(|v| v.as_str()));
 		profile.activity.newest = Some(today.to_string());
 		Ok(profile)
 	}

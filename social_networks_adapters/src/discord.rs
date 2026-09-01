@@ -538,7 +538,7 @@ impl Profiles for Rest {
 		// `/user_profile/bio` carries the same text; it only diverges per-guild, which `@me` never is
 		profile.state("discord:bio", payload.pointer("/user/bio").and_then(|v| v.as_str()));
 		profile.state("discord:pronouns", payload.pointer("/user_profile/pronouns").and_then(|v| v.as_str()));
-		profile.display = payload.pointer("/user/global_name").and_then(|v| v.as_str()).map(str::to_string);
+		profile.state("discord:name", payload.pointer("/user/global_name").and_then(|v| v.as_str()));
 		for account in payload.get("connected_accounts").and_then(|v| v.as_array()).into_iter().flatten() {
 			if let (Some(kind), Some(name)) = (account.get("type").and_then(|v| v.as_str()), account.get("name").and_then(|v| v.as_str())) {
 				profile.handles.insert(kind.to_string(), name.to_string());

@@ -350,7 +350,7 @@ impl Profiles for Reach<'_> {
 		profile.state("telegram:about", user_full.about.as_deref());
 		// a handle only ever resolves to a user here; a group of that name is somebody else's mistake
 		if let Peer::User(user) = self.client.resolve_peer(peer).await? {
-			profile.display = Some(user.full_name()).filter(|name| !name.trim().is_empty());
+			profile.state("telegram:name", Some(&user.full_name()));
 		}
 		Ok(profile)
 	}

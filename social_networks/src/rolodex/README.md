@@ -8,9 +8,15 @@ written back to a platform — `dm` sends only what you type on the command line
                   ┌──────────────────────────────┐        ┌─ extract() ────────► log + summary ─┐
    rolodex pull ──┤ fetch ─► diff vs cursor       ├─► Delta┤                                     ▼
                   └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► <person>.nix
-   a live DM (unwired) ──────────┼─────────────────---┘
+   a live DM (unwired) ──────────┼─────────────────---┤
+   venue lines by this person ───┼──────────────────--┘
                                  └──► history::record ──► <person>/<year>.md
 ```
+
+Three inputs, and only two of them cost a request. The third is the venue transcripts `recon` already
+wrote: every line whose slot reads `[<handle>/` for a handle of theirs, since the last one the
+extraction saw. They join as `Kind::Post` items and go nowhere near the person's own year files —
+what they said in a group belongs to the group's transcript, not to their DMs.
 
 `Delta` is only constructible when something new surfaced, so the no-op case is the absence of a
 value rather than a guarded call, and `extract` stays ignorant of what surfaced the information.
@@ -34,7 +40,7 @@ The transcript is the durable artifact and the labels in `<person>.nix` are deri
 `meta.json` is written *before* the extraction: a failed LLM call costs a re-run, never a message.
 `nix eval` filters on `\.nix$`, which is what keeps the person directory invisible to it.
 
-Two states per person, in [`history`](history.rs):
+Two states per person, in [`history`](../../../social_networks_reach/src/history.rs):
 
 ```
  BACKFILLING                                    STEADY
@@ -65,11 +71,32 @@ an orphan from a failed pull is harmless. Everything else is named and not kept.
 `open [pattern]` and `pull [pattern]`. A pattern matches the file stem or any handle, so
 `pull dev_ardi` reaches `orion.nix`. No pattern means fzf for `open`, everybody for `pull`.
 
-`dm <--discord|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
+`discover <platform>:<slug>` is the other axis arriving: it reads the roster and transcript `recon`
+wrote and leaves a skeleton file for everyone the selection names and nobody has yet. `pull` needs
+nothing more than a handle, so a skeleton is the whole handover.
+
+```
+rolodex discover skool:20kmodrop --active-since 90d --min-posts 2 --dry-run
+rolodex discover skool:20kmodrop --where 'posts > 5 AND joined > "2026-01-01"'
+```
+
+The query language is SQL because the selection *is* relational — a roster joined against its own
+line counts — and any grammar of our own would converge on SQL, worse. `libsql` was already a
+dependency; `select` builds a few hundred rows in memory, runs the `WHERE`, and keeps nothing. The
+flags desugar into that same clause, so there is one evaluator. `--where` takes inline SQL or a path
+to a `.sql` file, told apart by asking the filesystem. Columns: `handle`, `display`, `joined`,
+`posts`, `first_post`, `last_post`.
+
+File stems are `<first>-<last>` off the display name, the handle when there is nothing else, and a
+numeric suffix on collision. `discover` prints what it wrote so a stem can be `git mv`'d — the stem
+is not load-bearing, since a pattern searches handles too.
+
+`dm <--discord|--skool|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
 other than exactly one match: a wasted fetch is recoverable, a message to the wrong person is not.
 The flag names the `handles` key it sends through, so a person without that handle is an error
-rather than a guess. Discord and telegram reuse the sessions `pull` reads with; twitter sends from
-the `[twitter.oauth]` account.
+rather than a guess. Every one of them goes out through the same `Direct::send` the reads come in
+through: discord and telegram over the sessions `pull` uses, twitter from the `[twitter.oauth]`
+account, skool over a chat channel it opens through a shared group.
 
 `handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin` and `skool` are what
 `pull` fetches; the rest are seeded from discord's connected accounts and skool's profile links, and
@@ -84,9 +111,10 @@ works now, which no other source states. Anonymous views are authwalled after a 
 cursor is the date of the last success and a profile fetched within 30 days is skipped: the wall
 turns into a queue that drains over successive pulls instead of a failure to design around.
 
-Skool contributes a bio, a location and the profile's outbound links. It is the one source that
-never needs credentials: a `[skool]` section only adds the posts of groups it shares with them, and
-their absence reads as no activity rather than as a failure.
+Skool contributes a bio, a location, a display name and the profile's outbound links. It is the one
+source that never needs credentials: a `[skool]` section only adds the posts of groups it shares with
+them, and their absence reads as no activity rather than as a failure. Its groups are a different
+matter — those are `recon`'s, and they need both credentials and a membership.
 
 `pull` uses its own telegram session file, seeded from the `dms` daemon's on first use: same
 authorization, no write contention with the daemon.

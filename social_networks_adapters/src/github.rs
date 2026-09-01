@@ -102,7 +102,7 @@ impl Profiles for Github {
 		let mut profile = Profile::default();
 		let payload: serde_json::Value = self.get(&format!("https://api.github.com/users/{handle}")).await?;
 		profile.state("github:bio", payload.get("bio").and_then(|v| v.as_str()));
-		profile.display = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
+		profile.state("github:name", payload.get("name").and_then(|v| v.as_str()));
 		profile.activity = self
 			.feed(
 				&format!("https://api.github.com/users/{handle}/events/public?per_page={PAGE}"),

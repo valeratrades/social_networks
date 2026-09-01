@@ -284,7 +284,9 @@ impl Profiles for Skool {
 				profile.handles.insert(platform.to_string(), name);
 			}
 		}
-		profile.display = full_name(user, handle);
+		// the gap that had a person file named by hand: skool keeps the two halves apart and joins
+		// neither, so nothing downstream ever saw a name
+		profile.state("skool:name", full_name(user).as_deref());
 		for group in user.pointer("/profileData/groupsMemberOf").and_then(|v| v.as_array()).into_iter().flatten() {
 			let slug = group.get("name").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool group without a name: {group}"))?;
 			profile.venues.push(VenueRef {
@@ -366,7 +368,7 @@ impl Venue for Skool {
 					continue;
 				}
 				out.push(Member {
-					display: full_name(user, handle).expect("`full_name` falls back to the handle"),
+					display: full_name(user).unwrap_or_else(|| handle.to_string()),
 					handle: handle.to_string(),
 					joined: user
 						.get("createdAt")
@@ -457,13 +459,13 @@ fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, attribute: 
 	Ok(page)
 }
 
-/// Skool keeps the two halves apart and prints neither on its own. The handle is what is left when
-/// somebody filled in no name at all.
-fn full_name(user: &serde_json::Value, handle: &str) -> Option<String> {
+/// Skool keeps the two halves apart and prints neither on its own. `None` when somebody filled in
+/// no name at all, which is not the same as their handle.
+fn full_name(user: &serde_json::Value) -> Option<String> {
 	let named = |key: &str| user.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
 	match (named("firstName"), named("lastName")) {
 		(Some(first), Some(last)) => Some(format!("{first} {last}")),
-		(first, last) => Some(first.or(last).unwrap_or(handle).to_string()),
+		(first, last) => first.or(last).map(str::to_string),
 	}
 }
 
@@ -594,8 +596,8 @@ mod tests {
 	#[test]
 	fn a_display_name_is_two_fields() {
 		let user = serde_json::json!({"firstName": "Lory", "lastName": "Bellardant"});
-		assert_eq!(full_name(&user, "lory-bellardant-1253").as_deref(), Some("Lory Bellardant"));
-		assert_eq!(full_name(&serde_json::json!({"firstName": "Lory"}), "l").as_deref(), Some("Lory"));
-		assert_eq!(full_name(&serde_json::json!({"firstName": ""}), "l").as_deref(), Some("l"));
+		assert_eq!(full_name(&user).as_deref(), Some("Lory Bellardant"));
+		assert_eq!(full_name(&serde_json::json!({"firstName": "Lory"})).as_deref(), Some("Lory"));
+		assert_eq!(full_name(&serde_json::json!({"firstName": ""})), None);
 	}
 }

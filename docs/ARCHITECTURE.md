@@ -4,13 +4,14 @@
 
 ## Overview
 
-Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitter, YouTube and Gmail for relevant events, routes notifications through Telegram. Skool is read and written on demand by `rolodex`, and has no daemon.
+Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitter, YouTube and Gmail for relevant events, routes notifications through Telegram. Alongside it, a hand-run axis that reads the same sessions on demand and writes to disk — which is the whole of how skool and the venues are reached.
 
-The repository is a Cargo workspace with three members:
+The repository is a Cargo workspace with four members:
 
-- `social_networks` — the binary crate. Thin CLI dispatcher.
-- `social_networks_adapters` — long-running surface adapters. Each adapter implements the `Client` trait.
-- `social_networks_utils` — shared primitives (config, db, telegram notifier/utils, misc utils).
+- `social_networks` — the binary crate. Thin CLI dispatcher, and the rolodex: people, labels, extraction.
+- `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`.
+- `social_networks_reach` — the transcript format and its store, plus `recon`, the CLI over the venue axis.
+- `social_networks_utils` — shared primitives (db, telegram notifier/utils, image conversion, misc utils).
 
 ## Codemap
 
@@ -24,29 +25,67 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files, and the message archive under them
+│       └── rolodex/                        # per-person Nix files, and the labels over the transcripts
 │
-├── social_networks_adapters/               # long-running surface adapters
+├── social_networks_adapters/               # how to talk to a platform
 │   └── src/
 │       ├── lib.rs
-│       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`
-│       ├── discord.rs                      # WebSocket gateway, close-frame classification
-│       ├── telegram_dms.rs                 # MTProto DM monitoring
+│       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`  — the daemon axis
+│       ├── reach.rs                        # `Profiles`/`Direct`/`Venue` + `Item`       — the on-demand axis
+│       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends
+│       ├── telegram_dms.rs                 # MTProto DM monitoring; peers, dialogs, participants
 │       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering
-│       ├── twitter.rs                      # Poll monitoring from Twitter lists
+│       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email.rs                        # Gmail IMAP/OAuth, LLM classification
+│       ├── github.rs                       # public event feeds, org/repo rosters
+│       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
+│       ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie
 │       └── youtube.rs                      # RSS monitoring, sentiment analysis
+│
+├── social_networks_reach/                  # the transcript format and its store
+│   └── src/
+│       ├── lib.rs                          # `[rolodex]` path, the telegram session wrapper
+│       ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
+│       ├── venue.rs                        # `venues/<platform>/<slug>/`, roster selection
+│       └── bin/recon.rs                    # the venue axis, hand-run
 │
 └── social_networks_utils/                  # shared primitives
     └── src/
         ├── lib.rs
+        ├── avif.rs                         # attachment images, kept at an archive's size
         ├── db.rs                           # SQLite client (libsql): email dedup
-        ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie
         ├── telegram_notifier.rs            # central notification hub
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
 ```
+
+## Two axes
+
+A platform is reached in one of two ways, and the seam between them is which side starts.
+
+```
+   Client       listen() forever ─► DmEvent / notification      a daemon, always on
+   reach        profile / direct / venues / members / posts     asked, and only by a human
+```
+
+`Client` is below; [`reach`](../social_networks_adapters/src/reach.rs) is the **thin waist**: three
+traits, six methods, and one `Item` that carries its own author — so a DM, a group post and a public
+event differ in `Kind` and in nothing else. Everything a platform does lives behind it, and nothing
+above it names a platform except to dispatch.
+
+```
+                        person ─► Profiles::profile ─┐
+                               ─► Direct::direct  ───┤
+                               ─► Direct::send       │
+                        venue  ─► Venue::venues      ├─► Item ─► <year>.md
+                               ─► Venue::members ────┤
+                               ─► Venue::posts   ────┘
+```
+
+Dispatch is an exhaustive `match` over `Source` (the person axis) and `VenueSource` (the venue axis)
+rather than over `dyn`: a platform that grows an axis is a variant nothing compiles without handling,
+where a trait object would have let it fall through to an arm that fetches nothing.
 
 ## The `Client` trait
 
@@ -87,31 +126,33 @@ When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
 
-`rolodex` is the one surface command that is not a daemon and notifies nobody — it reads the same
-sessions on demand and writes to disk, and is the only place anything goes *out* over them:
+`rolodex` and `recon` are the commands that are not daemons and notify nobody — they read the same
+sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them:
 
 ```
 Discord ──┐                                                          ┌──► Discord
 Telegram ─┤              ┌─► history ────────► <person>/<year>.md     ├──► Skool
 GitHub ───┼──► pull ─────┤                                        dm ─┼──► Telegram
 LinkedIn ─┤              └─► LLM extraction ─► <person>.nix           └──► Twitter
-Skool ────┘
+Skool ────┘                         ▲
+                                    │ lines matching `[<handle>/`
+Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
+GitHub ───┼──► recon                │                                    │
+Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
+                                                                         │
+                                    rolodex discover ◄────────────────────┘
+                                         └─► a skeleton <person>.nix, which `pull` then fills
 ```
 
-The transcript is what a pull is for; the labels in `<person>.nix` are derived from it and can be
-regenerated from it.
+The transcript is what a read is for; the labels in `<person>.nix` are derived from it and can be
+regenerated from it. A venue transcript keeps the whole conversation, including people nobody tracks
+— a thread with the non-members cut out is not the thread — and none of it is copied into a person's
+file, which stays their DMs. A person's own lines are selected out of it at `pull` time by the prefix
+the writer put there, so nothing is derived that could not be rebuilt.
 
-Skool publishes no API: every read is the `__NEXT_DATA__` payload skool's SSR
-embeds in the HTML, and the route it says it served is how it reports "not a member" / "not signed
-in". Only `/auth/*` sits behind an AWS-WAF JS challenge, so a headless chromium mints the session
-cookie and nothing else — reads stay on plain HTTP. Everything a profile carries is public, which is
-why the rolodex source needs no credentials; a cookie only widens what it sees.
-
-Writing has nowhere to go but the undocumented REST API at `api.skool.com` that skool's own web
-client talks to, authenticated by the same cookie. A DM is addressed to a *channel*, and skool has
-no global address book: a channel can only be opened through a group both parties are in, so
-`dm --skool` searches the already-open channels first and falls back to trying each of my groups
-until one is shared. Nobody outside a shared group is reachable — that is skool's rule, not ours.
+Skool is the platform that shapes the most around it, because it publishes no API and reaches nobody
+outside a shared group. What that costs, and why a browser sits on the login path and nowhere else,
+is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
 ## Key Entities
 
@@ -119,6 +160,7 @@ until one is shared. Nobody outside a shared group is reachable — that is skoo
 - `TelegramNotifier` (utils::telegram_notifier): all in-band outbound notifications flow through here.
 - `Database` (utils::db): SQLite (libsql). Email deduplication.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
+- `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 
 ## Invariants
 
@@ -128,6 +170,9 @@ until one is shared. Nobody outside a shared group is reachable — that is skoo
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
 - **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, `rolodex pull`), refused when empty.
+- **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
+- **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
+- **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app.
 
 ## Cross-Cutting Concerns
 
