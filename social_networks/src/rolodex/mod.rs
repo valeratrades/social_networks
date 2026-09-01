@@ -1,6 +1,8 @@
 #![doc = include_str!("README.md")]
+mod avif;
 mod delta;
 mod dm;
+mod history;
 mod person;
 mod sources;
 
@@ -21,10 +23,7 @@ use grammers_client::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use person::Person;
 use social_networks_adapters::telegram_dms::TelegramConfig;
-use social_networks_utils::{
-	db::Database,
-	telegram_utils::{self, ConnectionConfig, TelegramConnection},
-};
+use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 use sources::Source;
 use tracing::{error, info};
 
@@ -103,12 +102,11 @@ async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<(
 	if people.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
 	}
-	let db = Database::try_new().await?;
 
 	if !people.iter().any(|p| p.handles.contains_key("telegram")) {
-		return pull_all(config, &db, dir, people, None).await;
+		return pull_all(config, dir, people, None).await;
 	}
-	with_telegram(&config.telegram, async |client| pull_all(config, &db, dir, people, Some(&client)).await).await
+	with_telegram(&config.telegram, async |client| pull_all(config, dir, people, Some(&client)).await).await
 }
 
 /// The runner has to be polled alongside whatever uses the client, and the dialog prefetch inside
@@ -131,7 +129,7 @@ async fn with_telegram<T, F: Future<Output = Result<T>>>(config: &TelegramConfig
 	}
 }
 
-async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
+async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
 	let llm_config = config.require_llm("rolodex")?;
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let github = sources::Github::default();
@@ -150,22 +148,24 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 
 	for mut person in people {
 		let name = format!("{:<width$}", person.name);
+		let person_dir = dir.join(&person.name);
+		let assets = person_dir.join("assets");
+		let mut meta = history::Meta::load(&person_dir)?;
 		let mut fetched_sources = BTreeMap::new();
 		let mut handles = BTreeMap::new();
 		let mut messages = Vec::new();
 		let mut activity = Vec::new();
-		let mut cursors: Vec<(String, String)> = Vec::new();
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
 			let Ok(source) = platform.parse::<Source>() else { continue };
 			pb.set_message(format!("{} {platform}", person.name));
-			let cursor = db.rolodex_checkpoint(&person.name, platform).await?;
+			let mut cursor = meta.cursor(source)?;
 			let result = match source {
-				Source::Discord => discord.fetch(handle, cursor.as_deref()).await,
-				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, cursor.as_deref()).await,
-				Source::Github => github.fetch(handle, cursor.as_deref()).await,
-				Source::Linkedin => sources::linkedin(handle, cursor.as_deref()),
+				Source::Discord => discord.fetch(handle, &mut cursor, &assets).await,
+				Source::Telegram => sources::telegram(telegram.expect("a telegram client is connected iff somebody has a telegram handle"), handle, &mut cursor, &assets).await,
+				Source::Github => github.fetch(handle, &mut cursor).await,
+				Source::Linkedin => sources::linkedin(handle, &mut cursor),
 			};
 			match result {
 				Ok(fetched) => {
@@ -173,11 +173,9 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 					handles.extend(fetched.handles);
 					messages.extend(fetched.messages);
 					activity.extend(fetched.activity);
-					if let Some(cursor) = fetched.cursor {
-						cursors.push((platform.clone(), cursor));
-					}
 				}
-				// isolated per handle: the checkpoint stays put and the rest of the pull continues
+				// isolated per handle: whatever the backfill already checked in stands, and the rest of
+				// the pull continues
 				Err(e) => {
 					failures += 1;
 					error!("{}: {platform}/{handle} failed, skipping: {e:#}", person.name);
@@ -186,9 +184,14 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			}
 		}
 
+		// before the extraction, not after it: the transcript is the durable record now and the labels
+		// are derived from it, so a failed LLM call costs a re-run rather than the messages
+		history::record(&person_dir, messages.clone(), &mut meta)?;
+		let state = meta.backfill_status().map(|s| format!(", {s}")).unwrap_or_default();
+
 		let Some(delta) = delta::Delta::new(&person, &fetched_sources, messages, activity) else {
 			info!("{}: nothing new", person.name);
-			pb.suspend(|| println!("   {} {name} unchanged", "·".dimmed()));
+			pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
 			pb.inc(1);
 			continue;
 		};
@@ -224,7 +227,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 		let added = if added.is_empty() { String::new() } else { format!(", +{}", added.join(" +")) };
 		pb.suspend(|| {
 			println!(
-				"   {} {name} +{} log entries, {} sources{added}",
+				"   {} {name} +{} log entries, {} sources{added}{state}",
 				"✓".green(),
 				extraction.new_log_entries.len(),
 				fetched_sources.len()
@@ -232,10 +235,6 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 		});
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
 		person.write(dir)?;
-		// after the write, so a crash re-fetches rather than losing the messages
-		for (platform, cursor) in cursors {
-			db.set_rolodex_checkpoint(&person.name, &platform, &cursor).await?;
-		}
 		pb.inc(1);
 	}
 
