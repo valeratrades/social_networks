@@ -109,6 +109,7 @@ GitHub ───┘
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
+- **Credentials are config, not environment**: `claude_token` is a required top-level key handed to `ask_llm::Client::new`; a missing one fails at config build rather than on first use.
 
 ## Cross-Cutting Concerns
 
