@@ -108,9 +108,9 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 /// venue is not a conversation with them — it stayed in the venue's transcript, and is why the
 /// members `discover` wrote a file for come out cold until somebody writes to them.
 fn cold(dir: &Path, pattern: Option<&str>) -> Result<()> {
-	let people = person::load_dir(dir)?;
-	let total = people.len();
-	let (cold, outstanding) = sift(dir, people.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect())?;
+	let selected: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
+	let total = selected.len();
+	let (cold, outstanding) = sift(dir, selected)?;
 
 	let width = cold.iter().chain(outstanding.iter().map(|(p, _)| p)).map(|p| p.name.chars().count()).max().unwrap_or(0);
 	for person in &cold {
