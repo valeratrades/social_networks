@@ -16,7 +16,7 @@ use std::{
 };
 
 use chromiumoxide::{Browser, BrowserConfig};
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use futures::{
 	StreamExt as _,
 	future::{Either, select},
@@ -28,6 +28,7 @@ const BASE: &str = "https://www.skool.com";
 /// Long enough for a slow WAF challenge, short enough that a wedged browser does not hold a daemon.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 
+const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 #[derive(Clone, Debug)]
 pub struct SkoolCredentials {
 	pub email: String,
@@ -43,7 +44,7 @@ pub struct Skool {
 impl Skool {
 	/// Picks up a cached cookie if one was ever minted. Its absence is a real state — the public
 	/// reads work without it.
-	pub fn new(creds: Option<SkoolCredentials>) -> Result<Self> {
+	pub fn try_new(creds: Option<SkoolCredentials>) -> Result<Self> {
 		let path = cookie_path()?;
 		let cookie = match path.exists() {
 			true => {
@@ -139,7 +140,7 @@ async fn login(browser: &Browser, creds: &SkoolCredentials) -> Result<String> {
 			Some(url) if !url.contains("/login") => break url,
 			url =>
 				if Instant::now() >= deadline {
-					return Err(eyre!("still on {url:?} {LOGIN_TIMEOUT:?} after submitting the login form"));
+					bail!("still on {url:?} {LOGIN_TIMEOUT:?} after submitting the login form");
 				},
 		}
 		tokio::time::sleep(Duration::from_millis(500)).await;
@@ -155,7 +156,7 @@ async fn login(browser: &Browser, creds: &SkoolCredentials) -> Result<String> {
 		.collect::<Vec<_>>()
 		.join("; ");
 	if header.is_empty() {
-		return Err(eyre!("login navigated to {url} but left no skool.com cookies"));
+		bail!("login navigated to {url} but left no skool.com cookies");
 	}
 	Ok(header)
 }
@@ -171,8 +172,6 @@ fn next_data(html: &str) -> Result<serde_json::Value> {
 	let json = NEXT_DATA.captures(html).ok_or_else(|| eyre!("no __NEXT_DATA__ in the served page"))?;
 	Ok(serde_json::from_str(json.get(1).expect("the pattern has one group").as_str())?)
 }
-
-const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 #[cfg(test)]
 mod tests {

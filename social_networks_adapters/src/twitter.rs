@@ -70,32 +70,6 @@ impl Client for TwitterMonitor {
 	}
 }
 
-#[derive(Debug)]
-enum TwitterError {
-	Auth(String),
-	Recoverable(color_eyre::eyre::Report),
-}
-
-impl<E: Into<color_eyre::eyre::Report>> From<E> for TwitterError {
-	fn from(e: E) -> Self {
-		TwitterError::Recoverable(e.into())
-	}
-}
-
-/// Check the response status; return `Auth` for 401/403, `Recoverable` for other
-/// non-2xx, or pass through the response untouched on success.
-async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, TwitterError> {
-	let status = response.status();
-	if status.is_success() {
-		return Ok(response);
-	}
-	let body = response.text().await.unwrap_or_default();
-	if matches!(status.as_u16(), 401 | 403) {
-		return Err(TwitterError::Auth(format!("{op}: {status}: {body}")));
-	}
-	Err(TwitterError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
-}
-
 /// Sent from the `[twitter.oauth]` account — the one that posts — while the lookup goes through the
 /// bearer token, which is all it needs.
 pub async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()> {
@@ -124,6 +98,31 @@ pub async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result
 		bail!("twitter DM to `{handle}` failed ({status}): {}", response.text().await.unwrap_or_default());
 	}
 	Ok(())
+}
+#[derive(Debug)]
+enum TwitterError {
+	Auth(String),
+	Recoverable(color_eyre::eyre::Report),
+}
+
+impl<E: Into<color_eyre::eyre::Report>> From<E> for TwitterError {
+	fn from(e: E) -> Self {
+		TwitterError::Recoverable(e.into())
+	}
+}
+
+/// Check the response status; return `Auth` for 401/403, `Recoverable` for other
+/// non-2xx, or pass through the response untouched on success.
+async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, TwitterError> {
+	let status = response.status();
+	if status.is_success() {
+		return Ok(response);
+	}
+	let body = response.text().await.unwrap_or_default();
+	if matches!(status.as_u16(), 401 | 403) {
+		return Err(TwitterError::Auth(format!("{op}: {status}: {body}")));
+	}
+	Err(TwitterError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
 }
 
 async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &TelegramConfig) -> Result<Infallible, TwitterError> {

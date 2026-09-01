@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 		password: std::env::var("SKOOL_PASSWORD")?,
 	};
 
-	let mut session = Skool::new(Some(creds))?;
+	let mut session = Skool::try_new(Some(creds))?;
 	let payload = session.page(&format!("/{group}")).await?;
 	println!("served route: {}", payload["page"]);
 

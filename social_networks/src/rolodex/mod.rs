@@ -136,7 +136,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 	let discord = sources::Discord::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let github = sources::Github::default();
 	// credentials only widen what skool answers; without them the public profile is still a whole result
-	let mut skool = social_networks_utils::skool::Skool::new(config.skool.as_ref().map(Into::into))?;
+	let mut skool = social_networks_utils::skool::Skool::try_new(config.skool.as_ref().map(Into::into))?;
 
 	let total = people.len();
 	let width = people.iter().map(|p| p.name.chars().count()).max().expect("`pull` bails on an empty selection");

@@ -95,7 +95,7 @@ struct Seen {
 
 #[instrument(skip_all)]
 async fn run_skool_monitor(skool_config: &SkoolConfig, telegram_config: &TelegramConfig) -> Result<Infallible, SkoolError> {
-	let mut session = Skool::new(Some(skool_config.into()))?;
+	let mut session = Skool::try_new(Some(skool_config.into()))?;
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
 	let state_file = xdg::BaseDirectories::with_prefix("social_networks")

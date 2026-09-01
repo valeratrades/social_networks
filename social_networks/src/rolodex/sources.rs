@@ -23,6 +23,13 @@ const PAGE: usize = 100;
 /// handful of profiles before the authwall, so a pull has to touch a few people rather than all of
 /// them — which a headline that changes twice a year can afford.
 const PROFILE_REFRESH_DAYS: i32 = 30;
+const LINKS: [(&str, &str); 5] = [
+	("linkTwitter", "twitter"),
+	("linkYoutube", "youtube"),
+	("linkInstagram", "instagram"),
+	("linkLinkedin", "linkedin"),
+	("linkFacebook", "facebook"),
+];
 /// The `handles` keys `pull` fetches. Separating this from the dispatch in `mod` would let a new
 /// source fall through to the no-fetch-path arm and silently do nothing.
 #[derive(AsRefStr, Clone, Copy, Debug, EnumIter, EnumString)]
@@ -371,11 +378,6 @@ pub fn linkedin(handle: &str, cursor: Option<&str>) -> Result<Fetched> {
 	Ok(fetched)
 }
 
-async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
-	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
-	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
-}
-
 /// The profile fields skool serves to anybody. Their absence of a session is why this is the one
 /// source that needs no credentials at all: `postTrees` is the only part membership adds, and it
 /// comes back empty rather than failing.
@@ -412,7 +414,7 @@ pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Re
 		let title = post.pointer("/metadata/title").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a title"))?;
 		let (group, name) = (post.pointer("/group/name").and_then(|v| v.as_str()), post.get("name").and_then(|v| v.as_str()));
 		let (Some(group), Some(name)) = (group, name) else {
-			return Err(eyre!("skool post {id} carries no group/name to build a permalink from: {post}"));
+			bail!("skool post {id} carries no group/name to build a permalink from: {post}");
 		};
 		fetched.activity.push(Activity {
 			date: created.parse::<Timestamp>().wrap_err("skool timestamps are RFC3339")?.to_zoned(TimeZone::UTC).date().to_string(),
@@ -423,14 +425,10 @@ pub async fn skool(client: &mut Skool, handle: &str, cursor: Option<&str>) -> Re
 	fetched.activity.reverse();
 	Ok(fetched)
 }
-
-const LINKS: [(&str, &str); 5] = [
-	("linkTwitter", "twitter"),
-	("linkYoutube", "youtube"),
-	("linkInstagram", "instagram"),
-	("linkLinkedin", "linkedin"),
-	("linkFacebook", "facebook"),
-];
+async fn telegram_peer(client: &Client, handle: &str) -> Result<grammers_client::session::types::PeerRef> {
+	let peer = client.resolve_username(handle).await?.ok_or_else(|| eyre!("no such telegram username: `{handle}`"))?;
+	peer.to_ref().await.map_err(|e| eyre!("{e}"))?.ok_or_else(|| eyre!("`{handle}` resolved but has no usable ref"))
+}
 
 /// The last path segment of a profile URL, which is the handle on every platform skool links to.
 /// `None` for the empty string skool stores for a link nobody set, and for a bare domain.
