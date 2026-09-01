@@ -318,7 +318,7 @@ impl Discord {
 			warn!("discord: rate limited, holding off {after}s");
 			tokio::time::sleep(Duration::from_secs_f64(after)).await;
 		}
-		bail!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits")
+		Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
 	}
 
 	async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
