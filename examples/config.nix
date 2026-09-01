@@ -1,4 +1,6 @@
 {
+  claude_token = { env = "CLAUDE_TOKEN"; };
+
   dms = {
     discord = {
       user_token = { env = "DISCORD_AUTH"; };
@@ -70,7 +72,6 @@ Sentiment check: $BTC, how are we feeling?
 
   email = {
     email = "valeratrades@gmail.com";
-    claude_token = { env = "CLAUDE_TOKEN"; };
     # regex; checked in order important > read_later > discard, unmatched -> LLM
     rules = {
       important = {

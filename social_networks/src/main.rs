@@ -53,14 +53,6 @@ fn main() {
 	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
 	let config: AppConfig = exit_on_error(settings.config());
 
-	// `ask_llm` as a lib only ever reads the token from env; `~/.config/ask_llm.nix` is loaded by its cli binary alone
-	if let Some(token) = config.email.as_ref().and_then(|e| e.claude_token.as_ref()) {
-		// SAFETY: still single-threaded here, no runtime built yet
-		unsafe {
-			std::env::set_var("CLAUDE_TOKEN", token);
-		}
-	}
-
 	let result: Result<()> = match cli.command {
 		Commands::Health => health::main(config),
 		Commands::MigrateDb => {
@@ -88,7 +80,9 @@ fn main() {
 				.clone()
 				.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
 				.map_err(adapter_from_eyre)?;
-			let mut monitor = EmailMonitor::try_from_configs(email_config, config.telegram).await.map_err(adapter_from_eyre)?;
+			let mut monitor = EmailMonitor::try_from_configs(email_config, config.claude_token, config.telegram)
+				.await
+				.map_err(adapter_from_eyre)?;
 			if args.mark_all_read {
 				return monitor.mark_all_as_read().await.map_err(adapter_from_eyre);
 			}
@@ -123,7 +117,7 @@ fn main() {
 		}),
 		Commands::Youtube(_) => run_async("youtube", || async {
 			v_utils::clientside!(Some("youtube"));
-			let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram);
+			let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram, config.claude_token);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)

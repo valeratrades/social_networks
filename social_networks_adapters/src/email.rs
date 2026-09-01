@@ -37,9 +37,6 @@ pub struct EmailConfig {
 	#[serde(default)]
 	#[primitives(skip)]
 	pub rules: Rules,
-	/// Claude API token for LLM-based email classification (optional, falls back to CLAUDE_TOKEN env var)
-	#[serde(default)]
-	pub claude_token: Option<String>,
 }
 
 /// The definitive decision for an email, whatever heuristic produced it.
@@ -106,22 +103,29 @@ pub struct OAuthAuth {
 #[derive(Clone)]
 pub struct EmailMonitor {
 	config: EmailConfig,
+	claude_token: String,
 	notifier: TelegramNotifier,
 	db: Database,
 	rules: CompiledRules,
 }
 impl EmailMonitor {
-	pub fn try_new(config: EmailConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
+	pub fn try_new(config: EmailConfig, claude_token: String, notifier: TelegramNotifier, db: Database) -> Result<Self> {
 		let rules = CompiledRules::try_new(&config.rules)?;
-		Ok(Self { config, notifier, db, rules })
+		Ok(Self {
+			config,
+			claude_token,
+			notifier,
+			db,
+			rules,
+		})
 	}
 
-	pub async fn try_from_configs(email_config: EmailConfig, telegram_config: TelegramConfig) -> Result<Self> {
+	pub async fn try_from_configs(email_config: EmailConfig, claude_token: String, telegram_config: TelegramConfig) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Self::try_new(email_config, notifier, db)
+		Self::try_new(email_config, claude_token, notifier, db)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -552,13 +556,13 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
-		let response = match ask_llm::Client::default().model(ask_llm::Model::Fast).ask(&prompt).await {
-			Ok(r) => r,
-			Err(e) => {
-				error!("LLM call failed for email from {}: {e:#}", message.from);
-				return Err(e).context("Failed to call LLM for email evaluation");
-			}
-		};
+		let response = ask_llm::Client::new(ask_llm::config::AppConfig {
+			claude_token: Some(self.claude_token.clone()),
+			..Default::default()
+		})
+		.ask(&prompt)
+		.await
+		.with_context(|| format!("Failed to classify email from {}", message.from))?;
 
 		let action = if response.text.trim().to_lowercase().starts_with("yes") {
 			Action::Important

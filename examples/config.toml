@@ -1,3 +1,5 @@
+claude_token = { env = "CLAUDE_TOKEN" }
+
 [dms]
 monitored_users = ["play_me_once", "deevsdeevs"]
 notification_horizon = "12h"
@@ -63,7 +65,6 @@ path = "~/Sync/rolodex"
 
 [email]
 email = "valeratrades@gmail.com"
-claude_token = { env = "CLAUDE_TOKEN" }
 
 # regex; checked in order important > read_later > discard, unmatched -> LLM
 [email.rules.important]

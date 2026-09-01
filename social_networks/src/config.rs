@@ -5,6 +5,9 @@ use crate::{dms::DmsConfig, rolodex::RolodexConfig};
 
 #[derive(Clone, Debug, Default, LiveSettings, MyConfigPrimitives, Settings)]
 pub struct AppConfig {
+	/// Required: youtube sentiment, email classification and rolodex deltas all go through `ask_llm`
+	#[settings(skip)]
+	pub claude_token: String,
 	#[settings(skip)]
 	#[serde(default)]
 	pub dms: DmsConfig,

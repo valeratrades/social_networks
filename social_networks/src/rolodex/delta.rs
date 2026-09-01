@@ -40,31 +40,25 @@ pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
 }
-
-pub async fn extract(delta: &Delta<'_>) -> Result<Extraction> {
+pub async fn extract(delta: &Delta<'_>, claude_token: &str) -> Result<Extraction> {
 	let prompt = prompt(delta);
-	let response = ask_llm::Client::default()
-		.model(ask_llm::Model::Medium)
-		.force_json()
+	let response = llm(claude_token)
 		.ask(&prompt)
 		.await
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
 		.wrap_err("extraction call failed")?;
 	serde_json::from_str(&response.text).wrap_err_with(|| format!("extraction did not return the requested shape:\n{}", response.text))
 }
-
 /// A handle stated in the conversation is a source nobody is looking for. What it finds is fetched
 /// by the *next* pull, the same cadence discord's connected accounts already run on.
 ///
 /// Skipped when every [`Source`] is already covered — the set of possible additions is empty.
-pub async fn discover_handles(delta: &Delta<'_>) -> Result<Vec<(String, String)>> {
+pub async fn discover_handles(delta: &Delta<'_>, claude_token: &str) -> Result<Vec<(String, String)>> {
 	if Source::iter().all(|source| delta.person.handles.contains_key(source.as_ref())) {
 		return Ok(Vec::new());
 	}
 	let prompt = discovery_prompt(delta);
-	let response = ask_llm::Client::default()
-		.model(ask_llm::Model::Medium)
-		.force_json()
+	let response = llm(claude_token)
 		.ask(&prompt)
 		.await
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
@@ -79,6 +73,15 @@ pub async fn discover_handles(delta: &Delta<'_>) -> Result<Vec<(String, String)>
 		.filter(|(_, handle)| !handle.is_empty())
 		.collect())
 }
+fn llm(claude_token: &str) -> ask_llm::Client {
+	ask_llm::Client::new(ask_llm::config::AppConfig {
+		claude_token: Some(claude_token.to_owned()),
+		..Default::default()
+	})
+	.model(ask_llm::Model::Medium)
+	.force_json()
+}
+
 #[derive(Debug, Deserialize)]
 struct Discovered {
 	handles: Vec<DiscoveredHandle>,

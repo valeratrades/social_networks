@@ -176,7 +176,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 			continue;
 		};
 		pb.set_message(format!("{} extracting", person.name));
-		let extraction = match delta::extract(&delta).await {
+		let extraction = match delta::extract(&delta, &config.claude_token).await {
 			Ok(extraction) => extraction,
 			Err(e) => {
 				pb.abandon();
@@ -185,7 +185,7 @@ async fn pull_all(config: &AppConfig, db: &Database, dir: &Path, people: Vec<Per
 		};
 
 		pb.set_message(format!("{} discovering handles", person.name));
-		let discovered = match delta::discover_handles(&delta).await {
+		let discovered = match delta::discover_handles(&delta, &config.claude_token).await {
 			Ok(discovered) => discovered,
 			Err(e) => {
 				pb.abandon();

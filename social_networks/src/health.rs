@@ -130,10 +130,6 @@ fn check_env_vars(config: &AppConfig) {
 	// Check SQLite db
 	let db_ok = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("db.sqlite3").is_some();
 	println!("  {} SQLite database", status_icon(db_ok));
-
-	// Check CLAUDE_TOKEN for email processing
-	let claude_token_ok = config.email.as_ref().is_some_and(|e| e.claude_token.is_some()) || std::env::var("CLAUDE_TOKEN").is_ok();
-	println!("  {} Claude token (for email classification)", status_icon(claude_token_ok));
 }
 
 fn check_directories(config: &AppConfig) {
