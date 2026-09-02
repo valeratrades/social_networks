@@ -14,7 +14,7 @@
 //! `recon` for a group.
 
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, HashMap, HashSet},
 	io::Write as _,
 	os::unix::fs::OpenOptionsExt as _,
 	path::{Path, PathBuf},
@@ -487,17 +487,31 @@ impl Venue for Skool {
 	async fn posts(&mut self, at: &VenueRef, window: Window, _assets: &Path) -> Result<Page> {
 		let slug = at.slug.clone();
 		let mut out = Page::default();
+		let mut seen: HashSet<String> = HashSet::new();
 		//LOOP: bounded by the feed, which is finite and walked from the newest page strictly downwards
 		for p in 1.. {
 			let payload = self.group_page(&at.slug, &format!("?p={p}")).await?;
-			let nodes = payload
+			let served = payload
 				.pointer("/props/pageProps/postTrees")
 				.and_then(|v| v.as_array())
 				.ok_or_else(|| eyre!("skool `{}`: no postTrees", at.slug))?
 				.clone();
-			if nodes.is_empty() {
+			if served.is_empty() {
 				out.exhausted = true;
 				break;
+			}
+			// A pinned post heads the feed *and* keeps its own chronological place, so the same post is
+			// served twice — both inside page 1, and again on whichever page its date falls on. Dropping
+			// the repeat here rather than downstream is what keeps one post to one reply fetch.
+			let mut nodes = Vec::with_capacity(served.len());
+			for node in served {
+				let id = node
+					.pointer("/post/id")
+					.and_then(|v| v.as_str())
+					.ok_or_else(|| eyre!("a skool postTree without a post id: {node}"))?;
+				if seen.insert(id.to_string()) {
+					nodes.push(node);
+				}
 			}
 
 			let page = page_of(&nodes, &window, Kind::Post, Some(&at.slug), |node| {
@@ -515,6 +529,8 @@ impl Venue for Skool {
 				out.newest.get_or_insert(newest);
 			}
 			out.oldest = page.oldest.or(out.oldest);
+			// short of the page it was handed means the window stopped it, and nothing under it is wanted
+			let stopped = page.items.len() < nodes.len();
 			let taken: HashMap<&str, &Item> = page.items.iter().map(|item| (item.id.as_str(), item)).collect();
 
 			let mut replies = Vec::new();
@@ -532,9 +548,6 @@ impl Venue for Skool {
 				replies.extend(self.replies(id, group, &permalink).await?);
 			}
 			info!("skool `{}`: page {p}, {} posts, {} replies", at.slug, page.items.len(), replies.len());
-
-			// short of the page it was handed means the window stopped it, and nothing under it is wanted
-			let stopped = page.items.len() < nodes.len();
 			out.items.extend(page.items);
 			out.items.extend(replies);
 			if stopped {
