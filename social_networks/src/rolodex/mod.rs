@@ -157,7 +157,7 @@ async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<(
 fn sift(dir: &Path, people: Vec<Person>) -> Result<Vec<(Person, Vec<Source>)>> {
 	let mut candidates = Vec::new();
 	for person in people {
-		let meta = history::Meta::load(&dir.join(&person.name))?;
+		let meta = history::Meta::load(&person.dir(dir))?;
 		let sources: Vec<Source> = person.handles.keys().filter_map(|platform| platform.parse::<Source>().ok()).collect();
 		if sources.iter().any(|source| meta.messages(*source).is_some_and(|messages| messages > 0)) {
 			continue;
@@ -175,7 +175,7 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let mut cold = Vec::new();
 	for (person, ask) in candidates {
-		let assets = dir.join(&person.name).join("assets");
+		let assets = person.dir(dir).join("assets");
 		// a source that cannot answer is not an answer either: it leaves them off the list rather
 		// than on it
 		let mut exclude = false;
@@ -259,7 +259,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 
 	for mut person in people {
 		let name = format!("{:<width$}", person.name);
-		let person_dir = dir.join(&person.name);
+		let person_dir = person.dir(dir);
 		let assets = person_dir.join("assets");
 		let mut meta = history::Meta::load(&person_dir)?;
 		let mut fetched_sources = BTreeMap::new();
@@ -505,8 +505,9 @@ mod tests {
 		let dir = std::env::temp_dir().join("social_networks_rolodex_cold");
 		let _ = std::fs::remove_dir_all(&dir);
 		let meta = |name: &str, json: &str| {
-			std::fs::create_dir_all(dir.join(name)).unwrap();
-			std::fs::write(dir.join(name).join("meta.json"), json).unwrap();
+			let person_dir = Person::skeleton(name).dir(&dir);
+			std::fs::create_dir_all(&person_dir).unwrap();
+			std::fs::write(person_dir.join("meta.json"), json).unwrap();
 		};
 		let person = |name: &str, handles: &[(&str, &str)]| {
 			let mut person = Person::skeleton(name);

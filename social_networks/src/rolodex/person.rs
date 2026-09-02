@@ -6,6 +6,8 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr, bail};
 use serde::Deserialize;
 
+/// `<rolodex dir>/people/<name>/`, alongside [`venue`](social_networks_reach::venue)'s `venues/`.
+const PEOPLE: &str = "people";
 const MAIN: &str = "__main__.nix";
 
 /// What a person's directory states about them, next to the conversation itself. [`MAIN`] is a
@@ -41,8 +43,13 @@ impl Person {
 		}
 	}
 
-	pub fn path(&self, dir: &Path) -> PathBuf {
-		dir.join(&self.name).join(MAIN)
+	/// Their whole directory: [`MAIN`] and the conversation `history` keeps next to it.
+	pub fn dir(&self, root: &Path) -> PathBuf {
+		root.join(PEOPLE).join(&self.name)
+	}
+
+	pub fn path(&self, root: &Path) -> PathBuf {
+		self.dir(root).join(MAIN)
 	}
 
 	/// Match on the directory name and on every handle, so `pull dev_ardi` finds the person whose
@@ -73,10 +80,10 @@ impl Person {
 		}
 	}
 
-	pub fn write(&self, dir: &Path) -> Result<()> {
-		let person_dir = dir.join(&self.name);
-		std::fs::create_dir_all(&person_dir).wrap_err_with(|| format!("failed to create {}", person_dir.display()))?;
-		let path = self.path(dir);
+	pub fn write(&self, root: &Path) -> Result<()> {
+		let dir = self.dir(root);
+		std::fs::create_dir_all(&dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+		let path = self.path(root);
 		std::fs::write(&path, render(self)).wrap_err_with(|| format!("failed to write {}", path.display()))
 	}
 }
@@ -91,10 +98,10 @@ pub struct LogEntry {
 	pub source: Option<String>,
 }
 
-/// Evaluate every `<name>/`[`MAIN`] under `dir` in one nix process, keyed by directory name. Holding
-/// that file is what makes a directory a person's, so `venues/` and the repo's own directories need
-/// naming nowhere.
-pub fn load_dir(dir: &Path) -> Result<BTreeMap<String, Person>> {
+/// Evaluate every `<name>/`[`MAIN`] under [`PEOPLE`] in one nix process, keyed by directory name.
+/// Holding that file is what makes a directory a person's, so a stray one in there costs nothing.
+pub fn load_dir(root: &Path) -> Result<BTreeMap<String, Person>> {
+	let dir = root.join(PEOPLE);
 	if !dir.exists() {
 		return Ok(BTreeMap::new());
 	}

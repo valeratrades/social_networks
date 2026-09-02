@@ -130,10 +130,10 @@ When an adapter's `listen()` returns an error:
 sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them:
 
 ```
-Discord ──┐                                                          ┌──► Discord
-Telegram ─┤              ┌─► history ────────► <person>/<year>.md     ├──► Skool
-GitHub ───┼──► pull ─────┤                                        dm ─┼──► Telegram
-LinkedIn ─┤              └─► LLM extraction ─► <person>/__main__.nix  └──► Twitter
+Discord ──┐                                                                 ┌──► Discord
+Telegram ─┤              ┌─► history ────────► people/<person>/<year>.md     ├──► Skool
+GitHub ───┼──► pull ─────┤                                               dm ─┼──► Telegram
+LinkedIn ─┤              └─► LLM extraction ─► people/<person>/__main__.nix  └──► Twitter
 Skool ────┘                         ▲
                                     │ lines matching `[<handle>/`
 Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
@@ -141,7 +141,7 @@ GitHub ───┼──► recon                │                           
 Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
                                                                          │
                                     rolodex discover ◄────────────────────┘
-                                         └─► a skeleton <person>/__main__.nix, which `pull` then fills
+                                         └─► a skeleton under `people/`, which `pull` then fills
 ```
 
 The transcript is what a read is for; the labels in `__main__.nix` are derived from it and can be

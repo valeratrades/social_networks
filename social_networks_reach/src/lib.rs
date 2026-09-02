@@ -12,9 +12,8 @@ use social_networks_adapters::telegram_dms::TelegramConfig;
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
 use v_utils::macros::MyConfigPrimitives;
 
-/// `[rolodex] path` is the directory of person files, and of the venue transcripts under
-/// `venues/`. No default: a present-but-pathless section is a config mistake, not a request for a
-/// guess.
+/// The rolodex root: `people/<name>/` on one axis, `venues/<platform>/<slug>/` on the other. No
+/// default: a present-but-pathless section is a config mistake, not a request for a guess.
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct RolodexConfig {
 	pub path: PathBuf,

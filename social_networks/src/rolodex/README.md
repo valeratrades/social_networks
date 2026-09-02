@@ -7,10 +7,10 @@ a platform — `dm` sends only what you type on the command line.
 ```
                   ┌──────────────────────────────┐        ┌─ extract() ────────► log + summary ─┐
    rolodex pull ──┤ fetch ─► diff vs cursor       ├─► Delta┤                                     ▼
-                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► <person>/__main__.nix
+                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► people/<person>/__main__.nix
    a live DM (unwired) ──────────┼─────────────────---┤
    venue lines by this person ───┼──────────────────--┘
-                                 └──► history::record ──► <person>/<year>.md
+                                 └──► history::record ──► people/<person>/<year>.md
 ```
 
 Three inputs, and only two of them cost a request. The third is the venue transcripts `recon` already
@@ -29,20 +29,22 @@ two-pull cadence discord's connected accounts already run on. A wrong handle nee
 step: its first fetch fails, which is reported per handle and leaves the rest of the pull alone.
 
 ```
-                                    ┌─ __main__.nix ──► Person   what we say about them
-                                    │        ▲   ▲
-[rolodex] path ──► <dir>/<person>/ ─┤        │   └── human edits
-                                    │        └── render (full regen: comments and
-                                    │                   hand formatting are lost)
-                                    ├─ 2019.md … 2026.md   the conversation
-                                    ├─ assets/*.avif       its images
-                                    └─ meta.json           every cursor
+                                       ┌─ __main__.nix ──► Person   what we say about them
+                                       │        ▲   ▲
+[rolodex] path ─┬─ people/<person>/ ───┤        │   └── human edits
+                │                      │        └── render (full regen: comments and
+                │                      │                   hand formatting are lost)
+                │                      ├─ 2019.md … 2026.md   the conversation
+                │                      ├─ assets/*.avif       its images
+                │                      └─ meta.json           every cursor
+                │
+                └─ venues/<platform>/<slug>/   `recon`'s axis, read at pull time
 ```
 
 The transcript is the durable artifact and the labels in `__main__.nix` are derived from it, so
 `meta.json` is written *before* the extraction: a failed LLM call costs a re-run, never a message.
-Holding a `__main__.nix` is what makes a directory a person's, so `venues/` and anything else living
-under the same root need no naming.
+Holding a `__main__.nix` is what makes a directory a person's, so a stray directory under `people/`
+costs nothing.
 
 Two states per person, in [`history`](../../../social_networks_reach/src/history.rs):
 
