@@ -69,10 +69,10 @@ pub enum Source {
 	Skool,
 }
 impl Source {
-	/// Whether there is anything below the newest item to page down to. A github feed, a linkedin
-	/// profile and a skool post list are snapshots, so their backfill is over before it starts.
+	/// Whether there is anything below the newest item to page down to. A github feed and a linkedin
+	/// profile are snapshots, so their backfill is over before it starts.
 	pub fn has_history(self) -> bool {
-		matches!(self, Self::Discord | Self::Telegram)
+		matches!(self, Self::Discord | Self::Telegram | Self::Skool)
 	}
 }
 

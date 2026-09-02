@@ -173,6 +173,7 @@ fn sift(dir: &Path, people: Vec<Person>) -> Result<Vec<(Person, Vec<Source>)>> {
 /// leave a transcript no backfill may finish.
 async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<Source>)>, telegram: Option<&Client>) -> Result<Vec<Person>> {
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
+	let mut skool = Skool::try_new(config.skool.clone())?;
 	let mut cold = Vec::new();
 	for (person, ask) in candidates {
 		let assets = person.dir(dir).join("assets");
@@ -189,8 +190,9 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 					};
 					client.direct(handle, Window::probe(), &assets).await
 				}
+				Source::Skool => skool.direct(handle, Window::probe(), &assets).await,
 				// `has_history` is what put a source in the list
-				Source::Github | Source::Linkedin | Source::Skool => unreachable!("{} holds no conversation", source.as_ref()),
+				Source::Github | Source::Linkedin => unreachable!("{} holds no conversation", source.as_ref()),
 			};
 			match page {
 				Ok(page) => exclude |= !page.items.is_empty(),
@@ -282,7 +284,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 				}
 				Source::Github => stated(&mut github, handle, &mut cursor).await,
 				Source::Linkedin => stated(&mut linkedin, handle, &mut cursor).await,
-				Source::Skool => stated(&mut skool, handle, &mut cursor).await,
+				Source::Skool => converse(&mut skool, handle, &mut cursor, &assets).await,
 			};
 			match result {
 				Ok(fetch) => {

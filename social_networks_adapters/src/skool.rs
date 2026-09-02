@@ -53,6 +53,8 @@ const PACE: Duration = Duration::from_millis(700);
 /// Doubling from [`PACE`], this waits about two minutes out in total — longer than the block above
 /// was measured to last. A read still refused after it is not being throttled.
 const READ_RETRIES: usize = 7;
+/// The largest `before`/`after` skool's chat answers — past it, `invalid before: <n>`.
+const CHAT_PAGE: usize = 50;
 /// Read-only for a human, exactly like discord's connected accounts: none of these is a fetchable
 /// [`Source`].
 const LINKS: [(&str, &str); 5] = [
@@ -157,6 +159,36 @@ impl Skool {
 					.ok_or_else(|| eyre!("a chat channel without an id: {channel}"))
 			})
 			.transpose()
+	}
+
+	/// Skool pages its chat around a message rather than from an end: `msg` is the pivot, `before` and
+	/// `after` how many to either side of it, and the pivot itself always comes back — so it is
+	/// stripped here and only ever used as a cursor. Without `msg` the pivot is the newest message.
+	/// The bool is whether anything remains on the side asked for.
+	async fn chat_page(&mut self, channel: &str, pivot: Option<&str>, side: Side, count: usize) -> Result<(Vec<serde_json::Value>, bool)> {
+		assert!((1..=CHAT_PAGE).contains(&count), "skool answers `{count}` for a count outside 1..={CHAT_PAGE}");
+		let count = count.to_string();
+		let mut query = vec![(side.as_str(), count.as_str())];
+		if let Some(pivot) = pivot {
+			query.push(("msg", pivot));
+		}
+		let payload = self.api(Method::GET, &format!("/channels/{channel}/messages"), &query, None).await?;
+		let payload: serde_json::Value = serde_json::from_str(&payload).wrap_err("listing chat messages")?;
+		let more = payload
+			.get(side.more())
+			.and_then(serde_json::Value::as_bool)
+			.ok_or_else(|| eyre!("a skool chat page without `{}`: {payload}", side.more()))?;
+		// `messages: null` is how skool spells an empty list, same as `channels` above
+		let mut messages: Vec<serde_json::Value> = payload
+			.get("messages")
+			.ok_or_else(|| eyre!("a skool chat page without `messages`: {payload}"))?
+			.as_array()
+			.cloned()
+			.unwrap_or_default();
+		if let Some(pivot) = pivot {
+			messages.retain(|m| m.get("id").and_then(|v| v.as_str()) != Some(pivot));
+		}
+		Ok((messages, more))
 	}
 
 	/// Which group the request goes through does not matter, and only skool knows which are shared,
@@ -392,11 +424,75 @@ impl Profiles for Skool {
 }
 
 impl Direct for Skool {
-	/// Reading skool's chat is not implemented. Nothing dispatches a read here — `rolodex::pull` sends
-	/// skool through [`Profiles`] alone — and this bails rather than answering empty, so a caller that
-	/// starts to finds out.
-	async fn direct(&mut self, _handle: &str, _window: Window, _assets: &Path) -> Result<Page> {
-		bail!("skool chat is write-only here — see `Source::has_direct`")
+	/// A handle whose chat was never opened has an empty conversation rather than an unreadable one:
+	/// opening one is [`request_channel`](Skool::request_channel), which is a write.
+	async fn direct(&mut self, handle: &str, window: Window, _assets: &Path) -> Result<Page> {
+		let user = self.user_id(handle).await?;
+		let Some(channel) = self.open_channel(&user).await? else {
+			return Ok(Page { exhausted: true, ..Page::default() });
+		};
+		let limit = window.limit();
+		// oldest-first throughout, which is the order skool answers in and the order a `Page` wants
+		let mut raw: Vec<serde_json::Value> = Vec::new();
+		let mut exhausted = false;
+
+		match &window {
+			// one page under the floor, checked in by the caller before it asks for the next
+			Window::Below { before, .. } => {
+				let (page, more) = self.chat_page(&channel, before.as_deref(), Side::Before, CHAT_PAGE.min(limit)).await?;
+				exhausted = !more;
+				raw = page;
+			}
+			// forward from the checkpoint, which is the pivot the first page hangs off
+			Window::Above { after: Some(after), .. } => {
+				let mut pivot = after.clone();
+				//LOOP: walks strictly upwards from a fixed checkpoint towards the newest message
+				loop {
+					let (page, more) = self.chat_page(&channel, Some(&pivot), Side::After, CHAT_PAGE).await?;
+					let Some(newest) = page.last().map(message_id).transpose()?.map(str::to_string) else { break };
+					raw.extend(page);
+					if !more {
+						break;
+					}
+					if raw.len() >= limit {
+						warn!("skool `{handle}`: stopping at {limit} messages, the rest comes on the next pull");
+						break;
+					}
+					pivot = newest;
+				}
+			}
+			// walk backwards from the newest, since there is no floor to walk up from
+			Window::Above { after: None, .. } => {
+				let mut pivot: Option<String> = None;
+				//LOOP: bounded by `limit` and by the conversation, which is walked strictly downwards
+				while raw.len() < limit {
+					let (page, more) = self.chat_page(&channel, pivot.as_deref(), Side::Before, CHAT_PAGE.min(limit - raw.len())).await?;
+					let Some(oldest) = page.first().map(message_id).transpose()?.map(str::to_string) else {
+						exhausted = true;
+						break;
+					};
+					raw.splice(0..0, page);
+					if !more {
+						exhausted = true;
+						break;
+					}
+					pivot = Some(oldest);
+				}
+			}
+		}
+
+		let mut items = Vec::with_capacity(raw.len());
+		for message in &raw {
+			items.push(chat_item(message, handle, &user, &channel)?);
+		}
+		items.retain(|item| !window.reached(item.at));
+		items.sort_by_key(|item| item.at);
+		Ok(Page {
+			newest: raw.last().map(message_id).transpose()?.map(str::to_string),
+			oldest: raw.first().map(message_id).transpose()?.map(str::to_string),
+			exhausted,
+			items,
+		})
 	}
 
 	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. The
@@ -686,6 +782,63 @@ fn field<'a>(user: &'a serde_json::Value, camel: &str, snake: &str) -> Option<&'
 	[camel, snake]
 		.into_iter()
 		.find_map(|key| user.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()))
+}
+
+/// Which side of the pivot [`Skool::chat_page`] walks, and the flag skool answers for that side.
+#[derive(Clone, Copy)]
+enum Side {
+	Before,
+	After,
+}
+impl Side {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Before => "before",
+			Self::After => "after",
+		}
+	}
+
+	fn more(self) -> &'static str {
+		match self {
+			Self::Before => "has_more_before",
+			Self::After => "has_more_after",
+		}
+	}
+}
+
+fn message_id(message: &serde_json::Value) -> Result<&str> {
+	message.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool chat message without an id: {message}"))
+}
+
+/// `metadata.src` is who sent it, so the handle's own user id is what tells the two apart. Skool
+/// gives a message no address of its own; the channel is as close as one gets.
+fn chat_item(message: &serde_json::Value, handle: &str, user: &str, channel: &str) -> Result<Item> {
+	let id = message_id(message)?;
+	let created = message
+		.get("created_at")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("skool chat message {id} without a created_at"))?;
+	let src = message
+		.pointer("/metadata/src")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("skool chat message {id} without a src: {message}"))?;
+	let content = message
+		.pointer("/metadata/content")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("skool chat message {id} without content: {message}"))?;
+	Ok(Item {
+		id: id.to_string(),
+		source: Source::Skool,
+		at: created.parse().wrap_err("skool timestamps are RFC3339")?,
+		kind: Kind::Direct,
+		author: match src == user {
+			true => Author::Handle(handle.to_string()),
+			false => Author::Me,
+		},
+		text: mentions(content.trim()),
+		attachments: Vec::new(),
+		permalink: Some(format!("{BASE}/chat?c={channel}")),
+	})
 }
 
 /// One member's position on a group's map: `u` is their user id, `p` is `[lat, lon]`.
