@@ -215,6 +215,27 @@ async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<(
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
 	}
 
+	// A pattern says who; without one this is the whole rolodex, and whoever has no cursor yet is
+	// read from their first message rather than from where the last read stopped.
+	if pattern.is_none() {
+		let mut whole: Vec<&str> = Vec::new();
+		for person in &people {
+			let meta = history::Meta::load(&person.dir(dir))?;
+			let sources = person.handles.keys().filter_map(|platform| platform.parse::<Source>().ok());
+			let unread = sources.filter(|source| source.has_history()).any(|source| meta.messages(source).is_none());
+			if unread || meta.backfill_status().is_some() {
+				whole.push(&person.name);
+			}
+		}
+		let scope = match whole.is_empty() {
+			true => format!("pull {} people, each from where the last read stopped", people.len()),
+			false => format!("pull {} people, {} of them in full ({})", people.len(), whole.len(), whole.join(", ")),
+		};
+		if v_utils::io::confirmation(&scope).flush_blocking() == v_utils::io::ConfirmResult::No {
+			return Ok(());
+		}
+	}
+
 	if !people.iter().any(|p| p.handles.contains_key("telegram")) {
 		return pull_all(config, dir, people, None).await;
 	}
