@@ -558,7 +558,7 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 
 		debug!("Calling LLM for email from: {}", message.from);
 		let response = ask_llm::Client::new((&self.llm_config).into())
-			.model(ask_llm::Model::Slow)
+			.model(ask_llm::Model::Medium)
 			.ask(&prompt)
 			.await
 			.with_context(|| format!("Failed to classify email from {}", message.from))?;

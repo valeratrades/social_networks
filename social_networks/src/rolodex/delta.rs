@@ -87,7 +87,7 @@ pub async fn discover_handles(delta: &Delta<'_>, llm_config: &LlmConfig) -> Resu
 		.collect())
 }
 fn llm(llm_config: &LlmConfig) -> ask_llm::Client {
-	ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Slow).force_json()
+	ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Fast).force_json()
 }
 
 #[derive(Debug, Deserialize)]
