@@ -223,11 +223,13 @@ impl Window {
 		}
 	}
 
+	/// The date is the bound, so there is no second one: a read asked to go back to a day and stopped
+	/// at a count would leave a hole nothing walks down into.
 	pub fn since(at: Timestamp) -> Self {
 		Self::Above {
 			after: None,
 			not_before: Some(at),
-			limit: MAX_ITEMS,
+			limit: usize::MAX,
 		}
 	}
 

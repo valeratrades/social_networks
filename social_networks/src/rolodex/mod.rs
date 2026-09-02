@@ -23,7 +23,7 @@ use person::Person;
 use social_networks_adapters::{
 	github::Github,
 	linkedin::Linkedin,
-	reach::{Author, Direct, Item, Kind, Page, Profiles, Source, Window},
+	reach::{Author, Direct, Item, Kind, Page, Profiles, Source, VenueRef, Window},
 	skool::Skool,
 	telegram_dms::{self, TelegramConfig},
 };
@@ -48,6 +48,7 @@ pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 		RolodexCommand::Cold { pattern } => cold(&config, &dir, pattern.as_deref()).await,
 		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
+		RolodexCommand::Lines { pattern } => lines(&dir, pattern.as_deref()),
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
 		RolodexCommand::Pull { pattern } => pull(&config, &dir, pattern.as_deref()).await,
 	}
@@ -66,6 +67,8 @@ enum RolodexCommand {
 		pattern: String,
 		text: String,
 	},
+	/// Print what matching people said in every venue, straight out of the transcripts
+	Lines { pattern: Option<String> },
 	/// Open a person file in $EDITOR, creating it when the pattern names nobody yet
 	Open { pattern: Option<String> },
 	/// Fetch what is new about matching people and fold it into their files
@@ -101,6 +104,28 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 	}
 	v_utils::io::file_open::open(&path).await.map_err(|e| eyre!("{e:#}"))?;
 	person::load_one(&path).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
+	Ok(())
+}
+
+/// What they said in a venue, in their own words rather than through the labels a pull made of them.
+/// This is what outreach is written off, so it prints the whole line and the venue that holds it.
+fn lines(dir: &Path, pattern: Option<&str>) -> Result<()> {
+	let people = person::load_dir(dir)?;
+	let selected: Vec<&Person> = people.values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
+	if selected.is_empty() {
+		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
+	}
+	for person in selected {
+		let lines = venue_lines(dir, person, None)?;
+		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
+		println!("\n{} {}", person.name.bold(), handles.join(" ").dimmed());
+		if lines.is_empty() {
+			println!("   {} nothing in any venue transcript on disk", "·".dimmed());
+		}
+		for (at, line) in lines {
+			println!("   {} {}  {}", line.at.to_string().dimmed(), at.to_string().dimmed(), line.text.replace('\n', "\n     "));
+		}
+	}
 	Ok(())
 }
 
@@ -408,28 +433,34 @@ async fn backfill<C: Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'
 	cursor.exhausted()
 }
 
-/// This person's own lines out of every venue transcript on disk. Nothing is fetched: `recon posts`
-/// already paid for them, and a pull reads only the lines the slot attributes to a handle of theirs.
-fn venue_items(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {
+/// This person's own lines out of every venue transcript on disk, and which venue each came from.
+/// Nothing is fetched: `recon posts` already paid for them, and only the lines the slot attributes
+/// to a handle of theirs are read.
+fn venue_lines(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<(VenueRef, venue::Line)>> {
 	let mut out = Vec::new();
 	for at in venue::all(dir)? {
 		let Some(handle) = person.handles.get(at.platform.as_ref()) else { continue };
 		let store = venue::Store::open(dir, &at)?;
-		for line in store.lines(since)?.into_iter().filter(|line| &line.handle == handle) {
-			out.push(Item {
-				id: format!("{at}:{}", line.at),
-				source: at.platform.into(),
-				at: line.at,
-				kind: Kind::Post,
-				author: Author::Handle(handle.clone()),
-				text: line.text,
-				attachments: Vec::new(),
-				permalink: None,
-			});
-		}
+		out.extend(store.lines(since)?.into_iter().filter(|line| &line.handle == handle).map(|line| (at.clone(), line)));
 	}
-	out.sort_by_key(|item| item.at);
+	out.sort_by_key(|(_, line)| line.at);
 	Ok(out)
+}
+
+fn venue_items(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {
+	Ok(venue_lines(dir, person, since)?
+		.into_iter()
+		.map(|(at, line)| Item {
+			id: format!("{at}:{}", line.at),
+			source: at.platform.into(),
+			at: line.at,
+			kind: Kind::Post,
+			author: Author::Handle(line.handle),
+			text: line.text,
+			attachments: Vec::new(),
+			permalink: None,
+		})
+		.collect())
 }
 
 fn spinner(prefix: &'static str) -> ProgressBar {

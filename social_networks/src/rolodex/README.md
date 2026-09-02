@@ -105,6 +105,10 @@ anything is there, not what it says. Nothing is written — the messages are `pu
 that checked one in would leave a transcript no backfill may finish. A source that errors excludes
 the person rather than listing them, since a request that did not complete is not a "no".
 
+`lines [pattern]` reads the other direction of the same walk `pull` folds into a person's labels:
+their own venue lines, whole, with the venue each came from. Nothing is fetched and nothing is
+summarised — outreach is written off what somebody actually said.
+
 `dm <--discord|--skool|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
 other than exactly one match: a wasted fetch is recoverable, a message to the wrong person is not.
 The flag names the `handles` key it sends through, so a person without that handle is an error

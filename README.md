@@ -85,6 +85,7 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 | `rolodex pull [pattern]` | Get new data for each person the pattern finds. Write it to their files. |
 | `rolodex discover <platform>:<slug>` | Make a file for each member of a group that has no file yet. |
 | `rolodex cold [pattern]` | Show each person that you sent no message to and got no message from. |
+| `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
 
 A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
@@ -113,8 +114,13 @@ starts it: each command uses part of your rate limit, so you must start it yours
 | `recon roster <platform>:<slug> [--where <sql>]` | Show the member list again. Select part of it with SQL. |
 
 The group files go under `<rolodex path>/venues/<platform>/<slug>/`. `rolodex pull` then reads the
-lines of each person you keep a file for. `recon` gets the posts one time, and every `pull` after
-that is free.
+lines of each person you keep a file for, and `rolodex lines` shows them to you. `recon` gets the
+posts one time, and every read after that is free.
+
+`recon posts` gets the posts and the replies to them. Without `--since`, it gets what is new since
+the last read. With `--since`, it goes back to that day and gets everything after it. The store adds
+to its files and does not rewrite them, so to build the group again from the start, delete its
+`<year>.md` and `meta.json` first and keep `members.json`.
 
 #### Select members with SQL
 

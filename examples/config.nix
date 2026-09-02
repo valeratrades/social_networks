@@ -70,7 +70,7 @@ Sentiment check: $BTC, how are we feeling?
   };
 
   rolodex = {
-    path = "/home/v/s/g/rolodex/";
+    path = "/home/v/s/g/rolodex/people/";
   };
 
   skool = {

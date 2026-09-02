@@ -117,6 +117,8 @@ impl Skool {
 	async fn group_page(&mut self, slug: &str, route: &str) -> Result<serde_json::Value> {
 		let path = match route {
 			"" => format!("/{slug}"),
+			// the feed is the group's own route under a query, not a route of its own
+			query if query.starts_with('?') => format!("/{slug}{query}"),
 			route => format!("/{slug}/{route}"),
 		};
 		let payload = self.page(&path).await?;
@@ -219,6 +221,17 @@ impl Skool {
 			roster.insert(id.to_string(), member(user)?);
 		}
 		Ok((roster, total))
+	}
+
+	/// One post's replies. `children` on the rendered post route is always empty — the web client
+	/// fills it from here — so this is the only place a reply exists. Nesting is flattened: a reply to
+	/// a reply is still something somebody said in the group, and a transcript orders by time.
+	async fn replies(&mut self, post: &str, group: &str, permalink: &str) -> Result<Vec<Item>> {
+		let payload = self.api(Method::GET, &format!("/posts/{post}/comments"), &[("group-id", group)], None).await?;
+		let payload: serde_json::Value = serde_json::from_str(&payload).wrap_err_with(|| format!("skool post {post} replies are not json"))?;
+		let mut out = Vec::new();
+		replies_of(payload.pointer("/post_tree/children"), permalink, &mut out)?;
+		Ok(out)
 	}
 
 	/// One member off the API, which spells the same fields in snake_case that the SSR pages spell in
@@ -467,24 +480,76 @@ impl Venue for Skool {
 		Ok(roster.into_values().collect())
 	}
 
-	/// The group feed, which is the same `postTrees` array a profile carries — one parse for both.
+	/// The group feed, page by page, with every post's replies under it. `postTrees` is the same array
+	/// a profile carries, so the parse is shared — but a feed pages where a profile does not, and the
+	/// replies are on no page skool renders at all. One request per post that has any is what makes a
+	/// whole-group read expensive, and therefore hand-run.
 	async fn posts(&mut self, at: &VenueRef, window: Window, _assets: &Path) -> Result<Page> {
-		let payload = self.group_page(&at.slug, "").await?;
-		let posts = payload
-			.pointer("/props/pageProps/postTrees")
-			.and_then(|v| v.as_array())
-			.ok_or_else(|| eyre!("skool `{}`: no postTrees", at.slug))?;
 		let slug = at.slug.clone();
-		page_of(posts, &window, Kind::Post, Some(&at.slug), |node| {
-			// the author rides on the tree node; a post whose author skool withheld is still the group's
-			Author::Handle(
-				node.pointer("/user/name")
-					.or_else(|| node.pointer("/post/user/name"))
-					.and_then(|v| v.as_str())
-					.unwrap_or(&slug)
-					.to_string(),
-			)
-		})
+		let mut out = Page::default();
+		//LOOP: bounded by the feed, which is finite and walked from the newest page strictly downwards
+		for p in 1.. {
+			let payload = self.group_page(&at.slug, &format!("?p={p}")).await?;
+			let nodes = payload
+				.pointer("/props/pageProps/postTrees")
+				.and_then(|v| v.as_array())
+				.ok_or_else(|| eyre!("skool `{}`: no postTrees", at.slug))?
+				.clone();
+			if nodes.is_empty() {
+				out.exhausted = true;
+				break;
+			}
+
+			let page = page_of(&nodes, &window, Kind::Post, Some(&at.slug), |node| {
+				// the author rides on the tree node; a post whose author skool withheld is still the group's
+				Author::Handle(
+					node.pointer("/user/name")
+						.or_else(|| node.pointer("/post/user/name"))
+						.and_then(|v| v.as_str())
+						.unwrap_or(&slug)
+						.to_string(),
+				)
+			})?;
+			// the first page's first post is the feed's newest, and the only checkpoint worth keeping
+			if let Some(newest) = page.newest {
+				out.newest.get_or_insert(newest);
+			}
+			out.oldest = page.oldest.or(out.oldest);
+			let taken: HashMap<&str, &Item> = page.items.iter().map(|item| (item.id.as_str(), item)).collect();
+
+			let mut replies = Vec::new();
+			for node in &nodes {
+				let post = node.get("post").ok_or_else(|| eyre!("a skool postTree without a post: {node}"))?;
+				let id = post.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool post without an id: {post}"))?;
+				// a post the window stopped short of is one whose replies are not being read either
+				let Some(item) = taken.get(id) else { continue };
+				if post.pointer("/metadata/comments").and_then(|v| v.as_u64()).unwrap_or(0) == 0 {
+					continue;
+				}
+				let group = post.get("groupId").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a groupId"))?;
+				let permalink = item.permalink.clone().ok_or_else(|| eyre!("skool post {id} was built without a permalink"))?;
+				time::sleep(PACE).await;
+				replies.extend(self.replies(id, group, &permalink).await?);
+			}
+			info!("skool `{}`: page {p}, {} posts, {} replies", at.slug, page.items.len(), replies.len());
+
+			// short of the page it was handed means the window stopped it, and nothing under it is wanted
+			let stopped = page.items.len() < nodes.len();
+			out.items.extend(page.items);
+			out.items.extend(replies);
+			if stopped {
+				break;
+			}
+			if out.items.len() >= window.limit() {
+				warn!("skool `{}`: stopping at {} items, the rest comes on the next read", at.slug, out.items.len());
+				break;
+			}
+			time::sleep(PACE).await;
+		}
+		// a page is oldest-first and the feed is walked newest-page-first, so neither order survives
+		// the concatenation on its own
+		out.items.sort_by_key(|item| item.at);
+		Ok(out)
 	}
 }
 
@@ -527,10 +592,10 @@ fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, of: Option<
 			at,
 			kind,
 			author: attribute(node),
-			text: match body.is_empty() {
+			text: mentions(&match body.is_empty() {
 				true => title.to_string(),
 				false => format!("{title}\n{body}"),
-			},
+			}),
 			attachments: Vec::new(),
 			permalink: Some(format!("https://www.skool.com/{group}/{name}")),
 		});
@@ -540,6 +605,39 @@ fn page_of(nodes: &[serde_json::Value], window: &Window, kind: Kind, of: Option<
 	}
 	page.items.reverse();
 	Ok(page)
+}
+
+/// One comment tree, depth-first. The API spells in snake_case what the rendered feed spells in
+/// camelCase; a reply carries the post's permalink because skool gives it no address of its own.
+fn replies_of(children: Option<&serde_json::Value>, permalink: &str, out: &mut Vec<Item>) -> Result<()> {
+	for child in children.and_then(|v| v.as_array()).into_iter().flatten() {
+		let post = child.get("post").ok_or_else(|| eyre!("a skool comment tree node without a post: {child}"))?;
+		let id = post.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool comment without an id: {post}"))?;
+		let created = post.get("created_at").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool comment {id} without a created_at"))?;
+		let handle = post
+			.pointer("/user/name")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("skool comment {id} without an author: {post}"))?;
+		out.push(Item {
+			id: id.to_string(),
+			source: Source::Skool,
+			at: created.parse().wrap_err("skool timestamps are RFC3339")?,
+			kind: Kind::Comment,
+			author: Author::Handle(handle.to_string()),
+			text: mentions(post.pointer("/metadata/content").and_then(|v| v.as_str()).unwrap_or_default().trim()),
+			attachments: Vec::new(),
+			permalink: Some(permalink.to_string()),
+		});
+		replies_of(child.get("children"), permalink, out)?;
+	}
+	Ok(())
+}
+
+/// `[@Name](obj://user/<id>)` is how skool encodes a mention, and the id in it addresses nothing
+/// outside skool's own client.
+fn mentions(text: &str) -> String {
+	static MENTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[(@[^\]]*)\]\(obj://[^)]*\)").expect("static pattern"));
+	MENTION.replace_all(text, "$1").into_owned()
 }
 
 /// A user, off an SSR page or off the API. The two spell the same fields in camelCase and in
