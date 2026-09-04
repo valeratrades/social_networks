@@ -23,7 +23,7 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 | `rolodex open [pattern]` | Open a person file in `$EDITOR`. Create the file if the pattern finds nobody. |
 | `rolodex pull [pattern]` | Get new data for each person the pattern finds. Write it to their files. |
 | `rolodex discover <platform>:<slug>` | Make a file for each member of a group that has no file yet. |
-| `rolodex cold [pattern]` | Show each person that you sent no message to and got no message from. |
+| `rolodex cold [pattern] [--decay <n>]` | Show each person that you sent no message to and got no message from. |
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
 
@@ -38,6 +38,9 @@ the next `pull` continues from the same place.
 is not a conversation, so each member that `discover` added stays cold. `cold` checks every platform
 that you keep a handle for. It uses the messages that `pull` kept. If `pull` read no messages from a
 platform, `cold` asks that platform for one message. It keeps no message that it gets.
+
+`cold` shows the most active person first. It gets the activity from the group lines. `--decay` sets
+how much it decreases the weight of an old line. With `--decay 0`, each line has the same weight.
 
 ### `recon`
 

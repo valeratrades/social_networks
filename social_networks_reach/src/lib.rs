@@ -1,6 +1,7 @@
 #![feature(default_field_values)]
 #![doc = include_str!("../README.md")]
 pub mod history;
+pub mod utils;
 pub mod venue;
 
 use std::{future::Future, path::PathBuf};

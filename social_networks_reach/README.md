@@ -9,6 +9,7 @@ what an [`Item`](social_networks_adapters::reach::Item) is worth keeping as.
         ▲
  this crate        history   <person>/<year>.md       DMs, cursors, the backfill's two states
                    venue     venues/<p>/<slug>/…      transcript, roster, cursor
+                   utils     a cohort → a ranking     how much somebody did, and how lately
                    recon     the venue axis, hand-run
         ▲
  social_networks   people, labels, extraction

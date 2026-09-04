@@ -29,7 +29,7 @@ use social_networks_adapters::{
 };
 use social_networks_reach::{
 	history::{self, Cursor},
-	venue,
+	utils, venue,
 };
 use tracing::{error, info};
 
@@ -45,7 +45,7 @@ pub struct RolodexArgs {
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
 	match args.command {
-		RolodexCommand::Cold { pattern } => cold(&config, &dir, pattern.as_deref()).await,
+		RolodexCommand::Cold { pattern, decay } => cold(&config, &dir, pattern.as_deref(), decay).await,
 		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Lines { pattern } => lines(&dir, pattern.as_deref()),
@@ -57,7 +57,14 @@ pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 #[derive(Subcommand)]
 enum RolodexCommand {
 	/// List matching people no conversation is on record with, on any platform
-	Cold { pattern: Option<String> },
+	Cold {
+		pattern: Option<String>,
+		/// How hard to discount age when ranking them. `0` counts their lines and ignores when they
+		/// wrote them; the axis is `ln(age)`, so what this raises is how far the cohort's newest
+		/// crowd out the rest. See [`social_networks_reach::utils`].
+		#[arg(long, default_value_t = 3.0)]
+		decay: f64,
+	},
 	/// Write skeleton files for the members of a venue nobody has a file for yet
 	Discover(discover::DiscoverArgs),
 	/// Send a message to exactly one matching person over one messenger
@@ -132,7 +139,11 @@ fn lines(dir: &Path, pattern: Option<&str>) -> Result<()> {
 /// Everybody no conversation is on record with, on any platform that could hold one. What a person
 /// said in a venue is not a conversation with them — it stayed in the venue's transcript, and is why
 /// the members `discover` wrote a file for come out cold until somebody writes to them.
-async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
+///
+/// Ranked by that same venue activity, loudest first, because who to write to next is the only
+/// question the list is read for. The venue lines are the whole of the score here: a cold person has
+/// no messages with us by construction.
+async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>, decay: f64) -> Result<()> {
 	let selected: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
 	let total = selected.len();
 	let candidates = sift(dir, selected)?;
@@ -143,12 +154,37 @@ async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<(
 		false => probe_all(config, dir, candidates, None).await?,
 	};
 
-	let width = cold.iter().map(|p| p.name.chars().count()).max().unwrap_or(0);
-	for person in &cold {
-		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
-		println!("   {} {:<width$} {}", "·".dimmed(), person.name, handles.join(" ").dimmed());
+	let mut spoke: Vec<(Person, Vec<Timestamp>)> = Vec::new();
+	for person in cold {
+		let at = venue_lines(dir, &person, None)?.into_iter().map(|(_, line)| line.at).collect();
+		spoke.push((person, at));
 	}
-	println!("   {} of {total} cold", cold.len());
+	// over the cohort rather than per person: scored alone, somebody whose last line was two years
+	// ago sits at the same recency as anybody else's newest
+	let span = utils::Span::over(spoke.iter().flat_map(|(_, at)| at.iter().copied()), decay);
+	// somebody with nothing in any transcript has no score, which is not a score of zero: the two
+	// read the same on the line and mean different things about whether we know anything about them
+	let mut ranked: Vec<(Person, Option<f64>)> = spoke
+		.into_iter()
+		.map(|(person, at)| {
+			let score = (!at.is_empty()).then(|| span.expect("a span exists once anybody spoke").activity(at));
+			(person, score)
+		})
+		.collect();
+	// `Span::over` is `Some` only if somebody spoke, and every weight is above zero, so the top is too
+	let top = ranked.iter().filter_map(|(_, score)| *score).fold(0.0f64, f64::max);
+	ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("a score is finite"));
+
+	let width = ranked.iter().map(|(p, _)| p.name.chars().count()).max().unwrap_or(0);
+	for (person, score) in &ranked {
+		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
+		let rank = match score {
+			Some(score) => format!("{:>3.0}", score / top * 100.0),
+			None => "  ·".to_string(),
+		};
+		println!("   {} {:<width$} {}", rank.dimmed(), person.name, handles.join(" ").dimmed());
+	}
+	println!("   {} of {total} cold", ranked.len());
 	Ok(())
 }
 

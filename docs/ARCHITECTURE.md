@@ -48,7 +48,8 @@ social_networks/
 │       ├── lib.rs                          # `[rolodex]` path, the telegram session wrapper
 │       ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
 │       ├── venue.rs                        # `venues/<platform>/<slug>/`, roster selection
-│       └── bin/recon.rs                    # the venue axis, hand-run
+│       ├── utils.rs                        # the activity axis: log-age decay over a cohort
+│       └── recon.rs                        # the venue axis, hand-run
 │
 └── social_networks_utils/                  # shared primitives
     └── src/
