@@ -55,8 +55,33 @@ The niche and the reason for writing are **never** hardcoded here. The style bel
 nix develop -c cargo r -p social_networks -- rolodex cold [pattern]
 ```
 
-`cold` is the list. Apply the user's extra filter on top of it, reading `__main__.nix` and, for
-location, the venue's `members.json` (`lat`/`lon`/`zone` — coarse on purpose).
+`cold` is the list, ranked loudest-first by venue activity and printing that as a 0-100 score:
+
+```
+   100 mark-b               skool/mark-b-7259      5 lines, the newest 3 days old
+    11 jay-brar             skool/jay-brar-2602    2 lines
+     · idris-z              skool/idris-z-5091     nothing in any transcript
+```
+
+`--decay` is how hard age is discounted, on a `ln(age)` axis — `0` counts lines and ignores when
+they were written, the default `3` lets one recent line beat several old ones, and past `~10` only
+the cohort's newest survives. Run it at two settings before trusting an order: if a name moves a
+lot, it is volume-heavy or recency-heavy rather than actually active.
+
+Three things the score does **not** say:
+
+- **It is not relevance.** It counts lines, not what is in them. Somebody with two lines asking
+  about the exact niche we run is worth more to us than somebody with twenty about another one.
+  Rank on activity, then re-sort by relevance yourself, and say which of the two you used.
+- **It is not comparable across runs.** It is normalised over whichever cohort was listed, so `100`
+  means "loudest of these", never "loud".
+- **`·` is not zero.** It is nobody-said-anything-on-disk, which for a member `discover` wrote a
+  file for is the normal state and says nothing about them.
+
+Location is `members.json` (`lat`/`lon`/`zone` — coarse on purpose), and it **lies often enough to
+check every time**: in one 21-person cohort the pin put a self-described USA member in Italy, a
+`America/Los_Angeles` zone on somebody pinned in Ghent, and a `Europe/Minsk` zone on a London pin.
+A person's own words and their `skool:bio` outrank the pin; when they disagree, believe the person.
 
 Two failure modes to check for, once per campaign:
 
@@ -147,6 +172,16 @@ Two shapes work:
 
 If you cannot derive either from their own words, **append nothing**. That is the correct outcome
 for most people.
+
+**Trace every `btw` back to a line the handle itself wrote.** A venue transcript is one thread, so
+the line above theirs and the line below are somebody else's, and a question built off the
+neighbourhood instead of the author reads as talking to the wrong person. Grep `\[<handle>/` and
+confirm the claim sits on a line that prefix matched — this has already gone wrong once, where a
+draft asked somebody whether they had found a Twilio alternative when the person who could not get
+Twilio working was two lines above them, and they were the one giving Twilio advice.
+
+A draft from an earlier campaign is not evidence either. Re-derive it against the transcript before
+reusing it.
 
 If somebody is plainly a heavy operator and you still cannot derive a specific ask, put a literal
 `TODO:` line in their file and surface it in the report with the raw quotes the user needs to write
