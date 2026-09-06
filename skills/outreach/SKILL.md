@@ -6,46 +6,28 @@ description: "Run a cold-outreach campaign over the rolodex: pick who has never 
 # outreach
 
 A campaign is: a set of people nobody has talked to, one base message the user wrote, and one file
-per person that is that base message plus at most one appended paragraph. The value is in the
-restraint. Almost every draft should come out identical to the base.
+per person that is that base plus at most one appended paragraph. The value is in the restraint.
 
-Runs on top of `/rolodex`, which owns the reading and the sending. This skill owns the selection,
-the drafting and the discipline.
+Runs on `/rolodex`, which owns the reading and the sending. This skill owns selection, drafting and
+discipline.
 
 ## The one invariant
 
-**Only people with no message history.** Never draft to somebody a conversation is already on
-record with — a cold opener sent into a live thread is the one unrecoverable mistake here.
+**Only people with no message history.** A cold opener sent into a live thread is the one
+unrecoverable mistake here. Everything else about the selection is the user's to specify — a venue,
+a region, a predicate, a list of names. Ask if the request does not carry it; do not invent a filter.
 
-Everything else about the selection is the user's to specify and is different every campaign: a
-venue, a region, a predicate over the roster, an explicit list of names. Ask for it if the request
-does not carry it; do not invent a filter.
+## Before drafting: do you understand the business?
 
-## Before drafting: do you actually understand the business?
+Read the base message. It is the only statement of what the campaign is for. From it, name the
+industry and the model being run, where **we** stand in it, and what therefore makes somebody else's
+history worth having. If you cannot fill all three with actual mechanics rather than paraphrase,
+**stop and ask** — and ask for a link, not an explanation: the material almost always exists
+already, in the venue transcripts under `<rolodex>/venues/<platform>/<slug>/*.md`, in an earlier
+`tmp/outreach/`, or in the files of people we have talked to.
 
-Read the base message first. It is the only statement of what this campaign is for. From it, name
-out loud:
-
-- the industry and the specific model being run
-- where **we** stand in it — starting, operating, scaling, which niche is settled on
-- what therefore makes another person's history valuable to us
-
-If you cannot fill all three with specifics — not paraphrase of the base message, actual mechanics
-of the trade — **stop and ask**. Ask for a link to something we already have rather than a written
-explanation: at the point somebody is running an outreach campaign in a niche, the material almost
-always already exists. Likely places, worth checking before asking:
-
-- the venue's own transcripts under `<rolodex>/venues/<platform>/<slug>/*.md` — the group is
-  usually a course, and the members argue the mechanics in the open
-- an earlier `tmp/outreach/` or campaign directory
-- `docs/` in whatever repo the campaign is being run out of
-- the person files of the people we *have* talked to
-
-This gate is not optional politeness. Without it you cannot tell a person who solved our hardest
-problem from a person repeating a platitude, and the whole campaign degrades to sending the base
-message to everybody. Getting it wrong is worse than asking.
-
-The niche and the reason for writing are **never** hardcoded here. The style below is.
+Without this you cannot tell somebody who solved our hardest problem from somebody repeating a
+platitude, and the campaign degrades to the base message for everybody.
 
 ## Pipeline
 
@@ -55,47 +37,29 @@ The niche and the reason for writing are **never** hardcoded here. The style bel
 nix develop -c cargo r -p social_networks -- rolodex cold [pattern]
 ```
 
-`cold` is the list, ranked loudest-first by venue activity and printing that as a 0-100 score:
+The list, ranked loudest-first by venue activity and printed as a 0-100 score. `--decay` is how hard
+age is discounted on a `ln(age)` axis: `0` counts lines and ignores dates, the default `3` lets one
+recent line beat several old ones, past `~10` only the newest survives. Run two settings — a name
+that moves a lot is volume-heavy or recency-heavy rather than active.
 
-```
-   100 mark-b               skool/mark-b-7259      5 lines, the newest 3 days old
-    11 jay-brar             skool/jay-brar-2602    2 lines
-     · idris-z              skool/idris-z-5091     nothing in any transcript
-```
+What the score does not say:
 
-`--decay` is how hard age is discounted, on a `ln(age)` axis — `0` counts lines and ignores when
-they were written, the default `3` lets one recent line beat several old ones, and past `~10` only
-the cohort's newest survives. Run it at two settings before trusting an order: if a name moves a
-lot, it is volume-heavy or recency-heavy rather than actually active.
+- **Not relevance.** It counts lines, not what is in them. Two lines on our exact niche beat twenty
+  on another. Re-sort by relevance yourself, and say which order you used.
+- **Not comparable across runs.** Normalised over the cohort listed, so `100` means loudest of these.
+- **`·` is not zero** — nothing on disk, the normal state for anybody `discover` added.
 
-Three things the score does **not** say:
+Then check, every campaign:
 
-- **It is not relevance.** It counts lines, not what is in them. Somebody with two lines asking
-  about the exact niche we run is worth more to us than somebody with twenty about another one.
-  Rank on activity, then re-sort by relevance yourself, and say which of the two you used.
-- **It is not comparable across runs.** It is normalised over whichever cohort was listed, so `100`
-  means "loudest of these", never "loud".
-- **`·` is not zero.** It is nobody-said-anything-on-disk, which for a member `discover` wrote a
-  file for is the normal state and says nothing about them.
-
-Location is `members.json` (`lat`/`lon`/`zone` — coarse on purpose), and it **lies often enough to
-check every time**: in one 21-person cohort the pin put a self-described USA member in Italy, a
-`America/Los_Angeles` zone on somebody pinned in Ghent, and a `Europe/Minsk` zone on a London pin.
-A person's own words and their `skool:bio` outrank the pin; when they disagree, believe the person.
-
-Two failure modes to check for, once per campaign:
-
-- **A name the user assumes is on the list may have no record at all.** `cold` cannot list somebody
-  who has no directory under `people/`. If the user names a person, confirm they exist before
-  reporting on them; if not, make the skeleton and `rolodex pull` them, then say plainly that they
-  were absent rather than cold.
-- **`meta.json` can lie.** It records what a read *returned*, so a broken read path writes
-  `"messages": 0` and a campaign then treats everybody on that platform as never-contacted. This was
-  a real bug; do not assume it is the last one. `rolodex pull <pattern>` over the cold set is what
-  re-asks the platform, and the check is that somebody comes back **non-zero**: an all-zero cohort
-  is what a broken read and a genuinely cold cohort both look like, so confirm against people the
-  record already places a conversation with. Needs live credentials — if you cannot run it, say the
-  cold list is unconfirmed rather than reporting it as verified.
+- **Location lies.** `members.json` (`lat`/`lon`/`zone`) is coarse and often wrong: in one 21-person
+  cohort it put a self-described USA member in Italy, an `America/Los_Angeles` zone on a Ghent pin,
+  and `Europe/Minsk` on a London one. Their own words and `skool:bio` outrank the pin.
+- **`meta.json` lies.** It records what a read *returned*, so a broken read writes `"messages": 0`
+  and everybody looks never-contacted. `rolodex pull` over the cold set re-asks; the check is that
+  *somebody* comes back non-zero, since a broken read and a genuinely cold cohort look identical.
+  Needs live credentials — without them, say the list is unconfirmed rather than verified.
+- **A name the user assumes is listed may have no record at all.** `cold` cannot list somebody with
+  no directory under `people/`. Make the skeleton, `rolodex pull`, and say they were absent.
 
 Exclude anybody the user says they have already written to, even if `cold` still lists them.
 
@@ -105,155 +69,114 @@ Exclude anybody the user says they have already written to, even if `cold` still
 nix develop -c cargo r -p social_networks -- rolodex lines <pattern>
 ```
 
-Their own words out of the venue transcripts. **This is the only real source of personalisation.**
-A profile bio is not. Someone whose entire footprint is `skool:bio = "Web design agency"` gets the
-base message and nothing else.
-
-Read every selected person's lines before drafting any of them — the judgement is comparative.
-Someone with 20 lines who runs the thing we are trying to run is a different message from someone
-with 2 lines asking a beginner question.
+Their own words out of the venue transcripts. **This is the only real source of personalisation.** A
+bio is not: somebody whose whole footprint is `skool:bio = "Web design agency"` gets the base and
+nothing else. Read every selected person before drafting any of them — the judgement is comparative.
 
 ### 3. Draft
-
-Layout, under `tmp/outreach/`:
 
 ```
 tmp/outreach/
   base_msg.md      the user's message, verbatim, persisted before anything else
-  <stem>.md        one per person; <stem> is exactly their directory name under people/,
-                   accents and all (istván-hag.md, not istvan-hag.md)
+  <stem>.md        one per person; <stem> is their directory name under people/, accents and all
 ```
 
-**Demand the base message as a file.** If the user pastes it inline, write it to `base_msg.md`
-first and work off the file. Every draft is a copy of it plus at most one appended paragraph. When
-in doubt, `cp base_msg.md <stem>.md` and move on.
+**Demand the base as a file.** If the user pastes it inline, write it to `base_msg.md` and work off
+the file. When in doubt, `cp base_msg.md <stem>.md` and move on.
 
 ### 4. Report, then send
 
-Report which drafts deviate from base and what each appended line is — one line each, no prose.
-Then stop. **Nothing is sent without the user saying to send.**
+Report which drafts deviate and what each appended line is — one line each, no prose. Then stop.
+**Nothing is sent without the user saying to send.**
 
 ```
 nix develop -c cargo r -p social_networks -- rolodex dm --<platform> <stem> "$(cat tmp/outreach/<stem>.md)"
 ```
 
-One person per invocation. `dm` refuses a pattern matching anything but exactly one person; that
-refusal is a safety property and is never worked around by broadening the pattern or looping over
-matches. **Delete each draft once it is sent**, so the directory is always the queue of what is
-still outstanding.
+One person per invocation. `dm` refuses a pattern matching anything but exactly one person, and that
+refusal is never worked around. **Delete each draft once sent**, so the directory is the outstanding
+queue. "Send the first N" is directory order unless the user says otherwise.
 
-"Send the first N" means the first N in directory order unless the user says otherwise.
+**A send can be refused, and the refusal says why.** Skool tries every group of ours and prints a
+line each; only the campaign's own group answers the question. Measured on a five-person run — two
+sent, three refused:
+
+- `chat request not allowed` — their DMs are off.
+- `cannot request to non-member` — **they left the group.** `members.json` is a snapshot nothing
+  rechecks, so a roster row is not proof anybody is still reachable.
+- `423 Locked` — that group has member chat off; noise unless it is the campaign's group.
+
+Report which of these each refusal was rather than a count, and never retry one: it is an answer.
+
+`no __NEXT_DATA__ in the served page` is none of the above — the skool cookie went stale and the WAF
+answers `202` with an empty body. Delete `~/.local/state/social_networks/skool_cookies.json` and run
+again; a stale cookie is worse than no cookie.
 
 ## The base message is law
 
-The user wrote it. It is not a first draft for you to improve.
+Not a first draft for you to improve.
 
-- **Do not touch its spacing, capitalisation, punctuation or grammar.** If it starts sentences
-  lowercase, keep them lowercase. If it reads slightly clumsy ("proportional part of future
-  profits"), that is a voice, not an error. Never fix it.
+- **Do not touch its spacing, capitalisation, punctuation or grammar.** Clumsy is a voice, not an
+  error.
 - **Do not weave personalisation into its sentences.** Additions go **below**, as a new paragraph.
-- Small global substitutions the user asks for (a country widened to a continent, a newly-decided
-  detail inserted) are applied to `base_msg.md` itself so every draft inherits them.
+- Global substitutions the user asks for go into `base_msg.md`, so every draft inherits them.
 
-There is exactly **one** permitted mutation of the base per person: **drop a conditional question
-the evidence already answers.** If the base asks "you making money from this?" and their transcript
-shows they plainly are — or plainly are not — the question reads as not having listened. Drop the
-question and the `If yes,` that hangs off it; keep the rest of the sentence intact. Nothing else
-about the base ever changes per person.
+Exactly **one** permitted per-person mutation: **drop a conditional question the evidence already
+answers.** If the base asks "you making money from this?" and their transcript shows they plainly
+are, or plainly are not, the question reads as not having listened — drop it and the `If yes,` that
+hangs off it, and keep the rest of the sentence. Thin evidence is not "plainly"; keep it then.
 
 ## The appended paragraph
 
-At most one, prefixed `btw, `, separated by a blank line. It must be **a question about something
-they themselves wrote**. That is the whole permitted space.
+At most one, prefixed `btw, `, after a blank line. It must be **a question about something they
+themselves wrote**. Two shapes work:
 
-Two shapes work:
+- **Did you solve the problem you posted about?** — `btw, did you get the plumbing GMB verification
+  sorted?`
+- **A question their demonstrated expertise answers**, narrow enough to reply to in one line —
+  `btw, is 700 monthly searches still the floor you'd use in the UK?`
 
-- **Did you solve the problem you posted about?** — they asked the group something, or reported
-  something broken. `btw, did you get the plumbing GMB verification sorted?`
-- **A specific question their demonstrated expertise answers.** Narrow enough that they can reply in
-  one line. `btw, is 700 monthly searches still the floor you'd use in the UK?`
+If you can derive neither, **append nothing**. That is the right outcome for most people.
 
-If you cannot derive either from their own words, **append nothing**. That is the correct outcome
-for most people.
+**One line, one question, and grep for it.** Confirm the claim sits on a line matching
+`\[<handle>/`, then read the replies under that line to fix what it was about. Two failures, both
+already made: a question built off the *neighbouring* line, which was somebody else's; and two of
+the person's own lines, weeks apart, welded into one claim neither made. The second passes an
+authorship check, so authorship is not the test. The tell for both: the draft credits somebody with
+a *deliberate method* when they were describing a circumstance. If they would answer "that is not
+what I said", it is this bug.
 
-**Trace every `btw` back to a line the handle itself wrote.** A venue transcript is one thread, so
-the line above theirs and the line below are somebody else's, and a question built off the
-neighbourhood instead of the author reads as talking to the wrong person. Grep `\[<handle>/` and
-confirm the claim sits on a line that prefix matched — this has already gone wrong once, where a
-draft asked somebody whether they had found a Twilio alternative when the person who could not get
-Twilio working was two lines above them, and they were the one giving Twilio advice.
+An earlier campaign's draft is not evidence either — re-derive it against the transcript.
 
-**One line, one question.** Right author is not enough: build the ask from a *single* line of
-theirs, and read the replies under it to fix what that line was about. Welding two of their lines
-together is where the meaning goes, and it survives the authorship check because both halves really
-are theirs. Both recorded failures of this shape came from the same cohort:
-
-- a review-stickiness tip and, three weeks later, a remark about GMBs lasting "a month or two",
-  merged into one question that asked whether his review fix stopped *reviews* dropping after a
-  month or two. He never said that. The second line was about profiles being taken down.
-- "most of em aren't connected to the pub WiFi so it's data" — an answer about which network the
-  *reviewers* happen to be on — merged with a suspension question from another day, into a question
-  about whether he uses data to avoid suspension. He described no such practice.
-
-The tell in both: the draft attributes a *deliberate method* to somebody who was describing a
-circumstance. If the question would make them answer "that is not what I said", it is this bug.
-
-A draft from an earlier campaign is not evidence either. Re-derive it against the transcript before
-reusing it.
-
-If somebody is plainly a heavy operator and you still cannot derive a specific ask, put a literal
-`TODO:` line in their file and surface it in the report with the raw quotes the user needs to write
-it themselves. Do **not** invent an ask to fill the space.
-
-But do not reach for `TODO:` because your ask feels too small for them. A cold opener gets one
-question from a busy person regardless. One narrow question that is easy to answer beats a grand
-one that is not. `TODO:` is for "I cannot derive an ask", never for "my ask undersells them".
+If somebody is plainly a heavy operator and you still cannot derive an ask, put a literal `TODO:` in
+their file and surface the raw quotes for the user. Do not invent one. But do not reach for `TODO:`
+because your ask feels too small for them: a narrow question that is easy to answer beats a grand
+one that is not.
 
 ## Style
 
-Hardcoded, campaign-independent, and mostly a list of things not to do. The failure mode is
-uniform: text that reads as written by an AI trying to demonstrate that it read carefully.
+Campaign-independent, and mostly things not to do. The failure mode is uniform: text that reads as
+written by an AI demonstrating that it read carefully.
 
 **Never:**
 
-- **Rhetorical contrast pairs.** `suspension as a structural thing and not an accident`,
-  `somebody who'd actually done it rather than theorised about it`, `everyone else is buying them
-  and watching them fall off`. This is the single most frequent tell. If a sentence sets up an X-not-Y
-  or X-while-others-Y shape, delete it.
-- **Ranking them against the group.** `the only one in that group who…`, `the sharpest thing anybody
-  there has said`, `further down that path than most`. Flattery that also proves you surveilled
-  everybody.
-- **Explaining why you are asking.** `I'm at the same step`, `that's the part I'd rather learn than
-  rediscover`, `that's the mistake I'm trying not to buy myself`. Ask the question and stop. If the
-  reason mattered they would ask.
-- **Pitches, offers, or anything committing the user to a future action.** No buying a service, no
-  hiring, no offering to build something, no proposing to work together. `do you take trades in
-  europe? that's exactly what I'll need booked` and `I can just write that script for you, it's an
-  hour of work` are both out — the user never said either, and now they are on the hook for it.
-  Only the user pitches. You only ask about what they already said.
-- **Em dashes.** The voice uses `, - ` (comma, space, hyphen, space). Match whatever the base does.
-- **Quoting them back at length.** One clause of reference is plenty; a verbatim block reads like
-  surveillance.
+- **Rhetorical contrast pairs** — `somebody who'd actually done it rather than theorised about it`.
+  The most frequent tell, and the reliable symptom of a welded `btw`: the two sources become the two
+  horns of an X-not-Y or X-or-just-Y sentence. If a line has that shape, delete it.
+- **Ranking them against the group** — `the only one in that group who…`. Flattery that also proves
+  you surveilled everybody.
+- **Explaining why you are asking** — `that's the part I'd rather learn than rediscover`. Ask, stop.
+- **Pitches, offers, or anything committing the user to a future action.** Only the user pitches.
+- **Em dashes.** The voice uses `, - `. Match the base.
+- **Quoting them at length.** One clause of reference; a verbatim block reads like surveillance.
 
-**Do:**
-
-- Get to the point in the first clause.
-- Keep it to one or two sentences. If it needs a comma-heavy build-up, it is wrong.
-- Match the base's register exactly — lowercase openings, contractions, the lot.
-- Prefer the plainest possible phrasing. Nothing here is trying to impress anybody.
-
-The test: if pitches and flourishes were permitted, would the user have written it this tersely? If
-your line is longer than what they would have typed, cut it.
+**Do:** get to the point in the first clause; one or two sentences; match the base's register
+exactly; plainest possible phrasing. The test: would the user have typed something this long?
 
 ## Judgement calibration
 
-From one real campaign of 26 people: **20 got the base message verbatim.** Six got an appended
-question. Two of those needed a `TODO:` instead of an invented ask.
-
-If more than a quarter of your drafts deviate from base, you are personalising off bios and
-platitudes. Go back and cut.
-
-That quarter is over **an unfiltered cohort**. A selection already cut to the loudest few inverts
-it — everybody left has a transcript worth reading, and a campaign of five picked that way can
-legitimately come out five for five. Say which cohort you are reporting the ratio over, because
-the number means opposite things on each, and a run that never states it has not checked itself.
+One unfiltered campaign of 26: **20 got the base verbatim**, six an appended question, two of those
+a `TODO:`. Over an unfiltered cohort, more than a quarter deviating means you are personalising off
+platitudes — go back and cut. A cohort already cut to the loudest few inverts this, and can
+legitimately come out five for five. **State which cohort your ratio is over**; a run that does not
+has not checked itself.
