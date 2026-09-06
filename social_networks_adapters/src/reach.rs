@@ -74,6 +74,12 @@ impl Source {
 	pub fn has_history(self) -> bool {
 		matches!(self, Self::Discord | Self::Telegram | Self::Skool)
 	}
+
+	/// Whether the platform states which venues somebody belongs to. One that does not is silent on
+	/// the question, which is not the same answer as "none" — see [`Profile::venues`].
+	pub fn states_venues(self) -> bool {
+		matches!(self, Self::Skool)
+	}
 }
 
 /// The platforms that implement [`Venue`]. Separate from [`Source`] so that adding a venue to a

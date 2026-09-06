@@ -34,6 +34,14 @@ pub struct Person {
 	/// Diffing this against a fresh fetch is what decides whether there is anything to extract.
 	#[serde(default)]
 	pub sources: BTreeMap<String, String>,
+	/// `<platform>:<slug>` per venue the platform says they are in, as of the last pull that reached
+	/// a platform which states it. Replaced whole rather than merged: a membership that survived
+	/// because nothing removed it is the bug this exists to catch.
+	///
+	/// `None` is "never asked", which is not the same answer as `Some([])` — a person no platform has
+	/// been asked about must not read as one who has left everywhere.
+	#[serde(default)]
+	pub venues: Option<Vec<String>>,
 }
 impl Person {
 	pub fn skeleton(name: &str) -> Self {
@@ -68,6 +76,20 @@ impl Person {
 			self.handles.entry(platform).or_insert(handle);
 		}
 		self.normalize();
+	}
+
+	/// Replaced whole rather than merged: a membership that survived because nothing removed it is the
+	/// bug this exists to catch. `None` — no platform that states membership answered this run —
+	/// leaves the last one standing rather than overwriting it with silence.
+	///
+	/// Reports whether it moved, which no text delta can: leaving a venue adds no words and no items.
+	pub fn set_venues(&mut self, venues: Option<Vec<String>>) -> bool {
+		let Some(mut venues) = venues else { return false };
+		venues.sort();
+		venues.dedup();
+		let moved = self.venues.as_ref() != Some(&venues);
+		self.venues = Some(venues);
+		moved
 	}
 
 	/// `''` blocks always end in a newline, so trailing whitespace cannot survive a write. Stripping
@@ -162,6 +184,15 @@ pub fn render(person: &Person) -> String {
 	}
 	s.push_str("  };\n");
 
+	// absent rather than empty when nobody has been asked, which is what `Option` is carrying here
+	if let Some(venues) = &person.venues {
+		s.push_str("  venues = [\n");
+		for venue in venues {
+			s.push_str(&format!("    {}\n", nix_dq(venue)));
+		}
+		s.push_str("  ];\n");
+	}
+
 	s.push_str("}\n");
 	s
 }
@@ -241,6 +272,7 @@ mod tests {
 				("discord:bio".to_string(), "Failure is not an option, it's a `Result<T, E>`".to_string()),
 				("telegram:about".to_string(), "lol. 🧉. jenat.\n  indented second line".to_string()),
 			]),
+			venues: Some(vec!["skool:20kmodrop".to_string(), "telegram:some/chat".to_string()]),
 		};
 
 		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");

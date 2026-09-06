@@ -25,6 +25,7 @@ All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
 | `rolodex discover <platform>:<slug>` | Make a file for each member of a group that has no file yet. |
 | `rolodex cold [pattern] [--decay <n>]` | Show each person that you sent no message to and got no message from. |
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
+| `rolodex prune` | Remove each person that left every group and holds no conversation. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
 
 A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
@@ -41,6 +42,10 @@ platform, `cold` asks that platform for one message. It keeps no message that it
 
 `cold` shows the most active person first. It gets the activity from the group lines. `--decay` sets
 how much it decreases the weight of an old line. With `--decay 0`, each line has the same weight.
+
+Each `pull` reads the groups a person is in from their profile and writes them to their file. `cold`
+removes each person that is in no group you keep, and shows their names. `prune` deletes those files
+if no conversation is in them. The group files keep the lines of these people.
 
 ### `recon`
 

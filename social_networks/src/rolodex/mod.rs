@@ -50,6 +50,7 @@ pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
 		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
 		RolodexCommand::Lines { pattern } => lines(&dir, pattern.as_deref()),
 		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
+		RolodexCommand::Prune => prune(&dir),
 		RolodexCommand::Pull { pattern } => pull(&config, &dir, pattern.as_deref()).await,
 	}
 }
@@ -78,6 +79,8 @@ enum RolodexCommand {
 	Lines { pattern: Option<String> },
 	/// Open a person file in $EDITOR, creating it when the pattern names nobody yet
 	Open { pattern: Option<String> },
+	/// Remove people every venue we keep has lost, and no conversation is on record with
+	Prune,
 	/// Fetch what is new about matching people and fold it into their files
 	Pull { pattern: Option<String> },
 }
@@ -154,6 +157,7 @@ async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>, decay: f64)
 		false => probe_all(config, dir, candidates, None).await?,
 	};
 
+	let (cold, gone) = partition_in_scope(dir, cold)?;
 	let mut spoke: Vec<(Person, Vec<Timestamp>)> = Vec::new();
 	for person in cold {
 		let at = venue_lines(dir, &person, None)?.into_iter().map(|(_, line)| line.at).collect();
@@ -184,7 +188,66 @@ async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>, decay: f64)
 		};
 		println!("   {} {:<width$} {}", rank.dimmed(), person.name, handles.join(" ").dimmed());
 	}
+	// named, not counted: a selection that narrows silently reads as one that covered everything
+	if !gone.is_empty() {
+		println!(
+			"   {} left every venue we keep: {}",
+			"✗".red(),
+			gone.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ").dimmed()
+		);
+	}
 	println!("   {} of {total} cold", ranked.len());
+	Ok(())
+}
+
+/// Split on whether any venue we keep a transcript for still lists them. A person the platform has
+/// never been asked about stays in — [`Person::venues`] is `None` then, and absence of an answer is
+/// not an answer.
+///
+/// This is what a roster cannot say. `members.json` is the snapshot some `recon members` left
+/// behind, so it goes on listing somebody long after they walked out; their own profile is asked
+/// fresh on every `pull` and is the only thing that notices.
+fn partition_in_scope(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<Person>)> {
+	let kept: Vec<String> = venue::all(dir)?.iter().map(VenueRef::to_string).collect();
+	Ok(people
+		.into_iter()
+		.partition(|person| person.venues.as_ref().is_none_or(|theirs| theirs.iter().any(|at| kept.contains(at)))))
+}
+
+/// People every venue we keep has lost, and no conversation is on record with — a `discover` wrote
+/// them a file off a roster row, and nothing points at them any more. The venue transcripts keep
+/// their lines regardless: a thread with the departed cut out is not the thread.
+fn prune(dir: &Path) -> Result<()> {
+	let people: Vec<Person> = person::load_dir(dir)?.into_values().collect();
+	let mut stale = Vec::new();
+	for person in partition_in_scope(dir, people)?.1 {
+		let meta = history::Meta::load(&person.dir(dir))?;
+		let sources = person.handles.keys().filter_map(|platform| platform.parse::<Source>().ok());
+		if !sources.clone().any(|source| meta.messages(source).is_some_and(|messages| messages > 0)) {
+			stale.push(person);
+		}
+	}
+	if stale.is_empty() {
+		println!("   nothing to prune");
+		return Ok(());
+	}
+	for person in &stale {
+		println!(
+			"   {} {} {}",
+			"✗".red(),
+			person.name,
+			person.venues.iter().flatten().cloned().collect::<Vec<_>>().join(" ").dimmed()
+		);
+	}
+	let scope = format!("remove {} people and their directories", stale.len());
+	if v_utils::io::confirmation(&scope).flush_blocking() == v_utils::io::ConfirmResult::No {
+		return Ok(());
+	}
+	for person in &stale {
+		let dir = person.dir(dir);
+		std::fs::remove_dir_all(&dir).wrap_err_with(|| format!("failed to remove {}", dir.display()))?;
+	}
+	println!("   {} {} removed", "✓".green(), stale.len());
 	Ok(())
 }
 
@@ -294,6 +357,9 @@ struct Fetched {
 	sources: BTreeMap<String, String>,
 	handles: BTreeMap<String, String>,
 	items: Vec<Item>,
+	/// Only from a source that [states it](Source::states_venues) — otherwise `None`, so that silence
+	/// cannot be folded in as "a member of nothing".
+	venues: Option<Vec<VenueRef>>,
 }
 
 async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
@@ -324,6 +390,9 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 		let mut fetched_sources = BTreeMap::new();
 		let mut handles = BTreeMap::new();
 		let mut fetched = Vec::new();
+		// stays `None` unless a platform that states membership answered, so a skool read that failed
+		// leaves the last known membership standing rather than emptying it
+		let mut member_of: Option<Vec<String>> = None;
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
@@ -332,22 +401,25 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 			let mut cursor = meta.cursor(source)?;
 			// exhaustive: a source that grows a fetch path is handled here or nothing compiles
 			let result = match source {
-				Source::Discord => converse(&mut discord, handle, &mut cursor, &assets).await,
+				Source::Discord => converse(&mut discord, handle, source, &mut cursor, &assets).await,
 				Source::Telegram => {
 					let mut client = telegram_dms::Reach {
 						client: telegram.expect("a telegram client is connected iff somebody has a telegram handle"),
 					};
-					converse(&mut client, handle, &mut cursor, &assets).await
+					converse(&mut client, handle, source, &mut cursor, &assets).await
 				}
-				Source::Github => stated(&mut github, handle, &mut cursor).await,
-				Source::Linkedin => stated(&mut linkedin, handle, &mut cursor).await,
-				Source::Skool => converse(&mut skool, handle, &mut cursor, &assets).await,
+				Source::Github => stated(&mut github, handle, source, &mut cursor).await,
+				Source::Linkedin => stated(&mut linkedin, handle, source, &mut cursor).await,
+				Source::Skool => converse(&mut skool, handle, source, &mut cursor, &assets).await,
 			};
 			match result {
 				Ok(fetch) => {
 					fetched_sources.extend(fetch.sources);
 					handles.extend(fetch.handles);
 					fetched.extend(fetch.items);
+					if let Some(stated) = fetch.venues {
+						member_of.get_or_insert_default().extend(stated.iter().map(VenueRef::to_string));
+					}
 				}
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
 				// the pull continues
@@ -371,9 +443,18 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
 
+		let moved = person.set_venues(member_of);
 		let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched) else {
-			info!("{}: nothing new", person.name);
-			pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
+			// a venue they left is a change with no text and no items behind it, so it has to be
+			// written on the path a text delta calls empty
+			if moved {
+				person.write(dir)?;
+				updated += 1;
+				pb.suspend(|| println!("   {} {name} venues changed{state}", "✓".green()));
+			} else {
+				info!("{}: nothing new", person.name);
+				pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
+			}
 			pb.inc(1);
 			continue;
 		};
@@ -434,7 +515,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 }
 
 /// What a platform states, for the sources that hold no conversation.
-async fn stated<C: Profiles>(client: &mut C, handle: &str, cursor: &mut Cursor<'_>) -> Result<Fetched> {
+async fn stated<C: Profiles>(client: &mut C, handle: &str, source: Source, cursor: &mut Cursor<'_>) -> Result<Fetched> {
 	let profile = client.profile(handle, Window::above(cursor.newest().map(str::to_string))).await?;
 	if let Some(newest) = &profile.activity.newest {
 		cursor.advance(newest.clone());
@@ -443,11 +524,12 @@ async fn stated<C: Profiles>(client: &mut C, handle: &str, cursor: &mut Cursor<'
 		sources: profile.sources,
 		handles: profile.handles,
 		items: profile.activity.items,
+		venues: source.states_venues().then_some(profile.venues),
 	})
 }
 
 /// What a messenger states, plus the conversation itself and whatever backfill is still owed.
-async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'_>, assets: &Path) -> Result<Fetched> {
+async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, source: Source, cursor: &mut Cursor<'_>, assets: &Path) -> Result<Fetched> {
 	let profile = client.profile(handle, Window::above(cursor.newest().map(str::to_string))).await?;
 	let page = client.direct(handle, Window::above(cursor.newest().map(str::to_string)), assets).await?;
 	if let Some(newest) = &page.newest {
@@ -470,6 +552,7 @@ async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, cursor: &m
 		sources: profile.sources,
 		handles: profile.handles,
 		items: page.items,
+		venues: source.states_venues().then_some(profile.venues),
 	})
 }
 

@@ -53,7 +53,9 @@ Then check, every campaign:
 
 - **Location lies.** `members.json` (`lat`/`lon`/`zone`) is coarse and often wrong: in one 21-person
   cohort it put a self-described USA member in Italy, an `America/Los_Angeles` zone on a Ghent pin,
-  and `Europe/Minsk` on a London one. Their own words and `skool:bio` outrank the pin.
+  and `Europe/Minsk` on a London one. Their own words and `skool:bio` outrank the pin. The roster
+  lies about membership too, which is why `cold` reads that off each person's own profile instead
+  and prints who it dropped — those people are gone, not deprioritised.
 - **`meta.json` lies.** It records what a read *returned*, so a broken read writes `"messages": 0`
   and everybody looks never-contacted. `rolodex pull` over the cold set re-asks; the check is that
   *somebody* comes back non-zero, since a broken read and a genuinely cold cohort look identical.
@@ -98,15 +100,12 @@ refusal is never worked around. **Delete each draft once sent**, so the director
 queue. "Send the first N" is directory order unless the user says otherwise.
 
 **A send can be refused, and the refusal says why.** Skool tries every group of ours and prints a
-line each; only the campaign's own group answers the question. Measured on a five-person run — two
-sent, three refused:
+line each; only the campaign's own group answers. `chat request not allowed` is their DMs being off.
+`423 Locked` is a group with member chat off — noise unless it is the campaign's. Report which one
+per person rather than a count, and never retry: a refusal is an answer, not a failure.
 
-- `chat request not allowed` — their DMs are off.
-- `cannot request to non-member` — **they left the group.** `members.json` is a snapshot nothing
-  rechecks, so a roster row is not proof anybody is still reachable.
-- `423 Locked` — that group has member chat off; noise unless it is the campaign's group.
-
-Report which of these each refusal was rather than a count, and never retry one: it is an answer.
+`cannot request to non-member` means they left, and `cold` should already have dropped them. Seeing
+it means their file is stale — `rolodex pull` them, then `rolodex prune`.
 
 `no __NEXT_DATA__ in the served page` is none of the above — the skool cookie went stale and the WAF
 answers `202` with an empty body. Delete `~/.local/state/social_networks/skool_cookies.json` and run
