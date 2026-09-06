@@ -90,9 +90,12 @@ Two failure modes to check for, once per campaign:
   reporting on them; if not, make the skeleton and `rolodex pull` them, then say plainly that they
   were absent rather than cold.
 - **`meta.json` can lie.** It records what a read *returned*, so a broken read path writes
-  `"messages": 0` and a campaign then treats everybody on that platform as never-contacted. Confirm
-  the cold list once against the platform's own state — for skool, the open chat channels — rather
-  than trusting the local record. This was a real bug; do not assume it is the last one.
+  `"messages": 0` and a campaign then treats everybody on that platform as never-contacted. This was
+  a real bug; do not assume it is the last one. `rolodex pull <pattern>` over the cold set is what
+  re-asks the platform, and the check is that somebody comes back **non-zero**: an all-zero cohort
+  is what a broken read and a genuinely cold cohort both look like, so confirm against people the
+  record already places a conversation with. Needs live credentials — if you cannot run it, say the
+  cold list is unconfirmed rather than reporting it as verified.
 
 Exclude anybody the user says they have already written to, even if `cold` still lists them.
 
@@ -180,6 +183,21 @@ confirm the claim sits on a line that prefix matched — this has already gone w
 draft asked somebody whether they had found a Twilio alternative when the person who could not get
 Twilio working was two lines above them, and they were the one giving Twilio advice.
 
+**One line, one question.** Right author is not enough: build the ask from a *single* line of
+theirs, and read the replies under it to fix what that line was about. Welding two of their lines
+together is where the meaning goes, and it survives the authorship check because both halves really
+are theirs. Both recorded failures of this shape came from the same cohort:
+
+- a review-stickiness tip and, three weeks later, a remark about GMBs lasting "a month or two",
+  merged into one question that asked whether his review fix stopped *reviews* dropping after a
+  month or two. He never said that. The second line was about profiles being taken down.
+- "most of em aren't connected to the pub WiFi so it's data" — an answer about which network the
+  *reviewers* happen to be on — merged with a suspension question from another day, into a question
+  about whether he uses data to avoid suspension. He described no such practice.
+
+The tell in both: the draft attributes a *deliberate method* to somebody who was describing a
+circumstance. If the question would make them answer "that is not what I said", it is this bug.
+
 A draft from an earlier campaign is not evidence either. Re-derive it against the transcript before
 reusing it.
 
@@ -234,3 +252,8 @@ question. Two of those needed a `TODO:` instead of an invented ask.
 
 If more than a quarter of your drafts deviate from base, you are personalising off bios and
 platitudes. Go back and cut.
+
+That quarter is over **an unfiltered cohort**. A selection already cut to the loudest few inverts
+it — everybody left has a transcript worth reading, and a campaign of five picked that way can
+legitimately come out five for five. Say which cohort you are reporting the ratio over, because
+the number means opposite things on each, and a run that never states it has not checked itself.
