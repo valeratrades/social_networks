@@ -95,9 +95,15 @@ Report which drafts deviate and what each appended line is — one line each, no
 nix develop -c cargo r -p social_networks -- rolodex dm --<platform> <stem> "$(cat tmp/outreach/<stem>.md)"
 ```
 
-One person per invocation. `dm` refuses a pattern matching anything but exactly one person, and that
-refusal is never worked around. **Delete each draft once sent**, so the directory is the outstanding
-queue. "Send the first N" is directory order unless the user says otherwise.
+One person per invocation, run from the repo root — a `cd` into `tmp/outreach` earlier in the same
+shell makes that `cat` produce nothing, and `dm` will happily send the empty string. `test -s` the
+draft first. `dm` refuses a pattern matching anything but exactly one person, and that refusal is
+never worked around. **Delete each draft once sent**, so the directory is the outstanding queue.
+"Send the first N" is directory order unless the user says otherwise.
+
+**`rolodex pull` whoever you sent to, before finishing.** A send writes nothing to the transcript, so
+until a pull re-reads it from the platform they still count as cold — and the next campaign would
+open them again, which is the one unrecoverable mistake.
 
 **N is a count of messages delivered, not of attempts.** A send can be refused, and a refused person
 does not fill a slot: take the next candidate off the ranked list, draft them, and keep going until
