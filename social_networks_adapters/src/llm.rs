@@ -3,7 +3,8 @@ use v_utils::macros::MyConfigPrimitives;
 
 /// Keys for the providers `ask_llm` can reach. Which one a call needs follows from the
 /// [`ask_llm::Model`] tier it asks for, so a key absent here surfaces as `ask_llm::MissingToken`
-/// on the request that wanted it.
+/// on the request that wanted it — except `claude_token`, which only overrides what the `claude`
+/// CLI would otherwise resolve for itself.
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct LlmConfig {
 	#[serde(default)]
