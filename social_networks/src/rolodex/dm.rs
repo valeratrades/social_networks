@@ -6,7 +6,11 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
-use social_networks_adapters::{reach::Direct, skool::Skool, telegram_dms, twitter};
+use social_networks_adapters::{
+	reach::{Direct, Unreachable},
+	skool::Skool,
+	telegram_dms, twitter,
+};
 use strum::AsRefStr;
 
 use super::{person, with_telegram};
@@ -65,22 +69,38 @@ pub async fn send(config: &AppConfig, dir: &Path, messenger: Messenger, pattern:
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
 
 	// one `Direct::send`, four sessions: the same enum dispatch the reads go through
-	match messenger {
+	let sent = match messenger {
 		Messenger::Discord =>
 			social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone())
 				.send(handle, text)
-				.await?,
+				.await,
 		// the read path is happy anonymous, but a message is written as somebody
 		Messenger::Skool => {
 			let credentials = config
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
-			Skool::try_new(Some(credentials.clone()))?.send(handle, text).await?
+			Skool::try_new(Some(credentials.clone()))?.send(handle, text).await
 		}
-		Messenger::Telegram => with_telegram(&config.telegram, async |client| telegram_dms::Reach { client: &client }.send(handle, text).await).await?,
-		Messenger::Twitter => twitter::Reach(&config.twitter).send(handle, text).await?,
+		Messenger::Telegram => with_telegram(&config.telegram, async |client| telegram_dms::Reach { client: &client }.send(handle, text).await).await,
+		Messenger::Twitter => twitter::Reach(&config.twitter).send(handle, text).await,
+	};
+
+	// The outcome is worth as much as the message: a campaign that does not record a refusal picks
+	// the same person again next time and spends another request learning the same thing. Only an
+	// `Unreachable` counts — a dead session or a dropped connection is ours, not theirs.
+	let mut person = person.clone();
+	let was = person.unreachable.remove(platform);
+	if let Err(e) = &sent
+		&& let Some(refusal) = e.downcast_ref::<Unreachable>()
+	{
+		person.unreachable.insert(platform.to_string(), refusal.to_string());
 	}
+	if was != person.unreachable.get(platform).cloned() {
+		person.write(dir)?;
+	}
+	sent?;
+
 	println!("   {} {platform}/{handle} ({})", "✓".green(), person.name);
 	Ok(())
 }

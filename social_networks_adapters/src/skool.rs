@@ -209,7 +209,8 @@ impl Skool {
 				Err(e) => refused.push(format!("{e:#}")),
 			}
 		}
-		Err(eyre!("no group of mine opens a chat with them:\n{}", refused.join("\n")))
+		// every group of ours has answered about them, so this is their state and not ours
+		Err(crate::reach::Unreachable(format!("no group of mine opens a chat with them:\n{}", refused.join("\n"))).into())
 	}
 
 	/// `(id, slug, display)` per group this session belongs to.

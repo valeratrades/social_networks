@@ -99,13 +99,16 @@ One person per invocation. `dm` refuses a pattern matching anything but exactly 
 refusal is never worked around. **Delete each draft once sent**, so the directory is the outstanding
 queue. "Send the first N" is directory order unless the user says otherwise.
 
-**A send can be refused, and the refusal says why.** Skool tries every group of ours and prints a
-line each; only the campaign's own group answers. `chat request not allowed` is their DMs being off.
-`423 Locked` is a group with member chat off — noise unless it is the campaign's. Report which one
-per person rather than a count, and never retry: a refusal is an answer, not a failure.
+**N is a count of messages delivered, not of attempts.** A send can be refused, and a refused person
+does not fill a slot: take the next candidate off the ranked list, draft them, and keep going until
+N have actually landed or the list runs out. Say how many went and who is left. Stopping at "5 tried,
+2 sent" is the failure — the campaign was for five people.
 
-`cannot request to non-member` means they left, and `cold` should already have dropped them. Seeing
-it means their file is stale — `rolodex pull` them, then `rolodex prune`.
+**A refusal says why, and is never retried.** Skool tries every group of ours and prints a line each;
+only the campaign's own group answers. `chat request not allowed` is their DMs being off; `423
+Locked` is a group with member chat off, noise unless it is the campaign's; `cannot request to
+non-member` means they left. `dm` writes the refusal to their file, so `cold` drops them from then on
+— seeing somebody refused twice means that write did not happen, and is worth reporting.
 
 `no __NEXT_DATA__ in the served page` is none of the above — the skool cookie went stale and the WAF
 answers `202` with an empty body. Delete `~/.local/state/social_networks/skool_cookies.json` and run

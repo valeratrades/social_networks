@@ -294,6 +294,13 @@ impl Author {
 	}
 }
 
+/// The platform answered about *them*: there is no path to this person, and asking again cannot make
+/// one. Carried as its own type so the caller can tell it from a transport failure, which says
+/// nothing about them and must not be recorded against them.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Unreachable(pub String);
+
 /// An image is kept: converted once, under a name its own id determines, so a re-download costs
 /// nothing. Everything else is named and not kept — a transcript that says a file went by is worth
 /// far more than the bytes of it.

@@ -42,6 +42,11 @@ pub struct Person {
 	/// been asked about must not read as one who has left everywhere.
 	#[serde(default)]
 	pub venues: Option<Vec<String>>,
+	/// Platform → what it said when it refused to carry a message to them. Only ever written from an
+	/// [`Unreachable`](social_networks_adapters::reach::Unreachable), so a network failure or an
+	/// expired session cannot strand somebody here; cleared the moment a send to them lands.
+	#[serde(default)]
+	pub unreachable: BTreeMap<String, String>,
 }
 impl Person {
 	pub fn skeleton(name: &str) -> Self {
@@ -97,7 +102,7 @@ impl Person {
 	/// an unchanged `discord:note` from reading as changed on every pull.
 	fn normalize(&mut self) {
 		self.summary = self.summary.trim_end().to_string();
-		for value in self.sources.values_mut() {
+		for value in self.sources.values_mut().chain(self.unreachable.values_mut()) {
 			*value = value.trim_end().to_string();
 		}
 	}
@@ -183,6 +188,14 @@ pub fn render(person: &Person) -> String {
 		s.push_str(&format!("    {} = {};\n", nix_attr(key), nix_str(value, 4)));
 	}
 	s.push_str("  };\n");
+
+	if !person.unreachable.is_empty() {
+		s.push_str("  unreachable = {\n");
+		for (platform, reason) in &person.unreachable {
+			s.push_str(&format!("    {} = {};\n", nix_attr(platform), nix_str(reason, 4)));
+		}
+		s.push_str("  };\n");
+	}
 
 	// absent rather than empty when nobody has been asked, which is what `Option` is carrying here
 	if let Some(venues) = &person.venues {
@@ -273,6 +286,7 @@ mod tests {
 				("telegram:about".to_string(), "lol. 🧉. jenat.\n  indented second line".to_string()),
 			]),
 			venues: Some(vec!["skool:20kmodrop".to_string(), "telegram:some/chat".to_string()]),
+			unreachable: BTreeMap::from([("skool".to_string(), "no group of mine opens a chat with them:\n400: not a member".to_string())]),
 		};
 
 		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");

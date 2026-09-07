@@ -209,9 +209,13 @@ async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>, decay: f64)
 /// fresh on every `pull` and is the only thing that notices.
 fn partition_in_scope(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<Person>)> {
 	let kept: Vec<String> = venue::all(dir)?.iter().map(VenueRef::to_string).collect();
-	Ok(people
-		.into_iter()
-		.partition(|person| person.venues.as_ref().is_none_or(|theirs| theirs.iter().any(|at| kept.contains(at)))))
+	Ok(people.into_iter().partition(|person| {
+		let listed = person.venues.as_ref().is_none_or(|theirs| theirs.iter().any(|at| kept.contains(at)));
+		// a platform that has already refused to carry a message is not a way to reach them, so
+		// somebody refused on every handle they have is as out of reach as somebody who left
+		let reachable = person.handles.keys().any(|platform| !person.unreachable.contains_key(platform));
+		listed && reachable
+	}))
 }
 
 /// People every venue we keep has lost, and no conversation is on record with — a `discover` wrote
