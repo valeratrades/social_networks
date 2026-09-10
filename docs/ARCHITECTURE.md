@@ -40,7 +40,8 @@ social_networks/
 │       ├── email.rs                        # Gmail IMAP/OAuth, LLM classification
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
-│       ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie
+│       ├── telegram_notifier.rs            # central notification hub
+│       ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie; the chat poller
 │       └── youtube.rs                      # RSS monitoring, sentiment analysis
 │
 ├── social_networks_reach/                  # the transcript format and its store
@@ -56,7 +57,6 @@ social_networks/
         ├── lib.rs
         ├── avif.rs                         # attachment images, kept at an archive's size
         ├── db.rs                           # SQLite client (libsql): email dedup
-        ├── telegram_notifier.rs            # central notification hub
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
 ```
@@ -69,6 +69,9 @@ A platform is reached in one of two ways, and the seam between them is which sid
    Client       listen() forever ─► DmEvent / notification      a daemon, always on
    reach        profile / direct / venues / members / posts     asked, and only by a human
 ```
+
+A platform may sit on both, and skool does: it is read on demand, and its chat is *polled*, so a
+`/ping` there is not something you find out about tomorrow.
 
 `Client` is below; [`reach`](../social_networks_adapters/src/reach.rs) is the **thin waist**: three
 traits, six methods, and one `Item` that carries its own author — so a DM, a group post and a public
@@ -113,12 +116,14 @@ pub trait Client {
 | Twitter monitor / schedule | 429, 5xx, network errors | **401, 403** |
 | Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; OAuth refresh 401/403 |
 | YouTube | 429, 5xx | 401/403 |
+| Skool chat | any refused poll, up to 5 in a row | — a dead cookie is re-minted in-process |
 
 ## Data Flow
 
 ```
 Discord ──┐                              ┌── Alerts Channel (pings, monitored users)
 Telegram ─┤                              │
+Skool ────┤                              │
 Twitter ──┼──► TelegramNotifier ─────────┤
 YouTube ──┤                              │
 Gmail ────┘                              └── Output Channel (polls, videos, emails)
@@ -158,7 +163,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 ## Key Entities
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
-- `TelegramNotifier` (utils::telegram_notifier): all in-band outbound notifications flow through here.
+- `TelegramNotifier` (adapters::telegram_notifier): all in-band outbound notifications flow through here.
 - `Database` (utils::db): SQLite (libsql). Email deduplication.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.

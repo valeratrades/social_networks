@@ -9,7 +9,12 @@
       user_token = { env = "DISCORD_AUTH"; };
       my_username = { env = "DEFAULT_USERNAME"; };
     };
-    monitored_users = [ "play_me_once" "deevsdeevs" ];
+    monitored_users = [
+      "play_me_once"
+      "deevsdeevs"
+      { discord = "glored."; }
+      { skool = "eric-velch-6730"; }
+    ];
   };
 
   telegram = {

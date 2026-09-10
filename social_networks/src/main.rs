@@ -11,10 +11,11 @@ use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::DmsArgs;
 use rolodex::RolodexArgs;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs, install_panic_alert,
-	telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
+	AdapterError, Client, DiscordDms, EmailMonitor, SkoolDms, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
+	install_panic_alert, telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
+use tracing::info;
 use v_utils::utils::exit_on_error;
 
 #[derive(Parser)]
@@ -67,11 +68,26 @@ fn main() {
 			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 			let notifier = TelegramNotifier::new(config.telegram.clone());
 			let mut discord = DiscordDms::new(config.dms.discord.clone(), tx.clone(), notifier.clone(), config.dms.notification_horizon);
+			// skool is watched only where there are credentials to watch it with — reading a *person*
+			// needs none, but the chat listing is behind a session
+			let mut skool = match config.skool.clone() {
+				Some(creds) => Some(SkoolDms::try_new(creds, tx.clone()).map_err(|e| adapter_from_eyre("skool_dms", e))?),
+				None => {
+					info!("no `[skool]` credentials, so skool chats are not watched");
+					None
+				}
+			};
 			let mut telegram = TelegramDms::new(config.telegram, tx);
 			let err = tokio::select! {
 				e = discord.listen() => e.unwrap_err(),
 				e = telegram.listen() => e.unwrap_err(),
-				() = dms::run(rx, config.dms, notifier) => unreachable!("dms::run only returns when both adapters drop their senders"),
+				e = async {
+					match &mut skool {
+						Some(skool) => skool.listen().await.unwrap_err(),
+						None => std::future::pending().await,
+					}
+				} => e,
+				() = dms::run(rx, config.dms, notifier) => unreachable!("dms::run only returns when every adapter drops its sender"),
 			};
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
@@ -84,10 +100,12 @@ fn main() {
 					.email
 					.clone()
 					.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
-					.map_err(adapter_from_eyre)?;
-				let mut monitor = EmailMonitor::try_from_configs(email_config, llm_config, config.telegram).await.map_err(adapter_from_eyre)?;
+					.map_err(|e| adapter_from_eyre("email", e))?;
+				let mut monitor = EmailMonitor::try_from_configs(email_config, llm_config, config.telegram)
+					.await
+					.map_err(|e| adapter_from_eyre("email", e))?;
 				if args.mark_all_read {
-					return monitor.mark_all_as_read().await.map_err(adapter_from_eyre);
+					return monitor.mark_all_as_read().await.map_err(|e| adapter_from_eyre("email", e));
 				}
 				let err = monitor.listen().await.unwrap_err();
 				alert(&err).await;
@@ -150,9 +168,6 @@ where
 	runtime.block_on(async { f().await.map_err(|e| e.into()) })
 }
 
-fn adapter_from_eyre(e: color_eyre::eyre::Report) -> AdapterError {
-	AdapterError::Unhandled {
-		surface: "email",
-		detail: format!("{e:#}"),
-	}
+fn adapter_from_eyre(surface: &'static str, e: color_eyre::eyre::Report) -> AdapterError {
+	AdapterError::Unhandled { surface, detail: format!("{e:#}") }
 }

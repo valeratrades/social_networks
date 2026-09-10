@@ -10,11 +10,13 @@
 //! `/<group>/-/members` redirect to `/[group]/about`, so the venue axis needs `[skool]` credentials
 //! and an actual membership.
 //!
-//! Nothing here listens. Skool is reached on demand and only by a human: `rolodex` for a person,
-//! `recon` for a group.
+//! Skool is reached on demand and only by a human — `rolodex` for a person, `recon` for a group —
+//! with one exception: [`SkoolDms`] polls the chat listing so a `/ping` here lands like one anywhere
+//! else.
 
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
+	convert::Infallible,
 	io::Write as _,
 	os::unix::fs::OpenOptionsExt as _,
 	path::{Path, PathBuf},
@@ -33,12 +35,27 @@ use jiff::Timestamp;
 use regex::Regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use tokio::time;
+use tokio::{sync::mpsc::UnboundedSender, time};
 use tracing::{info, instrument, warn};
 use v_utils::macros::MyConfigPrimitives;
 
-use crate::reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window};
+use crate::{
+	client::{AdapterError, Client},
+	dm_event::DmEvent,
+	reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window},
+};
 
+const SURFACE: &str = "skool_dms";
+/// What a [`DmEvent`] from here calls itself, and what a `{skool = "..."}` monitored user matches on.
+const PLATFORM: &str = "Skool";
+/// Skool pushes nothing, so this is the whole of how late a `/ping` can be.
+const POLL: Duration = Duration::from_secs(60);
+/// A cookie rotation costs one poll and a CloudFront block a few, so the daemon only comes down once
+/// waiting has stopped being an explanation.
+const POLL_FAILURES: usize = 5;
+/// How much of a channel skool has only just served counts as new. Small, because the alternative to
+/// guessing here is replaying a conversation nobody asked to see again.
+const CATCH_UP: usize = 5;
 const BASE: &str = "https://www.skool.com";
 /// Everything the SSR payload cannot say, and every write. Cookie-authenticated, same as [`BASE`].
 const API: &str = "https://api.skool.com";
@@ -136,14 +153,8 @@ impl Skool {
 	/// the ones already open are the first place to look and the only ones that survive leaving a
 	/// group.
 	async fn open_channel(&mut self, user: &str) -> Result<Option<String>> {
-		// 30 is the page the web client asks for, and anything larger is a 400. Past it we fall through
-		// to `chat-request`, which answers with the open channel anyway.
-		let open = self.api(Method::GET, "/self/chat-channels", &[("limit", "30")], None).await?;
-		let open: serde_json::Value = serde_json::from_str(&open).wrap_err("listing open chat channels")?;
-		// `channels: null` is how skool spells an empty list
-		let open = open.get("channels").ok_or_else(|| eyre!("a chat channel listing without `channels`: {open}"))?;
-		open.as_array()
-			.unwrap_or(&Vec::new())
+		self.chat_channels()
+			.await?
 			.iter()
 			.find(|channel| {
 				channel
@@ -159,6 +170,17 @@ impl Skool {
 					.ok_or_else(|| eyre!("a chat channel without an id: {channel}"))
 			})
 			.transpose()
+	}
+
+	/// Every chat channel this session has open. `user` on each is the other party and `last_message_id`
+	/// what they last said, so a listing answers who wrote and whether it is new without touching a
+	/// conversation. 30 is the page the web client asks for, and anything larger is a 400.
+	async fn chat_channels(&mut self) -> Result<Vec<serde_json::Value>> {
+		let open = self.api(Method::GET, "/self/chat-channels", &[("limit", "30")], None).await?;
+		let open: serde_json::Value = serde_json::from_str(&open).wrap_err("listing open chat channels")?;
+		let channels = open.get("channels").ok_or_else(|| eyre!("a chat channel listing without `channels`: {open}"))?;
+		// `channels: null` is how skool spells an empty list
+		Ok(channels.as_array().cloned().unwrap_or_default())
 	}
 
 	/// Skool pages its chat around a message rather than from an end: `msg` is the pivot, `before` and
@@ -660,6 +682,110 @@ impl Venue for Skool {
 		// the concatenation on its own
 		out.items.sort_by_key(|item| item.at);
 		Ok(out)
+	}
+}
+
+/// Skool's chat is the one thing here that cannot wait to be asked: a `/ping` is only worth
+/// anything while the sender is still at their keyboard. Nothing on skool pushes, so this polls the
+/// channel listing — one request, which names every open chat, who is on the other end of it and
+/// what they last said. Only a channel whose last message moved costs a second request.
+pub struct SkoolDms {
+	session: Skool,
+	tx: UnboundedSender<DmEvent>,
+	/// Last message id seen per channel. Seeded by the first poll and empty before it: a fresh process
+	/// has no known gap, and replaying one would re-beep every restart.
+	cursors: HashMap<String, String>,
+	seeded: bool,
+	/// Skool's block page and its cookie rotation both look like a failed poll, so one is not worth
+	/// bringing the daemon down over — [`POLL_FAILURES`] of them in a row is.
+	failures: usize,
+}
+
+impl SkoolDms {
+	pub fn try_new(creds: SkoolCredentials, tx: UnboundedSender<DmEvent>) -> Result<Self> {
+		Ok(Self {
+			session: Skool::try_new(Some(creds))?,
+			tx,
+			cursors: HashMap::new(),
+			seeded: false,
+			failures: 0,
+		})
+	}
+
+	async fn poll(&mut self) -> Result<()> {
+		for channel in self.session.chat_channels().await? {
+			let id = channel.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a chat channel without an id: {channel}"))?;
+			// a channel opened by a `chat-request` nobody has written in yet
+			let Some(last) = channel.get("last_message_id").and_then(|v| v.as_str()) else { continue };
+			let seen = self.cursors.get(id).cloned();
+			if seen.as_deref() == Some(last) {
+				continue;
+			}
+			let them = channel.pointer("/user").ok_or_else(|| eyre!("a chat channel without the other party: {channel}"))?;
+			let handle = them.get("name").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a chat channel party without a name: {them}"))?;
+			let them_id = them.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a chat channel party without an id: {them}"))?;
+			if !self.seeded {
+				self.cursors.insert(id.to_string(), last.to_string());
+				continue;
+			}
+			let (page, _) = match &seen {
+				// one page is what a poll interval can plausibly hold; anything past it walks up on the next
+				// poll, since the cursor lands on the newest message this one saw
+				Some(seen) => self.session.chat_page(id, Some(seen), Side::After, CHAT_PAGE).await?,
+				// skool serves 30 channels and no more, so a channel with no cursor is either one that was
+				// just opened or one a new message has just carried back into the listing — its tail is what
+				// is new in both cases
+				None => self.session.chat_page(id, None, Side::Before, CATCH_UP).await?,
+			};
+			for message in &page {
+				let item = chat_item(message, handle, them_id, id)?;
+				if matches!(item.author, Author::Me) {
+					continue;
+				}
+				// a closed receiver is `dms::run` gone, which is the process coming down
+				let _ = self.tx.send(DmEvent::Message {
+					platform: PLATFORM,
+					sender: handle.to_string(),
+					text: item.text,
+					chat_id: id.to_string(),
+					is_dm: true,
+					// skool's chat has neither a mention nor a reply
+					mentions_me: false,
+					is_reply_to_me: false,
+				});
+			}
+			// stamped last, so a refused fetch is retried from the same place rather than skipped over
+			let newest = page.last().map(message_id).transpose()?.unwrap_or(last);
+			self.cursors.insert(id.to_string(), newest.to_string());
+		}
+		self.seeded = true;
+		Ok(())
+	}
+}
+
+impl Client for SkoolDms {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		//LOOP: a poller, and the only way out is `POLL_FAILURES` refusals in a row
+		loop {
+			match self.poll().await {
+				Ok(()) => self.failures = 0,
+				Err(e) => {
+					self.failures += 1;
+					warn!("skool dms: poll {} of {POLL_FAILURES} failed: {e:#}", self.failures);
+					if self.failures >= POLL_FAILURES {
+						return Err(AdapterError::Unhandled {
+							surface: SURFACE,
+							detail: format!("{POLL_FAILURES} polls in a row refused: {e:#}"),
+						});
+					}
+				}
+			}
+			time::sleep(POLL).await;
+		}
 	}
 }
 

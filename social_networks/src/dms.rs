@@ -21,7 +21,7 @@ pub struct DmsArgs {}
 pub struct DmsConfig {
 	/// Users to monitor across all platforms. Can be either:
 	/// - A plain string (applies to all platforms)
-	/// - An object like {telegram = "username"} or {discord = "username"}
+	/// - An object like {telegram = "username"}, {discord = "username"} or {skool = "handle"}
 	#[serde(default)]
 	#[primitives(skip)]
 	pub monitored_users: Vec<MonitoredUser>,
@@ -38,6 +38,7 @@ impl DmsConfig {
 			MonitoredUser::All(u) => u == username,
 			MonitoredUser::Discord(u) => platform == "Discord" && u == username,
 			MonitoredUser::Telegram(u) => platform == "Telegram" && u == username,
+			MonitoredUser::Skool(u) => platform == "Skool" && u == username,
 		})
 	}
 }
@@ -61,6 +62,7 @@ pub enum MonitoredUser {
 	All(String),
 	Discord(String),
 	Telegram(String),
+	Skool(String),
 }
 /// Consume DM events forever, applying notification rules. Returns when the event
 /// stream is closed (both adapters dropped their senders), which only happens on
@@ -154,7 +156,7 @@ impl<'de> Deserialize<'de> for MonitoredUser {
 			type Value = MonitoredUser;
 
 			fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-				formatter.write_str("a string or an object with 'telegram' or 'discord' key")
+				formatter.write_str("a string or an object with a 'telegram', 'discord' or 'skool' key")
 			}
 
 			fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
@@ -171,6 +173,7 @@ impl<'de> Deserialize<'de> for MonitoredUser {
 				match key.as_str() {
 					"telegram" => Ok(MonitoredUser::Telegram(value)),
 					"discord" => Ok(MonitoredUser::Discord(value)),
+					"skool" => Ok(MonitoredUser::Skool(value)),
 					other => Err(serde::de::Error::custom(format!("unknown platform: {other}"))),
 				}
 			}
@@ -196,6 +199,11 @@ impl serde::Serialize for MonitoredUser {
 			MonitoredUser::Telegram(u) => {
 				let mut map = serializer.serialize_map(Some(1))?;
 				map.serialize_entry("telegram", u)?;
+				map.end()
+			}
+			MonitoredUser::Skool(u) => {
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("skool", u)?;
 				map.end()
 			}
 		}

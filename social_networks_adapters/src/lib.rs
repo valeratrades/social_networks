@@ -20,6 +20,7 @@ pub use client::{AdapterError, Client, alert, install_panic_alert};
 pub use discord::DiscordDms;
 pub use dm_event::DmEvent;
 pub use email::EmailMonitor;
+pub use skool::SkoolDms;
 pub use telegram_channel_watch::TelegramChannelWatch;
 pub use telegram_dms::TelegramDms;
 pub use twitter::TwitterMonitor;

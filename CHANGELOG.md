@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`/ping` covers skool.** The `dms` daemon now polls skool's chat listing once a minute, so a `/ping` in a skool DM alerts like one on Discord or Telegram, and `monitored_users` accepts `{ skool = "handle" }` alongside `{ discord = ... }` and `{ telegram = ... }`. Skool pushes nothing, so a minute is the whole of the latency; the first poll after a restart seeds cursors and says nothing, and five refused polls in a row bring the surface down the way any other adapter's terminal error does. Needs `[skool]` credentials — without them the other two surfaces run as before.
+
 - **New `rolodex` command.** A directory of per-person Nix files, one per person, is now the single source of truth about a person. `rolodex open [pattern]` edits one; `rolodex pull [pattern]` fetches what is new from Discord DMs and notes, Telegram DMs and about, and the GitHub profile and public event feed, then folds it into a summary and a dated log through one LLM call. Per-source cursors live in the db, so a pull that finds nothing new costs nothing. Configured by `[rolodex] path`.
 
 - **`rolodex pull` discovers handles.** A second, precision-first LLM call reads handles a person stated outright in their own messages (`my github is X`, a pasted profile URL) and adds the ones `pull` knows how to fetch, so the next pull opens that feed. Skipped when a person already has every fetchable platform. Existing handles always win, and a wrong one simply fails its first fetch, which is already isolated per handle.
