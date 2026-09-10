@@ -4,7 +4,7 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../exam
 
 | Command | Description |
 |---------|-------------|
-| `dms` | DM monitoring (ping, monitored users) for Discord and Telegram simultaneously |
+| `dms` | DM monitoring (ping, monitored users) on Discord, Telegram and Skool. `[dms] sources` selects which of them. |
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health status of all services, config, and directories |
 | `migrate-db` | Run database migrations |

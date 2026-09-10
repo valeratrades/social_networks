@@ -15,6 +15,7 @@
       { discord = "glored."; }
       { skool = "eric-velch-6730"; }
     ];
+    sources = [ "telegram" "discord" "skool" ]; # omit for all of them
   };
 
   telegram = {

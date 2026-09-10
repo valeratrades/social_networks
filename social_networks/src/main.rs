@@ -8,7 +8,7 @@ mod rolodex;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use config::{AppConfig, LiveSettings, SettingsFlags};
-use dms::DmsArgs;
+use dms::{DmSource, DmsArgs};
 use rolodex::RolodexArgs;
 use social_networks_adapters::{
 	AdapterError, Client, DiscordDms, EmailMonitor, SkoolDms, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
@@ -29,7 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-	/// DM monitoring (ping, monitored users) for Discord and Telegram simultaneously
+	/// DM monitoring (ping, monitored users) on the platforms `[dms] sources` names
 	Dms(DmsArgs),
 	/// Email operations
 	Email(EmailArgs),
@@ -67,26 +67,37 @@ fn main() {
 			v_utils::clientside!(Some("dms"));
 			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 			let notifier = TelegramNotifier::new(config.telegram.clone());
-			let mut discord = DiscordDms::new(config.dms.discord.clone(), tx.clone(), notifier.clone(), config.dms.notification_horizon);
+			let on = |s: DmSource| config.dms.sources.contains(&s);
+			let mut discord = on(DmSource::Discord).then(|| DiscordDms::new(config.dms.discord.clone(), tx.clone(), notifier.clone(), config.dms.notification_horizon));
 			// skool is watched only where there are credentials to watch it with — reading a *person*
 			// needs none, but the chat listing is behind a session
-			let mut skool = match config.skool.clone() {
-				Some(creds) => Some(SkoolDms::try_new(creds, tx.clone()).map_err(|e| adapter_from_eyre("skool_dms", e))?),
-				None => {
+			let mut skool = match (on(DmSource::Skool), config.skool.clone()) {
+				(false, _) => None,
+				(true, Some(creds)) => Some(SkoolDms::try_new(creds, tx.clone()).map_err(|e| adapter_from_eyre("skool_dms", e))?),
+				(true, None) => {
 					info!("no `[skool]` credentials, so skool chats are not watched");
 					None
 				}
 			};
-			let mut telegram = TelegramDms::new(config.telegram, tx);
-			let err = tokio::select! {
-				e = discord.listen() => e.unwrap_err(),
-				e = telegram.listen() => e.unwrap_err(),
-				e = async {
-					match &mut skool {
-						Some(skool) => skool.listen().await.unwrap_err(),
-						None => std::future::pending().await,
+			let mut telegram = on(DmSource::Telegram).then(|| TelegramDms::new(config.telegram.clone(), tx.clone()));
+			drop(tx); // the adapters hold every remaining sender, so `dms::run` ends when they do
+			if discord.is_none() && telegram.is_none() && skool.is_none() {
+				return Err(adapter_from_eyre("dms", color_eyre::eyre::eyre!("`[dms] sources` leaves nothing to listen on")));
+			}
+			macro_rules! listen {
+				($adapter:expr) => {
+					async {
+						match &mut $adapter {
+							Some(adapter) => adapter.listen().await.unwrap_err(),
+							None => std::future::pending().await,
+						}
 					}
-				} => e,
+				};
+			}
+			let err = tokio::select! {
+				e = listen!(discord) => e,
+				e = listen!(telegram) => e,
+				e = listen!(skool) => e,
 				() = dms::run(rx, config.dms, notifier) => unreachable!("dms::run only returns when every adapter drops its sender"),
 			};
 			alert(&err).await;

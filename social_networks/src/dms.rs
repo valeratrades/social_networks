@@ -4,6 +4,7 @@ use clap::Args;
 use jiff::Timestamp;
 use serde::Deserialize;
 use social_networks_adapters::{DmEvent, discord::DiscordConfig, telegram_notifier::TelegramNotifier};
+use strum::{AsRefStr, EnumIter};
 use tracing::{error, info};
 use v_utils::{Timeframe, TimeframeDesignator, macros::MyConfigPrimitives};
 
@@ -28,6 +29,11 @@ pub struct DmsConfig {
 	#[serde(default)]
 	#[primitives(skip)]
 	pub discord: DiscordConfig,
+	/// Which platforms the daemon listens on. Dropping one here is how a surface is taken out of
+	/// circulation without taking its credentials away.
+	#[serde(default = "__default_sources")]
+	#[primitives(skip)]
+	pub sources: Vec<DmSource>,
 	/// How far back a reconnect may replay missed DMs.
 	#[serde(default = "__default_notification_horizon")]
 	pub notification_horizon: Timeframe,
@@ -51,9 +57,21 @@ impl Default for DmsConfig {
 		Self {
 			monitored_users: Vec::new(),
 			discord: DiscordConfig::default(),
+			sources: __default_sources(),
 			notification_horizon: __default_notification_horizon(),
 		}
 	}
+}
+
+/// A platform the DM daemon can listen on. Separate from [`social_networks_adapters::reach::Source`]
+/// so that naming one here is naming something that has a `listen()`, not a profile read.
+#[derive(AsRefStr, Clone, Copy, Debug, Deserialize, EnumIter, Eq, PartialEq, serde::Serialize)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum DmSource {
+	Discord,
+	Telegram,
+	Skool,
 }
 
 /// A monitored user can be either global (all platforms) or platform-specific.
@@ -142,6 +160,10 @@ pub async fn run(mut events: tokio::sync::mpsc::UnboundedReceiver<DmEvent>, conf
 }
 fn __default_notification_horizon() -> Timeframe {
 	Timeframe::from_naive(12, TimeframeDesignator::Hours)
+}
+fn __default_sources() -> Vec<DmSource> {
+	use strum::IntoEnumIterator as _;
+	DmSource::iter().collect()
 }
 
 impl<'de> Deserialize<'de> for MonitoredUser {

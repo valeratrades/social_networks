@@ -6,6 +6,7 @@ openai_token = { env = "OPENAI_API_KEY" }
 [dms]
 monitored_users = ["play_me_once", "deevsdeevs"]
 notification_horizon = "12h"
+sources = ["telegram", "discord", "skool"] # omit for all of them
 
 [dms.discord]
 user_token = { env = "DISCORD_AUTH" }
