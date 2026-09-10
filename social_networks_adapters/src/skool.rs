@@ -1,7 +1,7 @@
 //! Skool publishes no API. Every page is Next.js SSR, so the whole payload sits in `__NEXT_DATA__`
 //! and a plain GET is a complete read. Only `/auth/*` is gated behind an AWS-WAF JS challenge, so
-//! cookies can be minted by a browser and by nothing else — but the browser stays off the read path
-//! and runs about once per token rotation.
+//! cookies can be minted by a browser and by nothing else — but the session it leaves behind is a
+//! year-long JWT, so the browser stays off the read path and runs about once a year.
 //!
 //! Writes have nowhere to go but the undocumented REST API its own web client talks to.
 //!
@@ -123,7 +123,8 @@ impl Skool {
 		let payload = self.fetch(path).await?;
 		// `pageProps.self` is the signed-in viewer and rides on every route. The route does not answer
 		// this: a signed-out group feed and a group we are simply not in both land on `/[group]/about`.
-		// Cookie rotation is expected every few days, and only a browser can mint the next one.
+		// `auth_token` is a year-long JWT, so this is a rare path — and only a browser can mint the next
+		// one, since `/auth/login` answers a plain POST with a CloudFront 403 whatever cookies it carries.
 		if payload.pointer("/props/pageProps/self").is_none_or(serde_json::Value::is_null) && self.creds.is_some() {
 			self.refresh().await?;
 			return self.fetch(path).await;
