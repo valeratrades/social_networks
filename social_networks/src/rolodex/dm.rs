@@ -1,8 +1,6 @@
 //! The one path that writes to a platform rather than reading from it. Addressed by person, so their
 //! directory stays the thing you name and the handle is looked up rather than typed.
 
-use std::path::Path;
-
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
@@ -11,6 +9,7 @@ use social_networks_adapters::{
 	skool::Skool,
 	telegram_dms, twitter,
 };
+use social_networks_reach::RolodexConfig;
 use strum::AsRefStr;
 
 use super::{person, with_telegram};
@@ -54,8 +53,9 @@ pub enum Messenger {
 
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
 /// the wrong human and cannot be taken back.
-pub async fn send(config: &AppConfig, dir: &Path, messenger: Messenger, pattern: &str, text: &str) -> Result<()> {
-	let people = person::load_dir(dir)?;
+pub async fn send(config: &AppConfig, rolodex: &RolodexConfig, messenger: Messenger, pattern: &str, text: &str) -> Result<()> {
+	let dir = &rolodex.path;
+	let people = person::load_dir(dir, &rolodex.tags)?;
 	let matches: Vec<&person::Person> = people.values().filter(|p| p.matches(pattern)).collect();
 	let [person] = matches[..] else {
 		bail!(

@@ -118,6 +118,17 @@ rather than a guess. Every one of them goes out through the same `Direct::send` 
 through: discord and telegram over the sessions `pull` uses, twitter from the `[twitter.oauth]`
 account, skool over a chat channel it opens through a shared group.
 
+`tags` is the one axis no platform has a say in — `venues` and `handles` are what a platform states,
+a tag is what you say. The vocabulary is `[rolodex] tags` in the config, and a tag a person carries
+and the config does not name fails every load by name: a misspelling would otherwise read as a cohort
+of one forever. `pull` never touches them.
+
+```
+rolodex tag                       # the vocabulary, and how many people carry each
+rolodex tag ServiceArb <pattern>  # put it on everyone matching; --rm takes it off
+rolodex cold ServiceArb           # a pattern matches a tag whole, so every subcommand selects on it
+```
+
 `handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin` and `skool` are what
 `pull` fetches; the rest are seeded from discord's connected accounts and skool's profile links, and
 exist for a human to read. A handle that stops resolving takes only itself down — whatever its

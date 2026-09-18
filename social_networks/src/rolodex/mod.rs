@@ -28,6 +28,7 @@ use social_networks_adapters::{
 	telegram_dms::{self, TelegramConfig},
 };
 use social_networks_reach::{
+	RolodexConfig,
 	history::{self, Cursor},
 	utils, venue,
 };
@@ -43,15 +44,16 @@ pub struct RolodexArgs {
 }
 
 pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
-	let dir = config.rolodex.as_ref().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?.path.clone();
+	let rolodex = config.rolodex.clone().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?;
 	match args.command {
-		RolodexCommand::Cold { pattern, decay } => cold(&config, &dir, pattern.as_deref(), decay).await,
-		RolodexCommand::Discover(args) => discover::main(&dir, args).await,
-		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &dir, (&messenger).into(), &pattern, &text).await,
-		RolodexCommand::Lines { pattern } => lines(&dir, pattern.as_deref()),
-		RolodexCommand::Open { pattern } => open(&dir, pattern.as_deref()).await,
-		RolodexCommand::Prune => prune(&dir),
-		RolodexCommand::Pull { pattern } => pull(&config, &dir, pattern.as_deref()).await,
+		RolodexCommand::Cold { pattern, decay } => cold(&config, &rolodex, pattern.as_deref(), decay).await,
+		RolodexCommand::Discover(args) => discover::main(&rolodex, args).await,
+		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &rolodex, (&messenger).into(), &pattern, &text).await,
+		RolodexCommand::Lines { pattern } => lines(&rolodex, pattern.as_deref()),
+		RolodexCommand::Open { pattern } => open(&rolodex, pattern.as_deref()).await,
+		RolodexCommand::Prune => prune(&rolodex),
+		RolodexCommand::Pull { pattern } => pull(&config, &rolodex, pattern.as_deref()).await,
+		RolodexCommand::Tag { tag: name, pattern, rm } => tag(&rolodex, name.as_deref(), pattern.as_deref(), rm),
 	}
 }
 
@@ -83,10 +85,67 @@ enum RolodexCommand {
 	Prune,
 	/// Fetch what is new about matching people and fold it into their files
 	Pull { pattern: Option<String> },
+	/// Put one of `[rolodex] tags` on matching people, or print the vocabulary when named nothing
+	Tag {
+		tag: Option<String>,
+		pattern: Option<String>,
+		/// Take it off them instead
+		#[arg(long)]
+		rm: bool,
+	},
 }
 
-async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
-	let people = person::load_dir(dir)?;
+/// The one axis a platform has no say in. Naming nothing prints the vocabulary and who carries what,
+/// which is the only way to read a cohort's size without grepping the files.
+fn tag(rolodex: &RolodexConfig, tag: Option<&str>, pattern: Option<&str>, rm: bool) -> Result<()> {
+	let dir = &rolodex.path;
+	let people = person::load_dir(dir, &rolodex.tags)?;
+	let Some(tag) = tag else {
+		if rolodex.tags.is_empty() {
+			println!("   `[rolodex] tags` names none");
+		}
+		for known in &rolodex.tags {
+			let carrying = people.values().filter(|p| p.tags.contains(known)).count();
+			println!("   {known:<20} {carrying}");
+		}
+		return Ok(());
+	};
+	// a tag typed rather than configured is the misspelling `load_dir` exists to refuse, caught before
+	// it reaches a file rather than after
+	let tag = rolodex
+		.tags
+		.iter()
+		.find(|known| known.eq_ignore_ascii_case(tag))
+		.ok_or_else(|| eyre!("`{tag}` is not in `[rolodex] tags`: {}", rolodex.tags.join(", ")))?;
+	let pattern = pattern.ok_or_else(|| eyre!("`tag {tag}` needs a pattern saying who"))?;
+
+	let mut changed: Vec<Person> = people.into_values().filter(|p| p.matches(pattern)).filter(|p| p.tags.contains(tag) == rm).collect();
+	if changed.is_empty() {
+		bail!("nobody in {} matching `{pattern}` to {}", dir.display(), if rm { "untag" } else { "tag" });
+	}
+	for person in &changed {
+		println!("   {} {}", if rm { "-".red() } else { "+".green() }, person.name);
+	}
+	if changed.len() > 1 {
+		let scope = format!("{} `{tag}` {} {} people", if rm { "take" } else { "put" }, if rm { "off" } else { "on" }, changed.len());
+		if v_utils::io::confirmation(&scope).flush_blocking() == v_utils::io::ConfirmResult::No {
+			return Ok(());
+		}
+	}
+	for person in &mut changed {
+		match rm {
+			true => person.tags.remove(tag),
+			false => person.tags.insert(tag.clone()),
+		};
+		person.write(dir)?;
+	}
+	println!("   {} {} written", "✓".green(), changed.len());
+	Ok(())
+}
+
+async fn open(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
+	let dir = &rolodex.path;
+	let people = person::load_dir(dir, &rolodex.tags)?;
 	let name = match pattern {
 		None => {
 			if people.is_empty() {
@@ -113,14 +172,15 @@ async fn open(dir: &Path, pattern: Option<&str>) -> Result<()> {
 		person.write(dir)?;
 	}
 	v_utils::io::file_open::open(&path).await.map_err(|e| eyre!("{e:#}"))?;
-	person::load_one(&path).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
+	person::load_one(&path, &rolodex.tags).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
 	Ok(())
 }
 
 /// What they said in a venue, in their own words rather than through the labels a pull made of them.
 /// This is what outreach is written off, so it prints the whole line and the venue that holds it.
-fn lines(dir: &Path, pattern: Option<&str>) -> Result<()> {
-	let people = person::load_dir(dir)?;
+fn lines(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
+	let dir = &rolodex.path;
+	let people = person::load_dir(dir, &rolodex.tags)?;
 	let selected: Vec<&Person> = people.values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
 	if selected.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
@@ -146,8 +206,12 @@ fn lines(dir: &Path, pattern: Option<&str>) -> Result<()> {
 /// Ranked by that same venue activity, loudest first, because who to write to next is the only
 /// question the list is read for. The venue lines are the whole of the score here: a cold person has
 /// no messages with us by construction.
-async fn cold(config: &AppConfig, dir: &Path, pattern: Option<&str>, decay: f64) -> Result<()> {
-	let selected: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
+async fn cold(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>, decay: f64) -> Result<()> {
+	let dir = &rolodex.path;
+	let selected: Vec<Person> = person::load_dir(dir, &rolodex.tags)?
+		.into_values()
+		.filter(|p| pattern.is_none_or(|pattern| p.matches(pattern)))
+		.collect();
 	let total = selected.len();
 	let candidates = sift(dir, selected)?;
 
@@ -221,8 +285,9 @@ fn partition_in_scope(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, V
 /// People every venue we keep has lost, and no conversation is on record with — a `discover` wrote
 /// them a file off a roster row, and nothing points at them any more. The venue transcripts keep
 /// their lines regardless: a thread with the departed cut out is not the thread.
-fn prune(dir: &Path) -> Result<()> {
-	let people: Vec<Person> = person::load_dir(dir)?.into_values().collect();
+fn prune(rolodex: &RolodexConfig) -> Result<()> {
+	let dir = &rolodex.path;
+	let people: Vec<Person> = person::load_dir(dir, &rolodex.tags)?.into_values().collect();
 	let mut stale = Vec::new();
 	for person in partition_in_scope(dir, people)?.1 {
 		let meta = history::Meta::load(&person.dir(dir))?;
@@ -312,8 +377,12 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 	Ok(cold)
 }
 
-async fn pull(config: &AppConfig, dir: &Path, pattern: Option<&str>) -> Result<()> {
-	let people: Vec<Person> = person::load_dir(dir)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
+async fn pull(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
+	let dir = &rolodex.path;
+	let people: Vec<Person> = person::load_dir(dir, &rolodex.tags)?
+		.into_values()
+		.filter(|p| pattern.is_none_or(|pattern| p.matches(pattern)))
+		.collect();
 	if people.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
 	}

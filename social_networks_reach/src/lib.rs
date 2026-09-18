@@ -18,6 +18,10 @@ use v_utils::macros::MyConfigPrimitives;
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct RolodexConfig {
 	pub path: PathBuf,
+	/// The whole tag vocabulary. Empty is "no tags in use", which is what a rolodex that never asked
+	/// for them has; a tag on a person and not here is a misspelling.
+	#[serde(default)]
+	pub tags: Vec<String>,
 }
 
 /// The MTProto runner has to be polled alongside whatever uses the client, so every telegram read on

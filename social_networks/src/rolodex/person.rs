@@ -1,5 +1,5 @@
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	path::{Path, PathBuf},
 };
 
@@ -22,6 +22,10 @@ pub struct Person {
 	/// Directory name. Not in the file itself.
 	#[serde(skip)]
 	pub name: String,
+	/// What I say they are, as opposed to what a platform says. Every one of these is named by
+	/// `[rolodex] tags`; an unnamed one is a typo, and a load refuses it rather than inventing a cohort.
+	#[serde(default)]
+	pub tags: BTreeSet<String>,
 	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
 	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
@@ -66,8 +70,12 @@ impl Person {
 	}
 
 	/// Match on the directory name and on every handle, so `pull dev_ardi` finds the person whose
-	/// discord handle that is without anyone having to know what their directory is called.
+	/// discord handle that is without anyone having to know what their directory is called. A tag
+	/// matches whole rather than by substring: a cohort that swallowed a name fragment is not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
+		if self.tags.iter().any(|t| t.eq_ignore_ascii_case(pattern)) {
+			return true;
+		}
 		let pattern = pattern.to_lowercase();
 		self.name.to_lowercase().contains(&pattern) || self.handles.values().any(|h| h.to_lowercase().contains(&pattern))
 	}
@@ -127,7 +135,10 @@ pub struct LogEntry {
 
 /// Evaluate every `<name>/`[`MAIN`] under [`PEOPLE`] in one nix process, keyed by directory name.
 /// Holding that file is what makes a directory a person's, so a stray one in there costs nothing.
-pub fn load_dir(root: &Path) -> Result<BTreeMap<String, Person>> {
+///
+/// A tag `vocabulary` does not name is refused here rather than read as a cohort of one, for the same
+/// reason as `deny_unknown_fields` above.
+pub fn load_dir(root: &Path, vocabulary: &[String]) -> Result<BTreeMap<String, Person>> {
 	let dir = root.join(PEOPLE);
 	if !dir.exists() {
 		return Ok(BTreeMap::new());
@@ -139,17 +150,17 @@ pub fn load_dir(root: &Path) -> Result<BTreeMap<String, Person>> {
 		dir = nix_dq(&dir.display().to_string())
 	);
 	let raw: BTreeMap<String, Person> = serde_json::from_slice(&nix_eval(&["--expr", &expr])?).wrap_err_with(|| format!("a person file in {} is not a person", dir.display()))?;
-	Ok(raw
-		.into_iter()
+	raw.into_iter()
 		.map(|(name, mut person)| {
 			person.name = name.clone();
 			person.normalize();
-			(name, person)
+			check_tags(&person, vocabulary)?;
+			Ok((name, person))
 		})
-		.collect())
+		.collect()
 }
 
-pub fn load_one(path: &Path) -> Result<Person> {
+pub fn load_one(path: &Path, vocabulary: &[String]) -> Result<Person> {
 	let mut person: Person = serde_json::from_slice(&nix_eval(&["--file", &path.display().to_string()])?).wrap_err_with(|| format!("{} is not a person", path.display()))?;
 	person.name = path
 		.parent()
@@ -159,11 +170,20 @@ pub fn load_one(path: &Path) -> Result<Person> {
 		.to_string_lossy()
 		.into_owned();
 	person.normalize();
+	check_tags(&person, vocabulary)?;
 	Ok(person)
 }
 
 pub fn render(person: &Person) -> String {
 	let mut s = String::from("{\n");
+
+	if !person.tags.is_empty() {
+		s.push_str("  tags = [\n");
+		for tag in &person.tags {
+			s.push_str(&format!("    {}\n", nix_dq(tag)));
+		}
+		s.push_str("  ];\n");
+	}
 
 	s.push_str("  handles = {\n");
 	for (platform, handle) in &person.handles {
@@ -209,6 +229,15 @@ pub fn render(person: &Person) -> String {
 	s.push_str("}\n");
 	s
 }
+fn check_tags(person: &Person, vocabulary: &[String]) -> Result<()> {
+	for tag in &person.tags {
+		if !vocabulary.contains(tag) {
+			bail!("{} carries the tag `{tag}`, which `[rolodex] tags` does not name", person.name);
+		}
+	}
+	Ok(())
+}
+
 /// `--impure` because person files live outside the store, which pure eval forbids.
 fn nix_eval(args: &[&str]) -> Result<Vec<u8>> {
 	let out = std::process::Command::new("nix")
@@ -248,7 +277,7 @@ fn nix_attr(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeMap;
+	use std::collections::{BTreeMap, BTreeSet};
 
 	use super::*;
 
@@ -264,8 +293,10 @@ mod tests {
 			return;
 		}
 
+		let vocabulary = ["ServiceArb".to_string(), "Rust".to_string()];
 		let person = Person {
 			name: "ardi".to_string(),
+			tags: BTreeSet::from(["ServiceArb".to_string(), "Rust".to_string()]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
 			log: vec![
@@ -292,7 +323,9 @@ mod tests {
 		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");
 		let _ = std::fs::remove_dir_all(&dir);
 		person.write(&dir).unwrap();
-		assert_eq!(load_one(&person.path(&dir)).unwrap(), person);
+		assert_eq!(load_one(&person.path(&dir), &vocabulary).unwrap(), person);
+		// what the vocabulary is for: the same file, against a config that never named the tag
+		assert!(load_one(&person.path(&dir), &[]).is_err());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

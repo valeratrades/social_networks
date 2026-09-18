@@ -16,7 +16,10 @@ use color_eyre::eyre::{Result, WrapErr};
 use colored::Colorize as _;
 use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::reach::{Member, VenueRef};
-use social_networks_reach::venue::{self, Store};
+use social_networks_reach::{
+	RolodexConfig,
+	venue::{self, Store},
+};
 use v_utils::Timeframe;
 
 use super::person::{self, Person};
@@ -47,12 +50,13 @@ pub struct DiscoverArgs {
 	dry_run: bool,
 }
 
-pub async fn main(dir: &Path, args: DiscoverArgs) -> Result<()> {
+pub async fn main(rolodex: &RolodexConfig, args: DiscoverArgs) -> Result<()> {
+	let dir = &rolodex.path;
 	let store = Store::open(dir, &args.at)?;
 	let members = store.roster()?;
 	let selected = venue::select(&members, &store.lines(None)?, &where_clause(&args)?).await?;
 
-	let people = person::load_dir(dir)?;
+	let people = person::load_dir(dir, &rolodex.tags)?;
 	let platform = args.at.platform.as_ref();
 	let known = |member: &Member| people.values().any(|p| p.handles.get(platform) == Some(&member.handle));
 	let (already, mut fresh): (Vec<Member>, Vec<Member>) = selected.into_iter().partition(known);

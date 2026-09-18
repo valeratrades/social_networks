@@ -66,6 +66,7 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 
 [rolodex]
 path = "~/Sync/rolodex"
+tags = ["ServiceArb"]
 
 [skool]
 email = { env = "DEFAULT_MAIL" }
