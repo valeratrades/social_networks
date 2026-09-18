@@ -120,6 +120,7 @@ starts it: each command uses part of your rate limit, so you must start it yours
 | `recon members <platform>:<slug>` | Write the member list to `members.json`. |
 | `recon posts <platform>:<slug> --since 90d` | Add new posts to the group's `<year>.md` files. |
 | `recon roster <platform>:<slug> [--where <sql>]` | Show the member list again. Select part of it with SQL. |
+| `recon find skool:<slug> <term>` | Search the members of the group for a term. Skool only. |
 | `recon classroom skool:<slug>` | Print the classroom as a JSON array of lessons, on stdout. Skool only. |
 
 The group files go under `<rolodex path>/venues/<platform>/<slug>/`. `rolodex pull` then reads the
@@ -130,6 +131,11 @@ posts one time, and every read after that is free.
 the last read. With `--since`, it goes back to that day and gets everything after it. The store adds
 to its files and does not rewrite them, so to build the group again from the start, delete its
 `<year>.md` and `meta.json` first and keep `members.json`.
+
+`recon find` asks the group the same question its own search bar asks. The term matches the start of
+a word in a handle or in a name. The group answers 10 members and no more, and it gives no cursor.
+So use `find` to get one person, and `members` to get the list. `find` reads members that
+`members` cannot: a member with no map pin is not on the roster, and `find` still gets them.
 
 #### Select members with SQL
 

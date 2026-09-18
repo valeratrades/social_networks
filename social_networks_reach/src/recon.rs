@@ -10,6 +10,7 @@
 //! recon members <platform>:<slug>                   → members.json
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
+//! recon find    skool:<slug> <term>                   the group's own member search
 //! recon classroom skool:<slug>                      → the lessons, as JSON on stdout
 //! ```
 
@@ -87,6 +88,12 @@ enum Command {
 		#[arg(long)]
 		json: bool,
 	},
+	/// Ask `skool:<slug>` itself who matches a term, reaching members no roster holds
+	Find {
+		#[arg(value_parser = venue_ref)]
+		at: VenueRef,
+		term: String,
+	},
 	/// Print `skool:<slug>`'s classroom as a JSON array of lessons, on stdout and alone
 	Classroom {
 		#[arg(value_parser = venue_ref)]
@@ -97,7 +104,7 @@ impl Command {
 	fn platform(&self) -> VenueSource {
 		match self {
 			Self::Venues { platform } => *platform,
-			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Classroom { at } => at.platform,
+			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Find { at, .. } | Self::Classroom { at } => at.platform,
 		}
 	}
 }
@@ -138,10 +145,21 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 				.as_ref()
 				.ok_or_else(|| eyre!("a skool group is only readable by a member of it, so this needs a `[skool]` section in the config"))?;
 			let mut skool = Skool::try_new(Some(creds.clone()))?;
-			// `classroom` hangs off skool itself rather than off [`Venue`], so it cannot go through `act`
+			// `classroom` and `find` hang off skool itself rather than off [`Venue`], so neither can go
+			// through `act`
 			match command {
 				Command::Classroom { at } => {
 					println!("{}", serde_json::to_string_pretty(&skool.classroom(&at).await?)?);
+					Ok(())
+				}
+				Command::Find { at, term } => {
+					let found = skool.find(&at, &term).await?;
+					if found.is_empty() {
+						println!("   {} nobody in {at} matches `{term}`", "·".dimmed());
+					}
+					for member in &found {
+						println!("{}\t{}\t{}", member.handle, member.display, member.zone.as_deref().unwrap_or_default());
+					}
 					Ok(())
 				}
 				command => act(&mut skool, dir, command).await,
@@ -194,6 +212,7 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 					},
 			}
 		}
+		Command::Find { at, .. } => bail!("`{}` has no member search — skool is the only platform that answers one", at.platform.as_ref()),
 		Command::Classroom { at } => bail!("`{}` has no classroom — skool is the only platform that publishes one", at.platform.as_ref()),
 	}
 	Ok(())

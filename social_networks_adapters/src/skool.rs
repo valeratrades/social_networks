@@ -72,6 +72,9 @@ const PACE: Duration = Duration::from_millis(700);
 const READ_RETRIES: usize = 7;
 /// The largest `before`/`after` skool's chat answers — past it, `invalid before: <n>`.
 const CHAT_PAGE: usize = 50;
+/// The largest `limit` the member search answers: `11..=49` are `invalid limit: <n>` and `50` up is
+/// a 422. There is no cursor either, so ten is the whole of what one term can reach.
+const SEARCH_PAGE: usize = 10;
 /// Skool answers a scripted DM with `200` and a shadowban: the message sits in our own thread and
 /// reaches nobody, and the account it was sent from stays that way.
 const SEND: bool = false;
@@ -256,6 +259,38 @@ impl Skool {
 				Ok((id.to_string(), slug.to_string(), display.to_string()))
 			})
 			.collect()
+	}
+
+	/// The search behind the group's member bar. Matches a prefix of any word of a handle or a
+	/// display name, answers at most [`SEARCH_PAGE`], and carries no cursor — so it is a lookup and
+	/// not a way to walk a roster.
+	///
+	/// It is the only read here that reaches the members [`Venue::members`] cannot: a member with no
+	/// map pin is off the roster entirely, and search still finds them. The user objects it answers
+	/// carry no `member`, so [`Member::joined`] is `None` where the member page would have stated it.
+	pub async fn find(&mut self, at: &VenueRef, term: &str) -> Result<Vec<Member>> {
+		let group = self.group_id(&at.slug).await?;
+		let body = serde_json::json!({ "query": term, "group_id": group, "limit": SEARCH_PAGE });
+		let payload = self.api(Method::POST, "/search/users", &[], Some(body)).await?;
+		let payload: serde_json::Value = serde_json::from_str(&payload).wrap_err("searching members")?;
+		// `users: null` is how skool spells an empty list, same as `channels` and `messages`
+		let users = payload.get("users").ok_or_else(|| eyre!("a skool member search without `users`: {payload}"))?;
+		let found = users.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(member).collect::<Result<Vec<_>>>()?;
+		if found.len() == SEARCH_PAGE {
+			warn!("skool `{}`: `{term}` filled the page of {SEARCH_PAGE}, so it has more — narrow the term", at.slug);
+		}
+		Ok(found)
+	}
+
+	/// The 32-hex id the API addresses a group by, from the slug a [`VenueRef`] spells. Only a group
+	/// this session is in has one to find, which is the same condition every other read here carries.
+	async fn group_id(&mut self, slug: &str) -> Result<String> {
+		self.my_groups()
+			.await?
+			.into_iter()
+			.find(|(_, name, _)| name == slug)
+			.map(|(id, ..)| id)
+			.ok_or_else(|| eyre!("skool `{slug}`: not a group this session is in, so it has no id to address"))
 	}
 
 	/// The first page of the member list, keyed by user id, and how many members the group says it
