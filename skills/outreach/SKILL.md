@@ -6,7 +6,7 @@ description: "Run a cold-outreach campaign over the rolodex: pick who has never 
 # outreach
 
 A campaign is: a set of people nobody has talked to, one base message the user wrote, and one file
-per person that is that base plus at most one appended paragraph. The value is in the restraint.
+per person that is that base plus at most one appended paragraph.
 
 Runs on `/rolodex`, which owns the reading and the sending. This skill owns selection, drafting and
 discipline.
@@ -25,9 +25,6 @@ history worth having. If you cannot fill all three with actual mechanics rather 
 **stop and ask** — and ask for a link, not an explanation: the material almost always exists
 already, in the venue transcripts under `<rolodex>/venues/<platform>/<slug>/*.md`, in an earlier
 `tmp/outreach/`, or in the files of people we have talked to.
-
-Without this you cannot tell somebody who solved our hardest problem from somebody repeating a
-platitude, and the campaign degrades to the base message for everybody.
 
 ## Pipeline
 
@@ -171,8 +168,7 @@ written by an AI demonstrating that it read carefully.
 - **Rhetorical contrast pairs** — `somebody who'd actually done it rather than theorised about it`.
   The most frequent tell, and the reliable symptom of a welded `btw`: the two sources become the two
   horns of an X-not-Y or X-or-just-Y sentence. If a line has that shape, delete it.
-- **Ranking them against the group** — `the only one in that group who…`. Flattery that also proves
-  you surveilled everybody.
+- **Ranking them against the group** — `the only one in that group who…`.
 - **Explaining why you are asking** — `that's the part I'd rather learn than rediscover`. Ask, stop.
 - **Pitches, offers, or anything committing the user to a future action.** Only the user pitches.
 - **Em dashes.** The voice uses `, - `. Match the base.
