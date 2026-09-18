@@ -11,7 +11,7 @@
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
 //! recon find    skool:<slug> <term>                   the group's own member search
-//! recon classroom skool:<slug>                      → the lessons, as JSON on stdout
+//! recon classroom skool:<slug>                      → the course tree, as JSON on stdout
 //! ```
 
 use std::path::Path;
@@ -94,7 +94,7 @@ enum Command {
 		at: VenueRef,
 		term: String,
 	},
-	/// Print `skool:<slug>`'s classroom as a JSON array of lessons, on stdout and alone
+	/// Print `skool:<slug>`'s classroom as a JSON array of courses, each with its lessons, on stdout and alone
 	Classroom {
 		#[arg(value_parser = venue_ref)]
 		at: VenueRef,

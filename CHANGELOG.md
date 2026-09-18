@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`recon classroom` reads a lesson off the lesson's own page.** Skool serves a lesson whole only on the route that selects it, so reading the course route alone dropped the body of every lesson but one per module — the links a lesson writes under its video went with it. Every lesson is now fetched by its own `?md=`, which costs one request per lesson. The output is the course tree rather than a flat list: a course carries its own id, address, body and update time, and its lessons in the order they are served. A lesson also carries its `resources` as the payload's own JSON, unparsed, since no classroom seen so far fills it.
+
 - **`[dms] sources` picks the platforms the daemon listens on.** A list of `telegram`, `discord`, `skool`; all three when the key is absent. Dropping one takes its surface out of circulation while its credentials stay in the config, and a list that leaves nothing to listen on is an error at startup rather than a daemon that idles.
 
 - **`/ping` covers skool.** The `dms` daemon now polls skool's chat listing once a minute, so a `/ping` in a skool DM alerts like one on Discord or Telegram, and `monitored_users` accepts `{ skool = "handle" }` alongside `{ discord = ... }` and `{ telegram = ... }`. Skool pushes nothing, so a minute is the whole of the latency; the first poll after a restart seeds cursors and says nothing, and five refused polls in a row bring the surface down the way any other adapter's terminal error does. Needs `[skool]` credentials — without them the other two surfaces run as before.

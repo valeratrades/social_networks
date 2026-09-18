@@ -55,10 +55,13 @@ async fn main() -> Result<()> {
 	}
 
 	println!("\n=== what the read makes of it ===");
-	for lesson in session.classroom(&VenueRef::new(VenueSource::Skool, group)).await? {
-		println!("\n{} / {}\n  {}\n  {} {:?}", lesson.module, lesson.title, lesson.permalink, lesson.at, lesson.video);
-		if !lesson.body.is_empty() {
-			println!("  {}", lesson.body.replace('\n', "\n  "));
+	for course in session.classroom(&VenueRef::new(VenueSource::Skool, group)).await? {
+		println!("\n# {}\n  {}\n  {}\n  {}", course.title, course.permalink, course.at, course.body.replace('\n', "\n  "));
+		for lesson in course.lessons {
+			println!("\n{} / {}\n  {}\n  {} {:?}", lesson.module, lesson.title, lesson.permalink, lesson.at, lesson.video);
+			if !lesson.body.is_empty() {
+				println!("  {}", lesson.body.replace('\n', "\n  "));
+			}
 		}
 	}
 	Ok(())

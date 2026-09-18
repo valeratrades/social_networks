@@ -60,7 +60,7 @@ starts it: each command uses part of your rate limit, so you must start it yours
 | `recon posts <platform>:<slug> --since 90d` | Add new posts to the group's `<year>.md` files. |
 | `recon roster <platform>:<slug> [--where <sql>]` | Show the member list again. Select part of it with SQL. |
 | `recon find skool:<slug> <term>` | Search the members of the group for a term. Skool only. |
-| `recon classroom skool:<slug>` | Print the classroom as a JSON array of lessons, on stdout. Skool only. |
+| `recon classroom skool:<slug>` | Print the classroom as a JSON array of courses, each with its lessons, on stdout. Skool only. |
 
 The group files go under `<rolodex path>/venues/<platform>/<slug>/`. `rolodex pull` then reads the
 lines of each person you keep a file for, and `rolodex lines` shows them to you. `recon` gets the

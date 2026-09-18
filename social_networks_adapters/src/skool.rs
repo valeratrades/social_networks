@@ -370,11 +370,17 @@ impl Skool {
 			.to_string())
 	}
 
-	/// The classroom, whole. The index names the courses and nothing under them; a course's own route
-	/// carries its lessons but no body for any of them; and a lesson skool hosts the video of names
-	/// only an opaque id until that lesson is the one selected. So this is one request per course plus
-	/// one per skool-hosted video, which is what keeps it hand-run like the rest of the venue axis.
-	pub async fn classroom(&mut self, at: &VenueRef) -> Result<Vec<Lesson>> {
+	/// The classroom, whole. The index names the courses and nothing under them; and a course's own
+	/// route carries its lessons, but a lesson only ever arrives *whole* on the route that selects it
+	/// — everywhere else its body and its video are simply absent, so a read off the course route
+	/// alone silently loses whatever a lesson had written under its video. So this is one request per
+	/// course to learn the order, and one per lesson to read it, which is what keeps it hand-run like
+	/// the rest of the venue axis.
+	///
+	/// The tree comes out as the tree, rather than flattened: a course is a page of its own, with its
+	/// own body and its own address, and the order lessons sit in is the order they are meant to be
+	/// taken in.
+	pub async fn classroom(&mut self, at: &VenueRef) -> Result<Vec<Course>> {
 		let index = self.group_page(&at.slug, "classroom").await?;
 		let courses = index
 			.pointer("/props/pageProps/allCourses")
@@ -390,29 +396,39 @@ impl Skool {
 				.pointer("/metadata/title")
 				.and_then(|v| v.as_str())
 				.ok_or_else(|| eyre!("skool course `{name}` without a title: {course}"))?;
+			let updated = course
+				.get("updatedAt")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| eyre!("skool course `{name}` without an updatedAt: {course}"))?;
 			time::sleep(PACE).await;
 			let payload = self.group_page(&at.slug, &format!("classroom/{name}")).await?;
 			let mut found = Vec::new();
-			lessons_of(payload.pointer("/props/pageProps/course/children"), &at.slug, name, title, &mut found)?;
+			lessons_of(payload.pointer("/props/pageProps/course/children"), title, &mut found)?;
 			info!("skool `{}`: `{title}`, {} lessons", at.slug, found.len());
 
-			for (mut lesson, hosted) in found {
+			let mut lessons = Vec::new();
+			for (id, module) in found {
+				time::sleep(PACE).await;
+				let payload = self.group_page(&at.slug, &format!("classroom/{name}?md={id}")).await?;
+				let node = node_of(payload.pointer("/props/pageProps/course/children"), &id).ok_or_else(|| eyre!("skool lesson {id} is not in the course tree its own route serves"))?;
+				let (mut lesson, hosted) = lesson_of(&node, &at.slug, name, module)?;
 				if let Some(hosted) = hosted {
-					time::sleep(PACE).await;
-					let payload = self.group_page(&at.slug, &format!("classroom/{name}?md={}", lesson.id)).await?;
 					let video = payload
 						.pointer("/props/pageProps/video")
-						.ok_or_else(|| eyre!("skool lesson {} claims a video skool hosts, and its own route serves none", lesson.id))?;
-					assert_eq!(
-						video.get("id").and_then(|v| v.as_str()),
-						Some(hosted.as_str()),
-						"skool served the wrong video for lesson {}",
-						lesson.id
-					);
+						.ok_or_else(|| eyre!("skool lesson {id} claims a video skool hosts, and its own route serves none"))?;
+					assert_eq!(video.get("id").and_then(|v| v.as_str()), Some(hosted.as_str()), "skool served the wrong video for lesson {id}");
 					lesson.video = Some(mux(video)?);
 				}
-				out.push(lesson);
+				lessons.push(lesson);
 			}
+			out.push(Course {
+				id: name.to_string(),
+				title: title.to_string(),
+				permalink: format!("{BASE}/{}/classroom/{name}", at.slug),
+				at: updated.parse().wrap_err("skool timestamps are RFC3339")?,
+				body: course.pointer("/metadata/desc").and_then(|v| v.as_str()).map(rich_text).transpose()?.unwrap_or_default(),
+				lessons,
+			});
 		}
 		Ok(out)
 	}
@@ -878,6 +894,19 @@ impl Client for SkoolDms {
 	}
 }
 
+/// One course of a group's classroom — a module, in skool's own wording, and a page of its own.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Course {
+	/// The 8-hex `name`, which is what `/classroom/<x>` addresses — not the 32-hex id a lesson uses
+	pub id: String,
+	pub title: String,
+	pub permalink: String,
+	pub at: Timestamp,
+	pub body: String,
+	/// In the order skool serves them, which is the order they are meant to be taken in
+	pub lessons: Vec<Lesson>,
+}
+
 /// One lesson of a group's classroom. Not an [`Item`]: nobody wrote it and nobody replied to it, and
 /// the two things it is read *for* — where it sits in the course and what video it plays — are the
 /// two an item cannot carry.
@@ -897,12 +926,15 @@ pub struct Lesson {
 	/// skool hosts itself — a mux playback URL, which is signed, expires within the hour and is served
 	/// only under a `Referer: https://www.skool.com/`. `None` for a lesson that is text alone.
 	pub video: Option<String>,
+	/// The files and links attached beside the body, as the payload's own JSON and not a reading of
+	/// it: every classroom seen so far leaves this empty, so its shape is unobserved and a parse here
+	/// would be a guess. `None` for the empty list.
+	pub resources: Option<String>,
 }
 
-/// One course tree, depth-first. `above` is the trail of titles this node hangs under; the second
-/// half of a pair is the id of a video skool hosts, which the lesson's own route is the only place
-/// to resolve.
-fn lessons_of(children: Option<&serde_json::Value>, slug: &str, course: &str, above: &str, out: &mut Vec<(Lesson, Option<String>)>) -> Result<()> {
+/// One course tree, depth-first: every lesson's id, and the trail of titles it hangs under. Only the
+/// order and the shape — what a lesson *says* is on its own route and nowhere else.
+fn lessons_of(children: Option<&serde_json::Value>, above: &str, out: &mut Vec<(String, String)>) -> Result<()> {
 	for child in children.and_then(|v| v.as_array()).into_iter().flatten() {
 		let node = child.get("course").ok_or_else(|| eyre!("a skool course tree node without a course: {child}"))?;
 		let id = node.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool lesson without an id: {node}"))?;
@@ -912,31 +944,56 @@ fn lessons_of(children: Option<&serde_json::Value>, slug: &str, course: &str, ab
 			.ok_or_else(|| eyre!("skool lesson {id} without a title: {node}"))?;
 		// a node that holds other nodes is a folder in skool's own UI, and plays nothing
 		if child.get("children").and_then(|v| v.as_array()).is_some_and(|nested| !nested.is_empty()) {
-			lessons_of(child.get("children"), slug, course, &format!("{above} / {title}"), out)?;
+			lessons_of(child.get("children"), &format!("{above} / {title}"), out)?;
 			continue;
 		}
-		let updated = node
-			.get("updatedAt")
-			.and_then(|v| v.as_str())
-			.ok_or_else(|| eyre!("skool lesson {id} without an updatedAt: {node}"))?;
-		let metadata = |key: &str| node.pointer(&format!("/metadata/{key}")).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
-		// a pasted link outlives a mux token and costs no request, so it wins wherever skool holds both
-		let pasted = metadata("videoLink").map(str::to_string);
-		let hosted = pasted.is_none().then(|| metadata("videoId").map(str::to_string)).flatten();
-		out.push((
-			Lesson {
-				id: id.to_string(),
-				module: above.to_string(),
-				title: title.to_string(),
-				permalink: format!("{BASE}/{slug}/classroom/{course}?md={id}"),
-				at: updated.parse().wrap_err("skool timestamps are RFC3339")?,
-				body: metadata("desc").map(rich_text).transpose()?.unwrap_or_default(),
-				video: pasted,
-			},
-			hosted,
-		));
+		out.push((id.to_string(), above.to_string()));
 	}
 	Ok(())
+}
+
+/// The same tree again, for the one node a lesson's own route serves whole.
+fn node_of(children: Option<&serde_json::Value>, id: &str) -> Option<serde_json::Value> {
+	for child in children.and_then(|v| v.as_array()).into_iter().flatten() {
+		if child.pointer("/course/id").and_then(|v| v.as_str()) == Some(id) {
+			return child.get("course").cloned();
+		}
+		if let Some(found) = node_of(child.get("children"), id) {
+			return Some(found);
+		}
+	}
+	None
+}
+
+/// The second half of a pair is the id of a video skool hosts, which only the `video` beside this
+/// node resolves.
+fn lesson_of(node: &serde_json::Value, slug: &str, course: &str, module: String) -> Result<(Lesson, Option<String>)> {
+	let id = node.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool lesson without an id: {node}"))?;
+	let title = node
+		.pointer("/metadata/title")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("skool lesson {id} without a title: {node}"))?;
+	let updated = node
+		.get("updatedAt")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("skool lesson {id} without an updatedAt: {node}"))?;
+	let metadata = |key: &str| node.pointer(&format!("/metadata/{key}")).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+	// a pasted link outlives a mux token and costs no request, so it wins wherever skool holds both
+	let pasted = metadata("videoLink").map(str::to_string);
+	let hosted = pasted.is_none().then(|| metadata("videoId").map(str::to_string)).flatten();
+	Ok((
+		Lesson {
+			id: id.to_string(),
+			module,
+			title: title.to_string(),
+			permalink: format!("{BASE}/{slug}/classroom/{course}?md={id}"),
+			at: updated.parse().wrap_err("skool timestamps are RFC3339")?,
+			body: metadata("desc").map(rich_text).transpose()?.unwrap_or_default(),
+			video: pasted,
+			resources: metadata("resources").filter(|v| *v != "[]").map(str::to_string),
+		},
+		hosted,
+	))
 }
 
 /// Skool's editor writes tiptap JSON behind a `[v2]` marker. Anything without one is the plain text
