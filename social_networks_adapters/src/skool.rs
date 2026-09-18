@@ -72,6 +72,9 @@ const PACE: Duration = Duration::from_millis(700);
 const READ_RETRIES: usize = 7;
 /// The largest `before`/`after` skool's chat answers — past it, `invalid before: <n>`.
 const CHAT_PAGE: usize = 50;
+/// Skool answers a scripted DM with `200` and a shadowban: the message sits in our own thread and
+/// reaches nobody, and the account it was sent from stays that way.
+const SEND: bool = false;
 /// Read-only for a human, exactly like discord's connected accounts: none of these is a fetchable
 /// [`Source`].
 const LINKS: [(&str, &str); 5] = [
@@ -522,6 +525,9 @@ impl Direct for Skool {
 	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. The
 	/// handle is public, the id it resolves to is what every chat route speaks.
 	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
+		if !SEND {
+			bail!("skool shadowbans the account a scripted DM goes out from, so `{handle}` is written to by hand or not at all:\n{text}");
+		}
 		let user = self.user_id(handle).await?;
 		let channel = match self.open_channel(&user).await? {
 			Some(channel) => channel,
