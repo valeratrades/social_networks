@@ -10,9 +10,9 @@
 //! `/<group>/-/members` redirect to `/[group]/about`, so the venue axis needs `[skool]` credentials
 //! and an actual membership.
 //!
-//! Skool is reached on demand and only by a human — `rolodex` for a person, `recon` for a group —
-//! with one exception: [`SkoolDms`] polls the chat listing so a `/ping` here lands like one anywhere
-//! else.
+//! Skool is reached on demand and only by a human — `rolodex` for a person, `recon` for a group,
+//! [`Skool::classroom`] for the course a group teaches — with one exception: [`SkoolDms`] polls the
+//! chat listing so a `/ping` here lands like one anywhere else.
 
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
@@ -333,6 +333,53 @@ impl Skool {
 			.and_then(|v| v.as_str())
 			.ok_or_else(|| eyre!("no such skool handle: `{handle}`"))?
 			.to_string())
+	}
+
+	/// The classroom, whole. The index names the courses and nothing under them; a course's own route
+	/// carries its lessons but no body for any of them; and a lesson skool hosts the video of names
+	/// only an opaque id until that lesson is the one selected. So this is one request per course plus
+	/// one per skool-hosted video, which is what keeps it hand-run like the rest of the venue axis.
+	pub async fn classroom(&mut self, at: &VenueRef) -> Result<Vec<Lesson>> {
+		let index = self.group_page(&at.slug, "classroom").await?;
+		let courses = index
+			.pointer("/props/pageProps/allCourses")
+			.and_then(|v| v.as_array())
+			.ok_or_else(|| eyre!("skool `{}`: the classroom serves no `allCourses`", at.slug))?
+			.clone();
+
+		let mut out = Vec::new();
+		for course in &courses {
+			// the 8-hex `name`, not the 32-hex `id`, is what `/classroom/<x>` addresses
+			let name = course.get("name").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool course without a name: {course}"))?;
+			let title = course
+				.pointer("/metadata/title")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| eyre!("skool course `{name}` without a title: {course}"))?;
+			time::sleep(PACE).await;
+			let payload = self.group_page(&at.slug, &format!("classroom/{name}")).await?;
+			let mut found = Vec::new();
+			lessons_of(payload.pointer("/props/pageProps/course/children"), &at.slug, name, title, &mut found)?;
+			info!("skool `{}`: `{title}`, {} lessons", at.slug, found.len());
+
+			for (mut lesson, hosted) in found {
+				if let Some(hosted) = hosted {
+					time::sleep(PACE).await;
+					let payload = self.group_page(&at.slug, &format!("classroom/{name}?md={}", lesson.id)).await?;
+					let video = payload
+						.pointer("/props/pageProps/video")
+						.ok_or_else(|| eyre!("skool lesson {} claims a video skool hosts, and its own route serves none", lesson.id))?;
+					assert_eq!(
+						video.get("id").and_then(|v| v.as_str()),
+						Some(hosted.as_str()),
+						"skool served the wrong video for lesson {}",
+						lesson.id
+					);
+					lesson.video = Some(mux(video)?);
+				}
+				out.push(lesson);
+			}
+		}
+		Ok(out)
 	}
 
 	/// Unlike the SSR pages, which answer a dead session by serving the signed-out view, the API says
@@ -796,6 +843,132 @@ impl Client for SkoolDms {
 	}
 }
 
+/// One lesson of a group's classroom. Not an [`Item`]: nobody wrote it and nobody replied to it, and
+/// the two things it is read *for* — where it sits in the course and what video it plays — are the
+/// two an item cannot carry.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Lesson {
+	pub id: String,
+	/// Every title above it, `/`-joined. A skool classroom is course → lesson here and nests deeper
+	/// elsewhere, so the trail is the position and the depth is not.
+	pub module: String,
+	pub title: String,
+	pub permalink: String,
+	/// When the lesson last changed. A classroom is a snapshot rather than a feed, so this is the only
+	/// time on it worth having — when it was first published answers nothing a re-read asks.
+	pub at: Timestamp,
+	pub body: String,
+	/// Whatever the payload carries, raw: the loom/youtube/vimeo URL somebody pasted, or — for a video
+	/// skool hosts itself — a mux playback URL, which is signed, expires within the hour and is served
+	/// only under a `Referer: https://www.skool.com/`. `None` for a lesson that is text alone.
+	pub video: Option<String>,
+}
+
+/// One course tree, depth-first. `above` is the trail of titles this node hangs under; the second
+/// half of a pair is the id of a video skool hosts, which the lesson's own route is the only place
+/// to resolve.
+fn lessons_of(children: Option<&serde_json::Value>, slug: &str, course: &str, above: &str, out: &mut Vec<(Lesson, Option<String>)>) -> Result<()> {
+	for child in children.and_then(|v| v.as_array()).into_iter().flatten() {
+		let node = child.get("course").ok_or_else(|| eyre!("a skool course tree node without a course: {child}"))?;
+		let id = node.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool lesson without an id: {node}"))?;
+		let title = node
+			.pointer("/metadata/title")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("skool lesson {id} without a title: {node}"))?;
+		// a node that holds other nodes is a folder in skool's own UI, and plays nothing
+		if child.get("children").and_then(|v| v.as_array()).is_some_and(|nested| !nested.is_empty()) {
+			lessons_of(child.get("children"), slug, course, &format!("{above} / {title}"), out)?;
+			continue;
+		}
+		let updated = node
+			.get("updatedAt")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| eyre!("skool lesson {id} without an updatedAt: {node}"))?;
+		let metadata = |key: &str| node.pointer(&format!("/metadata/{key}")).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+		// a pasted link outlives a mux token and costs no request, so it wins wherever skool holds both
+		let pasted = metadata("videoLink").map(str::to_string);
+		let hosted = pasted.is_none().then(|| metadata("videoId").map(str::to_string)).flatten();
+		out.push((
+			Lesson {
+				id: id.to_string(),
+				module: above.to_string(),
+				title: title.to_string(),
+				permalink: format!("{BASE}/{slug}/classroom/{course}?md={id}"),
+				at: updated.parse().wrap_err("skool timestamps are RFC3339")?,
+				body: metadata("desc").map(rich_text).transpose()?.unwrap_or_default(),
+				video: pasted,
+			},
+			hosted,
+		));
+	}
+	Ok(())
+}
+
+/// Skool's editor writes tiptap JSON behind a `[v2]` marker. Anything without one is the plain text
+/// the editor before it left, and is already what it says.
+fn rich_text(desc: &str) -> Result<String> {
+	let Some(json) = desc.strip_prefix("[v2]") else { return Ok(desc.trim().to_string()) };
+	let mut out = String::new();
+	flatten(&serde_json::from_str(json).wrap_err("a `[v2]` description is tiptap json")?, &mut out)?;
+	Ok(out.trim().to_string())
+}
+
+fn flatten(node: &serde_json::Value, out: &mut String) -> Result<()> {
+	match node {
+		serde_json::Value::Array(list) => list.iter().try_for_each(|node| flatten(node, out)),
+		serde_json::Value::Object(map) => {
+			let kind = map.get("type").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a tiptap node without a type: {node}"))?;
+			match kind {
+				"text" => {
+					let text = map.get("text").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a tiptap text node without text: {node}"))?;
+					out.push_str(text);
+					// a link whose text is not its own address is the one place the address is only in the mark
+					match map
+						.get("marks")
+						.and_then(|v| v.as_array())
+						.into_iter()
+						.flatten()
+						.find_map(|mark| mark.pointer("/attrs/href")?.as_str())
+					{
+						Some(href) if href != text => out.push_str(&format!(" ({href})")),
+						_ => (),
+					}
+				}
+				"hardBreak" => out.push('\n'),
+				_ => (),
+			}
+			if let Some(content) = map.get("content") {
+				flatten(content, out)?;
+			}
+			// a list item wraps a paragraph, so both close the same line and only the first of them ends it
+			if matches!(kind, "paragraph" | "heading" | "listItem") && !out.ends_with('\n') {
+				out.push('\n');
+			}
+			Ok(())
+		}
+		_ => Ok(()),
+	}
+}
+
+/// A video skool hosts is a mux asset, and the page is handed a token for it rather than a URL. The
+/// token is short-lived and carries a playback restriction, so what comes out of here plays for
+/// about an hour and only under skool's own `Referer`.
+fn mux(video: &serde_json::Value) -> Result<String> {
+	let status = video.get("status").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a mux video without a status: {video}"))?;
+	if status != "ready" {
+		bail!("mux says `{status}` for {video}");
+	}
+	let playback = video
+		.get("playbackId")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("a ready mux video without a playbackId: {video}"))?;
+	let token = video
+		.get("playbackToken")
+		.and_then(|v| v.as_str())
+		.ok_or_else(|| eyre!("a ready mux video without a playbackToken: {video}"))?;
+	Ok(format!("https://stream.mux.com/{playback}.m3u8?token={token}"))
+}
+
 /// One `postTrees` array, newest-first, turned into a page: a group feed and a profile serve the
 /// same nodes, so they take the same parse. `of` is the group whose feed this is, and is what a post
 /// that leaves its own group implied is filed under.
@@ -1102,6 +1275,30 @@ mod tests {
 
 		let dated = page_of(&nodes, &Window::since("2026-03-02T00:00:00Z".parse().unwrap()), Kind::Post, None, |_| Author::Me).unwrap();
 		assert_eq!(dated.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["b", "c"]);
+	}
+
+	/// A lesson body is tiptap json, and the only part of it worth keeping is text — except for a link
+	/// whose text is not its own address, which is the one place a URL exists only in a mark.
+	#[test]
+	fn a_lesson_body_is_its_links_and_its_text() {
+		let link = |href: &str, text: &str| serde_json::json!({"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"class": "link", "href": href}}]});
+		let desc = serde_json::json!([
+			{"type": "paragraph", "content": [link("https://www.loom.com/share/0be", "https://www.loom.com/share/0be")]},
+			{"type": "bulletList", "content": [{"type": "listItem", "content": [{"type": "paragraph", "content": [
+				{"type": "text", "text": "if using an iphone, use "},
+				link("http://getghostme.com", "getghostme.com"),
+				{"type": "hardBreak"},
+				{"type": "text", "text": "then "},
+				link("https://player.vimeo.com/video/1079014922", "this one")
+			]}]}]}
+		]);
+		assert_eq!(
+			rich_text(&format!("[v2]{desc}")).unwrap(),
+			"https://www.loom.com/share/0be\nif using an iphone, use getghostme.com (http://getghostme.com)\nthen this one (https://player.vimeo.com/video/1079014922)"
+		);
+		// skool stores an untouched description as an empty paragraph rather than dropping the field
+		assert_eq!(rich_text(r#"[v2][{"type":"paragraph"}]"#).unwrap(), "");
+		assert_eq!(rich_text(" a course blurb is plain ").unwrap(), "a course blurb is plain");
 	}
 
 	/// The name skool prints is two fields it never joins itself — the gap that had a person file

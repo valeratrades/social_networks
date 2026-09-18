@@ -77,6 +77,7 @@ Sentiment check: $BTC, how are we feeling?
 
   rolodex = {
     path = "/home/v/s/g/rolodex/";
+    tags = [ "ServiceArb" ];
   };
 
   skool = {

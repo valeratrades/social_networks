@@ -41,7 +41,7 @@ social_networks/
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
 │       ├── telegram_notifier.rs            # central notification hub
-│       ├── skool.rs                        # `__NEXT_DATA__` reads, chat writes, browser-minted cookie; the chat poller
+│       ├── skool.rs                        # `__NEXT_DATA__` reads (feed, roster, classroom), chat writes, browser-minted cookie; the chat poller
 │       └── youtube.rs                      # RSS monitoring, sentiment analysis
 │
 ├── social_networks_reach/                  # the transcript format and its store
