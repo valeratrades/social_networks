@@ -145,6 +145,7 @@ Skool ────┘                         ▲
 Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
 GitHub ───┼──► recon                │                                    │
 Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
+              classroom ───────────────► stdout, as JSON  (skool only)    │
                                                                          │
                                     rolodex discover ◄────────────────────┘
                                          └─► a skeleton under `people/`, which `pull` then fills

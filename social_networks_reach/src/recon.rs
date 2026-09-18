@@ -10,12 +10,13 @@
 //! recon members <platform>:<slug>                   → members.json
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
+//! recon classroom skool:<slug>                      → the lessons, as JSON on stdout
 //! ```
 
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use colored::Colorize as _;
 use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::{
@@ -86,12 +87,17 @@ enum Command {
 		#[arg(long)]
 		json: bool,
 	},
+	/// Print `skool:<slug>`'s classroom as a JSON array of lessons, on stdout and alone
+	Classroom {
+		#[arg(value_parser = venue_ref)]
+		at: VenueRef,
+	},
 }
 impl Command {
 	fn platform(&self) -> VenueSource {
 		match self {
 			Self::Venues { platform } => *platform,
-			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } => at.platform,
+			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Classroom { at } => at.platform,
 		}
 	}
 }
@@ -99,8 +105,11 @@ impl Command {
 fn main() -> Result<()> {
 	color_eyre::install()?;
 	// `info` by default: a hand-run command that spends a request per member owes the operator a
-	// running account of what it is doing
-	tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())).init();
+	// running account of what it is doing — on stderr, since `classroom` leaves stdout to a parser
+	tracing_subscriber::fmt()
+		.with_writer(std::io::stderr)
+		.with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
+		.init();
 	let cli = Cli::parse();
 	let config = ReconConfig::try_build(cli.settings).map_err(|e| eyre!("{e}"))?;
 	let dir = config
@@ -128,7 +137,15 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("a skool group is only readable by a member of it, so this needs a `[skool]` section in the config"))?;
-			act(&mut Skool::try_new(Some(creds.clone()))?, dir, command).await
+			let mut skool = Skool::try_new(Some(creds.clone()))?;
+			// `classroom` hangs off skool itself rather than off [`Venue`], so it cannot go through `act`
+			match command {
+				Command::Classroom { at } => {
+					println!("{}", serde_json::to_string_pretty(&skool.classroom(&at).await?)?);
+					Ok(())
+				}
+				command => act(&mut skool, dir, command).await,
+			}
 		}
 		VenueSource::Github => act(&mut Github::default(), dir, command).await,
 		VenueSource::Telegram => with_telegram(&config.telegram, async |client| act(&mut telegram_dms::Reach { client: &client }, dir, command).await).await,
@@ -177,6 +194,7 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 					},
 			}
 		}
+		Command::Classroom { at } => bail!("`{}` has no classroom — skool is the only platform that publishes one", at.platform.as_ref()),
 	}
 	Ok(())
 }
