@@ -480,8 +480,10 @@ impl Skool {
 		if let Some(cookie) = &self.cookie {
 			request = request.header(reqwest::header::COOKIE, cookie);
 		}
-		let html = request.send().await.wrap_err_with(|| format!("GET {path}"))?.error_for_status()?.text().await?;
-		next_data(&html)
+		let response = request.send().await.wrap_err_with(|| format!("GET {path}"))?.error_for_status()?;
+		let status = response.status();
+		let html = response.text().await?;
+		next_data(&html).wrap_err_with(|| format!("GET {path} answered {status}: {}", html.chars().take(300).collect::<String>()))
 	}
 
 	/// Drives a headless chromium through the login form, because `/auth/login` answers a direct POST
@@ -712,9 +714,11 @@ impl Venue for Skool {
 		let slug = at.slug.clone();
 		let mut out = Page::default();
 		let mut seen: HashSet<String> = HashSet::new();
+		let mut previous: Option<Timestamp> = None;
 		//LOOP: bounded by the feed, which is finite and walked from the newest page strictly downwards
 		for p in 1.. {
-			let payload = self.group_page(&at.slug, &format!("?p={p}")).await?;
+			// the default sort is by latest comment with pinned posts on top, which neither the cursor nor the window can stop on
+			let payload = self.group_page(&at.slug, &format!("?s=newest&p={p}")).await?;
 			let served = payload
 				.pointer("/props/pageProps/postTrees")
 				.and_then(|v| v.as_array())
@@ -724,15 +728,25 @@ impl Venue for Skool {
 				out.exhausted = true;
 				break;
 			}
-			// A pinned post heads the feed *and* keeps its own chronological place, so the same post is
-			// served twice — both inside page 1, and again on whichever page its date falls on. Dropping
-			// the repeat here rather than downstream is what keeps one post to one reply fetch.
+			// a post landing mid-walk shifts every page by one, serving the last post of one page again on the next
 			let mut nodes = Vec::with_capacity(served.len());
 			for node in served {
 				let id = node
 					.pointer("/post/id")
 					.and_then(|v| v.as_str())
 					.ok_or_else(|| eyre!("a skool postTree without a post id: {node}"))?;
+				let created: Timestamp = node
+					.pointer("/post/createdAt")
+					.and_then(|v| v.as_str())
+					.ok_or_else(|| eyre!("skool post {id} without createdAt"))?
+					.parse()
+					.wrap_err("skool timestamps are RFC3339")?;
+				if let Some(previous) = previous
+					&& created > previous
+				{
+					bail!("skool `{slug}`: page {p} serves {id} from {created} under a post from {previous}, so the feed is not newest-first");
+				}
+				previous = Some(created);
 				if seen.insert(id.to_string()) {
 					nodes.push(node);
 				}
