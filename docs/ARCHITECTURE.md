@@ -42,7 +42,7 @@ social_networks/
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
 │       ├── telegram_notifier.rs            # central notification hub
 │       ├── skool.rs                        # `__NEXT_DATA__` reads (feed, roster, classroom), chat writes, browser-minted cookie; the chat poller
-│       └── youtube.rs                      # RSS monitoring, sentiment analysis
+│       └── youtube.rs                      # RSS monitoring, sentiment analysis; yt-dlp reads of a channel or a video, on demand (feature `youtube-reads`)
 │
 ├── social_networks_reach/                  # the transcript format and its store
 │   └── src/
@@ -145,7 +145,6 @@ Skool ────┘                         ▲
 Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
 GitHub ───┼──► recon                │                                    │
 Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
-              classroom ───────────────► stdout, as JSON  (skool only)    │
                                                                          │
                                     rolodex discover ◄────────────────────┘
                                          └─► a skeleton under `people/`, which `pull` then fills

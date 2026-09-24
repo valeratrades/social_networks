@@ -909,7 +909,7 @@ impl Client for SkoolDms {
 }
 
 /// One course of a group's classroom — a module, in skool's own wording, and a page of its own.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Course {
 	/// The 8-hex `name`, which is what `/classroom/<x>` addresses — not the 32-hex id a lesson uses
 	pub id: String,
@@ -924,7 +924,7 @@ pub struct Course {
 /// One lesson of a group's classroom. Not an [`Item`]: nobody wrote it and nobody replied to it, and
 /// the two things it is read *for* — where it sits in the course and what video it plays — are the
 /// two an item cannot carry.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Lesson {
 	pub id: String,
 	/// Every title above it, `/`-joined. A skool classroom is course → lesson here and nests deeper
@@ -936,14 +936,21 @@ pub struct Lesson {
 	/// time on it worth having — when it was first published answers nothing a re-read asks.
 	pub at: Timestamp,
 	pub body: String,
-	/// Whatever the payload carries, raw: the loom/youtube/vimeo URL somebody pasted, or — for a video
-	/// skool hosts itself — a mux playback URL, which is signed, expires within the hour and is served
-	/// only under a `Referer: https://www.skool.com/`. `None` for a lesson that is text alone.
-	pub video: Option<String>,
+	/// `None` for a lesson that is text alone.
+	pub video: Option<Video>,
 	/// The files and links attached beside the body, as the payload's own JSON and not a reading of
 	/// it: every classroom seen so far leaves this empty, so its shape is unobserved and a parse here
 	/// would be a guess. `None` for the empty list.
 	pub resources: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Video {
+	/// A video skool hosts itself. `url` is signed, expires within the hour and is served only under a
+	/// `Referer: https://www.skool.com/`; `playback_id` is the part still true tomorrow.
+	Mux { playback_id: String, url: String },
+	/// The loom/youtube/vimeo URL somebody pasted.
+	Link(String),
 }
 
 /// One course tree, depth-first: every lesson's id, and the trail of titles it hangs under. Only the
@@ -1003,7 +1010,7 @@ fn lesson_of(node: &serde_json::Value, slug: &str, course: &str, module: String)
 			permalink: format!("{BASE}/{slug}/classroom/{course}?md={id}"),
 			at: updated.parse().wrap_err("skool timestamps are RFC3339")?,
 			body: metadata("desc").map(rich_text).transpose()?.unwrap_or_default(),
-			video: pasted,
+			video: pasted.map(Video::Link),
 			resources: metadata("resources").filter(|v| *v != "[]").map(str::to_string),
 		},
 		hosted,
@@ -1059,7 +1066,7 @@ fn flatten(node: &serde_json::Value, out: &mut String) -> Result<()> {
 /// A video skool hosts is a mux asset, and the page is handed a token for it rather than a URL. The
 /// token is short-lived and carries a playback restriction, so what comes out of here plays for
 /// about an hour and only under skool's own `Referer`.
-fn mux(video: &serde_json::Value) -> Result<String> {
+fn mux(video: &serde_json::Value) -> Result<Video> {
 	let status = video.get("status").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a mux video without a status: {video}"))?;
 	if status != "ready" {
 		bail!("mux says `{status}` for {video}");
@@ -1072,7 +1079,10 @@ fn mux(video: &serde_json::Value) -> Result<String> {
 		.get("playbackToken")
 		.and_then(|v| v.as_str())
 		.ok_or_else(|| eyre!("a ready mux video without a playbackToken: {video}"))?;
-	Ok(format!("https://stream.mux.com/{playback}.m3u8?token={token}"))
+	Ok(Video::Mux {
+		playback_id: playback.to_string(),
+		url: format!("https://stream.mux.com/{playback}.m3u8?token={token}"),
+	})
 }
 
 /// One `postTrees` array, newest-first, turned into a page: a group feed and a profile serve the

@@ -11,7 +11,6 @@
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
 //! recon find    skool:<slug> <term>                   the group's own member search
-//! recon classroom skool:<slug>                      → the course tree, as JSON on stdout
 //! ```
 
 use std::path::Path;
@@ -94,17 +93,12 @@ enum Command {
 		at: VenueRef,
 		term: String,
 	},
-	/// Print `skool:<slug>`'s classroom as a JSON array of courses, each with its lessons, on stdout and alone
-	Classroom {
-		#[arg(value_parser = venue_ref)]
-		at: VenueRef,
-	},
 }
 impl Command {
 	fn platform(&self) -> VenueSource {
 		match self {
 			Self::Venues { platform } => *platform,
-			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Find { at, .. } | Self::Classroom { at } => at.platform,
+			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Find { at, .. } => at.platform,
 		}
 	}
 }
@@ -112,7 +106,7 @@ impl Command {
 fn main() -> Result<()> {
 	color_eyre::install()?;
 	// `info` by default: a hand-run command that spends a request per member owes the operator a
-	// running account of what it is doing — on stderr, since `classroom` leaves stdout to a parser
+	// running account of what it is doing
 	tracing_subscriber::fmt()
 		.with_writer(std::io::stderr)
 		.with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
@@ -145,13 +139,8 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 				.as_ref()
 				.ok_or_else(|| eyre!("a skool group is only readable by a member of it, so this needs a `[skool]` section in the config"))?;
 			let mut skool = Skool::try_new(Some(creds.clone()))?;
-			// `classroom` and `find` hang off skool itself rather than off [`Venue`], so neither can go
-			// through `act`
+			// `find` hangs off skool itself rather than off [`Venue`], so it cannot go through `act`
 			match command {
-				Command::Classroom { at } => {
-					println!("{}", serde_json::to_string_pretty(&skool.classroom(&at).await?)?);
-					Ok(())
-				}
 				Command::Find { at, term } => {
 					let found = skool.find(&at, &term).await?;
 					if found.is_empty() {
@@ -213,7 +202,6 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			}
 		}
 		Command::Find { at, .. } => bail!("`{}` has no member search — skool is the only platform that answers one", at.platform.as_ref()),
-		Command::Classroom { at } => bail!("`{}` has no classroom — skool is the only platform that publishes one", at.platform.as_ref()),
 	}
 	Ok(())
 }

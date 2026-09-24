@@ -17,6 +17,11 @@ use crate::{
 	telegram_notifier::TelegramNotifier,
 };
 
+#[cfg(feature = "youtube-reads")]
+mod reads;
+#[cfg(feature = "youtube-reads")]
+pub use reads::{Chapter, Cue, Listed, Video, download, listing, uploads, video};
+
 const SURFACE: &str = "youtube";
 #[derive(Args)]
 pub struct YoutubeArgs {}
