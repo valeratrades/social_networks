@@ -2,7 +2,7 @@ cargo-features = ["codegen-backend"]
 
 [package]
 name = "social_networks_reach"
-version = "0.3.20"
+version = "0.3.22"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "the transcript format of the on-demand axis, and the CLI that fills it"
