@@ -8,6 +8,9 @@ use jiff::civil::Date;
 use tokio::process::Command;
 
 const WATCH: &str = "https://www.youtube.com/watch?v=";
+/// Youtube serves its chapter markers on about half the fetches of a watch page, so a chapterless
+/// answer is asked again this many times over before it is believed.
+const CHAPTER_FETCHES: usize = 6;
 
 pub struct Listed {
 	pub id: String,
@@ -21,7 +24,7 @@ pub struct Video {
 	/// seconds
 	pub duration: f64,
 	pub channel: String,
-	/// The uploader's own; `None` for a video never chaptered, which is most of them.
+	/// The uploader's, or the ones youtube generated; `None` for a video with neither, which is most of them.
 	pub chapters: Option<Vec<Chapter>>,
 	/// `None` where the uploader wrote nothing under it.
 	pub description: Option<String>,
@@ -132,25 +135,14 @@ async fn read(id: &str, tmp: &Path) -> Result<Video> {
 		.collect::<Vec<_>>()
 		.try_into()
 		.map_err(|v| eyre!("yt-dlp was asked for six fields on {id}, and answered {v:?}"))?;
-	// `NA` is yt-dlp's answer for a field youtube left empty
-	let chapters = match chapters {
-		"NA" => None,
-		field => {
-			let parsed: Vec<serde_json::Value> = serde_json::from_str(field).wrap_err_with(|| format!("yt-dlp states {id}'s chapters as a json list, and answered {field:?}"))?;
-			ensure!(!parsed.is_empty(), "{id} carries a chapter list with nothing in it");
-			Some(
-				parsed
-					.iter()
-					.map(|c| {
-						Ok(Chapter {
-							at: c["start_time"].as_f64().ok_or_else(|| eyre!("an unstamped youtube chapter on {id}: {c}"))?,
-							title: c["title"].as_str().ok_or_else(|| eyre!("an untitled youtube chapter on {id}: {c}"))?.to_string(),
-						})
-					})
-					.collect::<Result<_>>()?,
-			)
+	let mut chapters = parse_chapters(chapters, id)?;
+	for _ in 1..CHAPTER_FETCHES {
+		if chapters.is_some() {
+			break;
 		}
-	};
+		chapters = parse_chapters(yt_dlp(&["--skip-download", "--print", "%(chapters)j", &format!("{WATCH}{id}")]).await?.trim(), id)?;
+	}
+	// `NA` is yt-dlp's answer for a field youtube left empty
 	let description = match description {
 		"NA" => None,
 		field => Some(serde_json::from_str::<String>(field).wrap_err_with(|| format!("yt-dlp states a description as a json string, and answered {field:?}"))?),
@@ -165,6 +157,24 @@ async fn read(id: &str, tmp: &Path) -> Result<Video> {
 		description,
 		captions: captions(tmp)?,
 	})
+}
+
+fn parse_chapters(field: &str, id: &str) -> Result<Option<Vec<Chapter>>> {
+	if field == "NA" {
+		return Ok(None);
+	}
+	let parsed: Vec<serde_json::Value> = serde_json::from_str(field).wrap_err_with(|| format!("yt-dlp states {id}'s chapters as a json list, and answered {field:?}"))?;
+	ensure!(!parsed.is_empty(), "{id} carries a chapter list with nothing in it");
+	parsed
+		.iter()
+		.map(|c| {
+			Ok(Chapter {
+				at: c["start_time"].as_f64().ok_or_else(|| eyre!("an unstamped youtube chapter on {id}: {c}"))?,
+				title: c["title"].as_str().ok_or_else(|| eyre!("an untitled youtube chapter on {id}: {c}"))?.to_string(),
+			})
+		})
+		.collect::<Result<_>>()
+		.map(Some)
 }
 
 /// yt-dlp names the track by the language it found, and asks for both the uploader's and youtube's
