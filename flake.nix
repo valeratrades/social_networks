@@ -9,7 +9,7 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import v_flakes.default_nixpkgs { inherit system; };
+        pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; }; # claude-code
         rust = v_flakes.rs.default_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
@@ -32,6 +32,7 @@
           lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
           jobs.default = true;
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
+          containerRelease = { registry = "ghcr.io/valeratrades"; };
           release = {
             default = true;
             cargoTomlPath = "./social_networks/Cargo.toml";
@@ -60,33 +61,51 @@
             exec cargo release "$part" --execute --no-confirm --no-verify
           '';
         };
+
+        bin = rustPlatform.buildRustPackage {
+          inherit pname;
+          version = manifest.version;
+
+          buildInputs = with pkgs; [
+            openssl.dev
+          ];
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
+          preCheck = "export HOME=$TMPDIR"; # the rolodex history tests write under ~/.cache
+
+          cargoLock.lockFile = ./Cargo.lock;
+          src = pkgs.lib.cleanSource ./.;
+        };
+        rustPlatform = pkgs.makeRustPlatform {
+          rustc = rust;
+          cargo = rust;
+          inherit stdenv;
+        };
+        # The container is the isolation; chromium's own sandbox needs user
+        # namespaces a pod does not get.
+        chromium = pkgs.writeShellScriptBin "chromium" ''exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"'';
+        # One image, every daemon: which of them run, and so which subcommand each
+        # pod is given, is the deployment's decision (devops, tenant `personal`).
+        containerStd = v_flakes.container.implement {
+          inherit pkgs pname;
+          containers."" = {
+            port = null;
+            healthPath = null;
+            criticality = "normal";
+            entrypoint = [ "${bin}/bin/${pname}" ];
+            contents = [ chromium pkgs.claude-code pkgs.coreutils ];
+            mounts = [ "/data" ];
+            workingDir = "/data";
+            imageEnv = [ "HOME=/data" "PATH=/bin" ];
+          };
+        };
       in
       {
         apps.publish = { type = "app"; program = "${runPublish}/bin/publish"; };
 
-        packages =
-          let
-            rustc = rust;
-            cargo = rust;
-            rustPlatform = pkgs.makeRustPlatform {
-              inherit rustc cargo stdenv;
-            };
-          in
-          {
-            default = rustPlatform.buildRustPackage {
-              inherit pname;
-              version = manifest.version;
+        packages = { default = bin; } // containerStd.packages;
 
-              buildInputs = with pkgs; [
-                openssl.dev
-              ];
-              nativeBuildInputs = with pkgs; [ pkg-config ];
-              RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
-
-              cargoLock.lockFile = ./Cargo.lock;
-              src = pkgs.lib.cleanSource ./.;
-            };
-          };
+        containers = containerStd.containers;
 
         devShells.default =
           with pkgs;
