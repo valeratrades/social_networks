@@ -224,18 +224,15 @@ dependencies = [
 
 [[package]]
 name = "ask_llm"
-version = "3.2.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b5ef02aefc28ef0ddeb01979f5b28e6f9ad09499b619c10661a659d8e97b62e"
+checksum = "a95bf82fd531986d3501d0e2d418707425a8b079cfeadb32541eba3f66813574"
 dependencies = [
  "base64 0.22.1",
- "bytes",
  "clap",
  "color-eyre",
- "derive-new",
  "derive_more",
  "eyre",
- "futures",
  "miette",
  "reqwest",
  "serde",
@@ -4636,14 +4633,12 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.26.4",
- "tokio-util",
  "tower 0.5.3",
  "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
  "web-sys",
 ]
 
@@ -6574,19 +6569,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

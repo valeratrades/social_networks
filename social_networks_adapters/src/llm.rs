@@ -10,15 +10,13 @@ pub struct LlmConfig {
 	#[serde(default)]
 	pub claude_token: Option<String>,
 	#[serde(default)]
-	pub deepseek_token: Option<String>,
-	#[serde(default)]
 	pub openai_token: Option<String>,
 }
 
 impl LlmConfig {
 	pub fn assert_any_key(&self) -> Result<()> {
-		if self.claude_token.is_none() && self.deepseek_token.is_none() && self.openai_token.is_none() {
-			bail!("`[llm]` carries no key — give it at least one of claude_token, deepseek_token, openai_token, or drop the section");
+		if self.claude_token.is_none() && self.openai_token.is_none() {
+			bail!("`[llm]` carries no key — give it at least one of claude_token, openai_token, or drop the section");
 		}
 		Ok(())
 	}
@@ -28,7 +26,6 @@ impl From<&LlmConfig> for ask_llm::config::AppConfig {
 	fn from(config: &LlmConfig) -> Self {
 		Self {
 			claude_token: config.claude_token.clone(),
-			deepseek_token: config.deepseek_token.clone(),
 			openai_token: config.openai_token.clone(),
 		}
 	}
