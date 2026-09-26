@@ -1,19 +1,27 @@
-use std::{convert::Infallible, future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{convert::Infallible, future::Future, io::Cursor, path::Path, pin::Pin, sync::Arc};
 
 use clap::Args;
-use color_eyre::eyre::{Context, ContextCompat, Result};
+use color_eyre::eyre::{Context, ContextCompat, Result, eyre};
 use google_gmail1::{Gmail, api::Message};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use imap::{ImapConnection, Session};
+use imap_proto::NameAttribute;
+use jiff::Timestamp;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
-use tokio::time::{self, Duration};
+use tokio::{
+	runtime::Handle,
+	time::{self, Duration},
+};
 use tracing::{debug, error, info, instrument};
 use v_utils::{log, macros::MyConfigPrimitives};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
+pub use self::script::Scripts;
+use self::script::{Reply, Script, Step};
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
 	llm::LlmConfig,
@@ -21,14 +29,22 @@ use crate::{
 	telegram_notifier::TelegramNotifier,
 };
 
+mod script;
+
 const SURFACE: &str = "email";
+type Hub = Gmail<HttpsConnector<HttpConnector>>;
+type ImapSession = Session<Box<dyn ImapConnection>>;
 #[derive(Args)]
 pub struct EmailArgs {
 	/// Mark all unread emails as read without processing
 	#[arg(long)]
 	pub mark_all_read: bool,
+	/// Post what a script would send to the Telegram alerts channel instead of mailing it
+	#[arg(long)]
+	pub dry_run: bool,
 }
 #[derive(Clone, Debug, MyConfigPrimitives)]
+#[primitives(skip_serialize)]
 pub struct EmailConfig {
 	/// Gmail email address to monitor
 	pub email: String,
@@ -38,6 +54,9 @@ pub struct EmailConfig {
 	#[serde(default)]
 	#[primitives(skip)]
 	pub rules: Rules,
+	#[serde(default)]
+	#[primitives(skip)]
+	pub scripts: Scripts,
 }
 
 /// The definitive decision for an email, whatever heuristic produced it.
@@ -108,9 +127,10 @@ pub struct EmailMonitor {
 	notifier: TelegramNotifier,
 	db: Database,
 	rules: CompiledRules,
+	dry_run: bool,
 }
 impl EmailMonitor {
-	pub fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database) -> Result<Self> {
+	fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database, dry_run: bool) -> Result<Self> {
 		let rules = CompiledRules::try_new(&config.rules)?;
 		Ok(Self {
 			config,
@@ -118,15 +138,16 @@ impl EmailMonitor {
 			notifier,
 			db,
 			rules,
+			dry_run,
 		})
 	}
 
-	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig) -> Result<Self> {
+	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig, dry_run: bool) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Self::try_new(email_config, llm_config, notifier, db)
+		Self::try_new(email_config, llm_config, notifier, db, dry_run)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -150,7 +171,7 @@ impl EmailMonitor {
 
 	// ==================== IMAP Implementation ====================
 
-	fn connect_imap(&self) -> Result<Session<Box<dyn ImapConnection>>> {
+	fn connect_imap(&self) -> Result<ImapSession> {
 		let pass = match &self.config.auth {
 			EmailAuth::Imap(imap_auth) => &imap_auth.pass,
 			EmailAuth::Oauth(_) => unreachable!(),
@@ -158,8 +179,22 @@ impl EmailMonitor {
 
 		let client = imap::ClientBuilder::new("imap.gmail.com", 993).connect().context("Failed to connect to Gmail IMAP")?;
 
-		let session = client.login(&self.config.email, pass).map_err(|e| color_eyre::eyre::eyre!("IMAP login failed: {:?}", e.0))?;
+		let session = client.login(&self.config.email, pass).map_err(|e| eyre!("IMAP login failed: {:?}", e.0))?;
 
+		Ok(session)
+	}
+
+	/// Every folder at once, sent mail included, so a thread can be read whole.
+	fn connect_all_mail(&self) -> Result<ImapSession> {
+		let mut session = self.connect_imap()?;
+		let names = session.list(None, Some("*")).context("Failed to list mailboxes")?;
+		let all = names
+			.iter()
+			.find(|n| n.attributes().contains(&NameAttribute::All))
+			.context("no mailbox carries SPECIAL-USE \\All; tick \"Show in IMAP\" for All Mail in Gmail's label settings")?
+			.name()
+			.to_owned();
+		session.examine(&all).with_context(|| format!("Failed to examine {all}"))?;
 		Ok(session)
 	}
 
@@ -167,71 +202,91 @@ impl EmailMonitor {
 		let this = self.clone();
 
 		tokio::task::spawn_blocking(move || {
+			let rt = Handle::current();
 			let mut session = this.connect_imap()?;
 			session.select("INBOX").context("Failed to select INBOX")?;
 
 			let uids = session.uid_search("UNSEEN").context("Failed to search for unread messages")?;
 			info!("Found {} unread messages", uids.len());
 
+			let mut all_mail = None;
 			for uid in uids.iter() {
-				if let Err(e) = this.process_message_imap(&mut session, *uid) {
+				let id = format!("{}/imap-{uid}", this.config.email);
+				if rt.block_on(this.db.is_email_processed(&id))? {
+					debug!("Message {id} already processed, skipping");
+					continue;
+				}
+				if all_mail.is_none() {
+					all_mail = Some(this.connect_all_mail()?);
+				}
+				let all_mail = all_mail.as_mut().expect("connected above");
+				if let Err(e) = this.process_message_imap(&rt, &mut session, all_mail, *uid, id) {
+					if classify_email_auth_error(&e).is_some() {
+						return Err(e);
+					}
 					error!("Failed to process message {uid}: {e:#}");
 				}
 			}
 
+			// the run is over either way; a failed LOGOUT leaves nothing behind
 			session.logout().ok();
+			if let Some(mut all_mail) = all_mail {
+				all_mail.logout().ok();
+			}
 			Ok(())
 		})
 		.await?
 	}
 
-	fn process_message_imap(&self, session: &mut Session<Box<dyn ImapConnection>>, uid: u32) -> Result<()> {
-		let messages = session.uid_fetch(uid.to_string(), "(UID ENVELOPE BODY.PEEK[])").context("Failed to fetch message")?;
+	fn process_message_imap(&self, rt: &Handle, inbox: &mut ImapSession, all_mail: &mut ImapSession, uid: u32, id: String) -> Result<()> {
+		let latest = EmailMessage::parse(id, &fetch_raw(inbox, uid)?)?;
+		let thread = self.thread_imap(all_mail, latest)?;
+		let latest = thread.last().expect("pushed last");
 
-		let message = messages.iter().next().context("Message not found")?;
-		let envelope = message.envelope().context("No envelope")?;
-
-		let from = envelope
-			.from
-			.as_ref()
-			.and_then(|addrs| addrs.first())
-			.map(|addr| {
-				let name = addr.name.as_ref().map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default();
-				let mailbox = addr.mailbox.as_ref().map(|m| String::from_utf8_lossy(m).to_string()).unwrap_or_default();
-				let host = addr.host.as_ref().map(|h| String::from_utf8_lossy(h).to_string()).unwrap_or_default();
-				if name.is_empty() {
-					format!("{mailbox}@{host}")
-				} else {
-					format!("{name} <{mailbox}@{host}>")
-				}
-			})
-			.unwrap_or_else(|| "Unknown".to_string());
-
-		let subject = envelope
-			.subject
-			.as_ref()
-			.map(|s| String::from_utf8_lossy(s).to_string())
-			.unwrap_or_else(|| "No Subject".to_string());
-
-		let date = envelope.date.as_ref().map(|d| String::from_utf8_lossy(d).to_string()).unwrap_or_else(|| "Unknown".to_string());
-
-		let body_preview: String = message.body().map(decode_body_preview).unwrap_or_default();
-
-		let email_msg = EmailMessage {
-			id: format!("{}/imap-{uid}", self.config.email),
-			from,
-			subject,
-			date,
-			body_preview,
-			reply_to: None,
-			list_unsubscribe: None,
-			extra_headers: String::new(),
-		};
-
-		self.process_email_common(&email_msg, |_| self.mark_as_read_imap(session, uid))
+		let verdict = rt.block_on(self.decide(&thread, latest))?;
+		if let Some(reply) = &verdict.send {
+			rt.block_on(self.send_smtp(reply))?;
+		}
+		if verdict.mark_read {
+			self.mark_as_read_imap(inbox, uid)?;
+		}
+		rt.block_on(self.db.mark_email_processed(&latest.id, &latest.from, &latest.subject, verdict.action))
 	}
 
-	fn mark_as_read_imap(&self, session: &mut Session<Box<dyn ImapConnection>>, uid: u32) -> Result<()> {
+	/// Oldest first, in the order `References` lists them. A referenced message this account never held
+	/// (deleted, or exchanged between others) is left out.
+	fn thread_imap(&self, all_mail: &mut ImapSession, latest: EmailMessage) -> Result<Vec<EmailMessage>> {
+		let mut ids = latest.references.clone();
+		ids.extend(latest.in_reply_to.iter().filter(|id| !latest.references.contains(id)).cloned());
+
+		let mut thread = Vec::with_capacity(ids.len() + 1);
+		for id in ids {
+			let uids = all_mail
+				.uid_search(format!("HEADER Message-ID \"<{id}>\""))
+				.with_context(|| format!("Failed to search for <{id}>"))?;
+			// a message delivered twice carries one id
+			let Some(uid) = uids.into_iter().min() else { continue };
+			thread.push(EmailMessage::parse(format!("{}/imap-all-{uid}", self.config.email), &fetch_raw(all_mail, uid)?)?);
+		}
+		thread.push(latest);
+		Ok(thread)
+	}
+
+	async fn send_smtp(&self, reply: &Reply) -> Result<()> {
+		let EmailAuth::Imap(ImapAuth { pass }) = &self.config.auth else {
+			unreachable!("SMTP is how IMAP accounts send")
+		};
+		let transport = AsyncSmtpTransport::<Tokio1Executor>::relay("smtp.gmail.com")?
+			.credentials(Credentials::new(self.config.email.clone(), pass.clone()))
+			.build();
+		transport.send(lettre::Message::try_from(reply)?).await.map_err(|e| match e.status().map(u16::from) {
+			Some(535) => eyre!("SMTP authentication failed: {e}"),
+			_ => eyre!("SMTP send to {} failed: {e}", reply.to),
+		})?;
+		Ok(())
+	}
+
+	fn mark_as_read_imap(&self, session: &mut ImapSession, uid: u32) -> Result<()> {
 		session.uid_store(uid.to_string(), "+FLAGS (\\Seen)").context("Failed to mark message as read")?;
 		Ok(())
 	}
@@ -254,33 +309,13 @@ impl EmailMonitor {
 			println!("Marking {count} unread messages as read...");
 
 			for (i, uid) in uids.iter().enumerate() {
-				let from = if let Ok(messages) = session.uid_fetch(uid.to_string(), "ENVELOPE") {
-					messages
-						.iter()
-						.next()
-						.and_then(|m| m.envelope())
-						.and_then(|e| e.from.as_ref())
-						.and_then(|addrs| addrs.first())
-						.map(|addr| {
-							let name = addr.name.as_ref().map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default();
-							let mailbox = addr.mailbox.as_ref().map(|m| String::from_utf8_lossy(m).to_string()).unwrap_or_default();
-							let host = addr.host.as_ref().map(|h| String::from_utf8_lossy(h).to_string()).unwrap_or_default();
-							if name.is_empty() {
-								format!("{mailbox}@{host}")
-							} else {
-								format!("{name} <{mailbox}@{host}>")
-							}
-						})
-						.unwrap_or_else(|| "Unknown".to_string())
-				} else {
-					"Unknown".to_string()
-				};
-
+				let from = EmailMessage::parse(format!("{}/imap-{uid}", this.config.email), &fetch_raw(&mut session, *uid)?)?.from;
 				this.mark_as_read_imap(&mut session, *uid)?;
 				println!("[{}/{}] Marked as read: {}", i + 1, count, from);
 			}
 
 			println!("\nAll done! Marked {count} messages as read.");
+			// the run is over either way; a failed LOGOUT leaves nothing behind
 			session.logout().ok();
 			Ok(())
 		})
@@ -289,7 +324,7 @@ impl EmailMonitor {
 
 	// ==================== OAuth/Gmail API Implementation ====================
 
-	async fn create_gmail_hub(&self, oauth: &OAuthAuth) -> Result<Gmail<HttpsConnector<HttpConnector>>> {
+	async fn create_gmail_hub(&self, oauth: &OAuthAuth) -> Result<Hub> {
 		info!("Authenticating with Gmail API...");
 
 		let secret = ApplicationSecret {
@@ -324,110 +359,103 @@ impl EmailMonitor {
 		let hub = self.create_gmail_hub(oauth).await?;
 		log!("Successfully authenticated with Gmail API");
 
-		let messages = self.fetch_unread_messages_oauth(&hub).await?;
-		info!("Found {} unread messages", messages.len());
+		let unread = self.list_unread_oauth(&hub).await?;
+		info!("Found {} unread messages", unread.len());
 
-		for message in messages {
-			if let Err(e) = self.process_message_oauth(&hub, &message).await {
-				let message_id = message.id.as_deref().unwrap_or("unknown");
-				let from = self.extract_header(&message, "From").unwrap_or_else(|| "Unknown".to_string());
-				error!("Failed to process message {message_id} from {from}: {e:#}");
-			}
-		}
-
-		Ok(())
-	}
-
-	async fn fetch_unread_messages_oauth(&self, hub: &Gmail<HttpsConnector<HttpConnector>>) -> Result<Vec<Message>> {
-		use futures::stream::{self, StreamExt};
-
-		let mut all_messages = Vec::new();
-		let mut page_token: Option<String> = Some(String::new()); // empty string = first page
-
-		while let Some(token) = page_token.take() {
-			let mut request = hub.users().messages_list(&self.config.email).q("is:unread").max_results(500);
-			if !token.is_empty() {
-				request = request.page_token(&token);
-			}
-
-			let result = request.doit().await.map_err(|e| color_eyre::eyre::eyre!("Failed to fetch messages: {e:#?}"))?;
-
-			if let Some(msg_list) = result.1.messages {
-				let ids: Vec<String> = msg_list.into_iter().filter_map(|m| m.id).collect();
-				let email = self.config.email.clone();
-				let messages: Vec<_> = stream::iter(ids)
-					.map(|id| {
-						let email = email.clone();
-						async move { hub.users().messages_get(&email, &id).format("full").doit().await.ok() }
-					})
-					.buffer_unordered(50)
-					.collect()
-					.await;
-
-				for msg_result in messages.into_iter().flatten() {
-					all_messages.push(msg_result.1);
+		for (gmail_id, thread_id) in unread {
+			if let Err(e) = self.process_message_oauth(&hub, &gmail_id, &thread_id).await {
+				if classify_email_auth_error(&e).is_some() {
+					return Err(e);
 				}
+				error!("Failed to process message {gmail_id}: {e:#}");
 			}
-
-			page_token = result.1.next_page_token;
 		}
-
-		Ok(all_messages)
-	}
-
-	async fn process_message_oauth(&self, hub: &Gmail<HttpsConnector<HttpConnector>>, message: &Message) -> Result<()> {
-		let message_id = message.id.as_ref().wrap_err("Message has no ID")?;
-
-		let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
-		let subject = self.extract_header(message, "Subject").unwrap_or_else(|| "No Subject".to_string());
-		let date = self.extract_header(message, "Date").unwrap_or_else(|| "Unknown".to_string());
-		let reply_to = self.extract_header(message, "Reply-To");
-		let list_unsubscribe = self.extract_header(message, "List-Unsubscribe");
-		let body_preview = message.snippet.as_deref().unwrap_or("").to_string();
-
-		let extra_headers = if let Some(payload) = &message.payload {
-			if let Some(headers) = &payload.headers {
-				headers
-					.iter()
-					.filter(|h| {
-						matches!(
-							h.name.as_deref(),
-							Some("X-Mailer") | Some("User-Agent") | Some("X-Auto-Response-Suppress") | Some("Auto-Submitted") | Some("Precedence")
-						)
-					})
-					.filter_map(|h| Some(format!("{}: {}", h.name.as_deref()?, h.value.as_deref()?)))
-					.collect::<Vec<_>>()
-					.join("\n")
-			} else {
-				String::new()
-			}
-		} else {
-			String::new()
-		};
-
-		let email_msg = EmailMessage {
-			id: format!("{}/{message_id}", self.config.email),
-			from,
-			subject,
-			date,
-			body_preview,
-			reply_to,
-			list_unsubscribe,
-			extra_headers,
-		};
-
-		let Some(action) = self.triage(&email_msg).await? else { return Ok(()) };
-		match action {
-			Action::Important => self.forward_to_telegram(&email_msg).await?,
-			Action::ReadLater => {}
-			Action::Discard => self.mark_as_read_oauth(hub, message_id).await?,
-		}
-		self.db.mark_email_processed(&email_msg.id, &email_msg.from, &email_msg.subject, action.as_str()).await?;
 
 		Ok(())
 	}
 
-	async fn mark_as_read_oauth(&self, hub: &Gmail<HttpsConnector<HttpConnector>>, message_id: &str) -> Result<()> {
+	/// `(message id, thread id)` of every unread message.
+	async fn list_unread_oauth(&self, hub: &Hub) -> Result<Vec<(String, String)>> {
+		let mut unread = Vec::new();
+		let mut page_token: Option<String> = None;
+		loop {
+			let mut request = hub.users().messages_list(&self.config.email).q("is:unread").max_results(500);
+			if let Some(token) = &page_token {
+				request = request.page_token(token);
+			}
+			let (_, list) = request.doit().await.map_err(|e| eyre!("Failed to fetch messages: {e:#?}"))?;
+			// an empty page carries no `messages` at all
+			for m in list.messages.into_iter().flatten() {
+				unread.push((m.id.context("listed message has no id")?, m.thread_id.context("listed message has no thread id")?));
+			}
+			page_token = list.next_page_token;
+			if page_token.is_none() {
+				return Ok(unread);
+			}
+		}
+	}
+
+	async fn get_oauth(&self, hub: &Hub, gmail_id: &str) -> Result<EmailMessage> {
+		let (_, message) = hub
+			.users()
+			.messages_get(&self.config.email, gmail_id)
+			.format("raw")
+			.doit()
+			.await
+			.with_context(|| format!("Failed to fetch message {gmail_id}"))?;
+		EmailMessage::parse(format!("{}/{gmail_id}", self.config.email), &message.raw.context("`format=raw` carries `raw`")?)
+	}
+
+	/// Oldest first, as Gmail orders a thread.
+	async fn thread_oauth(&self, hub: &Hub, thread_id: &str) -> Result<Vec<EmailMessage>> {
+		let (_, thread) = hub
+			.users()
+			.threads_get(&self.config.email, thread_id)
+			.format("minimal")
+			.doit()
+			.await
+			.with_context(|| format!("Failed to fetch thread {thread_id}"))?;
+		let mut messages = Vec::new();
+		for m in thread.messages.context("thread has no messages")? {
+			messages.push(self.get_oauth(hub, &m.id.context("thread message has no id")?).await?);
+		}
+		Ok(messages)
+	}
+
+	async fn process_message_oauth(&self, hub: &Hub, gmail_id: &str, thread_id: &str) -> Result<()> {
+		let id = format!("{}/{gmail_id}", self.config.email);
+		if self.db.is_email_processed(&id).await? {
+			debug!("Message {id} already processed, skipping");
+			return Ok(());
+		}
+		let thread = self.thread_oauth(hub, thread_id).await?;
+		let email = thread.iter().find(|m| m.id == id).context("thread does not hold the message listed under it")?;
+
+		let verdict = self.decide(&thread, email).await?;
+		if let Some(reply) = &verdict.send {
+			self.send_oauth(hub, thread_id, reply).await?;
+		}
+		if verdict.mark_read {
+			self.mark_as_read_oauth(hub, gmail_id).await?;
+		}
+		self.db.mark_email_processed(&email.id, &email.from, &email.subject, verdict.action).await
+	}
+
+	async fn send_oauth(&self, hub: &Hub, thread_id: &str, reply: &Reply) -> Result<()> {
+		let raw = lettre::Message::try_from(reply)?.formatted();
+		let request = Message {
+			thread_id: Some(thread_id.to_owned()),
+			..Default::default()
+		};
+		hub.users()
+			.messages_send(request, &self.config.email)
+			.upload(Cursor::new(raw), "message/rfc822".parse().expect("static mime"))
+			.await
+			.with_context(|| format!("Failed to send reply to {}", reply.to))?;
+		Ok(())
+	}
+
+	async fn mark_as_read_oauth(&self, hub: &Hub, message_id: &str) -> Result<()> {
 		use google_gmail1::api::ModifyMessageRequest;
 
 		let request = ModifyMessageRequest {
@@ -447,98 +475,120 @@ impl EmailMonitor {
 	async fn mark_all_as_read_oauth(&self, oauth: &OAuthAuth) -> Result<()> {
 		let hub = self.create_gmail_hub(oauth).await?;
 
-		println!("Fetching next batch of unread messages...");
-		let mut messages = self.fetch_unread_messages_oauth(&hub).await?;
-
-		while !messages.is_empty() {
-			let count = messages.len();
-			println!("Marking {count} unread messages as read...");
-
-			for (i, message) in messages.iter().enumerate() {
-				let message_id = message.id.clone().unwrap_or_default();
-				let from = self.extract_header(message, "From").unwrap_or_else(|| "Unknown".to_string());
-
-				if !message_id.is_empty() {
-					self.mark_as_read_oauth(&hub, &message_id).await?;
-				}
-				println!("[{}/{}] Marked as read: {}", i + 1, count, from);
-			}
-
-			if count < 100 {
-				break;
-			}
-
-			println!("Fetching next batch of unread messages...");
-			messages = self.fetch_unread_messages_oauth(&hub).await?;
+		let unread = self.list_unread_oauth(&hub).await?;
+		let count = unread.len();
+		if count == 0 {
+			println!("No unread messages found.");
+			return Ok(());
 		}
 
-		println!("\nAll done!");
-		Ok(())
-	}
+		println!("Marking {count} unread messages as read...");
+		for (i, (gmail_id, _)) in unread.iter().enumerate() {
+			let from = self.get_oauth(&hub, gmail_id).await?.from;
+			self.mark_as_read_oauth(&hub, gmail_id).await?;
+			println!("[{}/{}] Marked as read: {}", i + 1, count, from);
+		}
 
-	fn extract_header(&self, message: &Message, header_name: &str) -> Option<String> {
-		message.payload.as_ref()?.headers.as_ref()?.iter().find(|h| h.name.as_deref() == Some(header_name))?.value.clone()
+		println!("\nAll done! Marked {count} messages as read.");
+		Ok(())
 	}
 
 	// ==================== Common Logic ====================
 
-	fn process_email_common<F>(&self, email: &EmailMessage, mark_as_read: F) -> Result<()>
-	where
-		F: FnOnce(&str) -> Result<()>, {
-		let rt = tokio::runtime::Handle::current();
-
-		let Some(action) = rt.block_on(async { self.triage(email).await })? else { return Ok(()) };
-		match action {
-			Action::Important => rt.block_on(async { self.forward_to_telegram(email).await })?,
-			Action::ReadLater => {}
-			Action::Discard => mark_as_read(&email.id)?,
-		}
-		rt.block_on(async { self.db.mark_email_processed(&email.id, &email.from, &email.subject, action.as_str()).await })?;
-
-		Ok(())
-	}
-
-	/// `None` = already processed this message before.
-	async fn triage(&self, email: &EmailMessage) -> Result<Option<Action>> {
-		if self.db.is_email_processed(&email.id).await? {
-			debug!("Message {} already processed, skipping", email.id);
-			return Ok(None);
+	/// `email` is the unread message that brought the thread up.
+	async fn decide(&self, thread: &[EmailMessage], email: &EmailMessage) -> Result<Verdict> {
+		if let Some(script) = self.config.scripts.find(thread)? {
+			return self.hold(script, thread, email).await;
 		}
 		let action = match self.rules.decide(email) {
 			Some(a) => {
 				log!("Email from {} matched rule: {a:?}", email.from);
 				a
 			}
-			None => self.llm_classify(email).await?,
+			None => self.llm_classify(thread, email).await?,
 		};
-		Ok(Some(action))
+		if action == Action::Important {
+			self.forward_to_telegram(email).await?;
+		}
+		Ok(Verdict {
+			action: action.as_str(),
+			send: None,
+			mark_read: action == Action::Discard,
+		})
+	}
+
+	/// Unread until a human reads it: a reached goal and a dry-run draft are both theirs to act on.
+	async fn hold(&self, script: &Script, thread: &[EmailMessage], email: &EmailMessage) -> Result<Verdict> {
+		let response = ask_llm::Client::new((&self.llm_config).into())
+			.model(ask_llm::Model::Slow)
+			.ask(&script.prompt(&self.config.email, thread))
+			.await
+			.with_context(|| format!("script `{}` on `{}`", script.name(), email.subject))?;
+		debug!("script `{}` on `{}` (cost: {:.4} cents)", script.name(), email.subject, response.cost_cents);
+
+		let verdict = Verdict {
+			action: "script",
+			send: None,
+			mark_read: false,
+		};
+		match response.text.parse::<Step>()? {
+			Step::Achieved => {
+				let text = format!(
+					"🎯 goal reached — {} → {}\n\nFrom: {}\nSubject: {}\n\n{}",
+					script.name(),
+					self.config.email,
+					email.from,
+					email.subject,
+					email.body_preview()
+				);
+				self.notifier.send_message_to_alerts(&text).await?;
+				Ok(verdict)
+			}
+			Step::Reply(body) => {
+				let reply = Reply::try_new(&self.config.email, thread, body)?;
+				if !self.dry_run {
+					return Ok(Verdict {
+						send: Some(reply),
+						mark_read: true,
+						..verdict
+					});
+				}
+				lettre::Message::try_from(&reply)?;
+				let text = format!("✍️ draft — {} → {}\n\nSubject: {}\n\n{}", script.name(), reply.to, reply.subject, reply.body);
+				self.notifier.send_message_to_alerts(&text).await?;
+				Ok(verdict)
+			}
+		}
 	}
 
 	#[instrument(skip(self, email))]
 	async fn forward_to_telegram(&self, email: &EmailMessage) -> Result<()> {
 		let text = format!(
 			"📧 New Email → {}\n\nFrom: {}\nSubject: {}\n\n{}",
-			self.config.email, email.from, email.subject, email.body_preview
+			self.config.email,
+			email.from,
+			email.subject,
+			email.body_preview()
 		);
 		self.notifier.send_message_to_alerts(&text).await?;
 		info!("Forwarded email from {} to Telegram", email.from);
 		Ok(())
 	}
 
-	async fn llm_classify(&self, message: &EmailMessage) -> Result<Action> {
+	async fn llm_classify(&self, thread: &[EmailMessage], message: &EmailMessage) -> Result<Action> {
 		let prompt = format!(
-			r#"Analyze this email and determine if it's from a human or an automated system.
+			r#"Analyze the latest email of this thread and determine if it's from a human or an automated system.
 
 From: {}
 Subject: {}
-Date: {}
 Reply-To: {}
 List-Unsubscribe: {}
 
 Additional Headers:
 {}
 
-Body Preview:
+Thread, oldest first:
+
 {}
 
 Consider these factors:
@@ -552,11 +602,10 @@ Consider these factors:
 Respond with ONLY "yes" if from a human or "no" if automated/marketing. No explanation."#,
 			message.from,
 			message.subject,
-			message.date,
 			message.reply_to.as_deref().unwrap_or("N/A"),
 			message.list_unsubscribe.as_deref().unwrap_or("N/A"),
 			if message.extra_headers.is_empty() { "None" } else { &message.extra_headers },
-			message.body_preview
+			thread.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n\n---\n\n"),
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
@@ -578,6 +627,18 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 	}
 }
 
+/// What a decided message still owes the backend it came from.
+struct Verdict {
+	action: &'static str,
+	send: Option<Reply>,
+	mark_read: bool,
+}
+
+fn fetch_raw(session: &mut ImapSession, uid: u32) -> Result<Vec<u8>> {
+	let fetches = session.uid_fetch(uid.to_string(), "BODY.PEEK[]").context("Failed to fetch message")?;
+	Ok(fetches.iter().next().context("Message not found")?.body().context("fetch carries no body")?.to_vec())
+}
+
 #[derive(Clone, Debug)]
 struct CompiledMatch {
 	subject: Vec<Regex>,
@@ -595,7 +656,7 @@ impl CompiledMatch {
 	}
 
 	fn matches(&self, email: &EmailMessage) -> bool {
-		self.subject.iter().any(|r| r.is_match(&email.subject)) || self.body.iter().any(|r| r.is_match(&email.body_preview)) || self.address.iter().any(|r| r.is_match(&email.from))
+		self.subject.iter().any(|r| r.is_match(&email.subject)) || self.body.iter().any(|r| r.is_match(&email.body)) || self.address.iter().any(|r| r.is_match(&email.from))
 	}
 }
 
@@ -625,34 +686,6 @@ impl CompiledRules {
 			None
 		}
 	}
-}
-
-/// Parse a raw RFC822 message and return a decoded, human-readable body preview.
-/// Prefers the text/plain part; falls back to tag-stripped HTML. Truncated to 500 chars.
-fn decode_body_preview(raw: &[u8]) -> String {
-	let Some(parsed) = mail_parser::MessageParser::default().parse(raw) else {
-		return String::new();
-	};
-	let text = parsed
-		.body_text(0)
-		.map(|t| t.into_owned())
-		.or_else(|| parsed.body_html(0).map(|h| strip_html_tags(&h)))
-		.unwrap_or_default();
-	text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(500).collect()
-}
-
-fn strip_html_tags(html: &str) -> String {
-	let mut out = String::with_capacity(html.len());
-	let mut in_tag = false;
-	for c in html.chars() {
-		match c {
-			'<' => in_tag = true,
-			'>' => in_tag = false,
-			_ if !in_tag => out.push(c),
-			_ => {}
-		}
-	}
-	out
 }
 
 fn __default_email_token_path() -> String {
@@ -700,6 +733,7 @@ fn classify_email_auth_error(e: &color_eyre::eyre::Report) -> Option<String> {
 	let s = format!("{e:#}");
 	let lc = s.to_lowercase();
 	let is_auth = lc.contains("imap login failed")
+		|| lc.contains("smtp authentication failed")
 		|| lc.contains("authenticationfailed")
 		|| lc.contains("invalid_grant")
 		|| lc.contains("invalid_credentials")
@@ -755,21 +789,79 @@ impl std::fmt::Debug for EmailMonitor {
 			.field("config", &self.config)
 			.field("notifier", &self.notifier)
 			.field("db", &self.db)
+			.field("dry_run", &self.dry_run)
 			.finish()
 	}
 }
 
-/// Parsed email message (used for both IMAP and OAuth paths)
-#[derive(Clone, Debug, Default)]
+/// One message of a thread, parsed from raw RFC822 whichever backend fetched it.
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Default))]
 struct EmailMessage {
+	/// `<account>/<backend id>`, the dedup key
 	id: String,
+	/// `Name <address>`
 	from: String,
+	from_address: String,
 	subject: String,
-	date: String,
-	body_preview: String,
+	date: Option<Timestamp>,
+	/// Text, quoted history dropped
+	body: String,
+	/// Address only
 	reply_to: Option<String>,
 	list_unsubscribe: Option<String>,
 	extra_headers: String,
+	message_id: Option<String>,
+	in_reply_to: Vec<String>,
+	/// Oldest first
+	references: Vec<String>,
+}
+impl EmailMessage {
+	fn parse(id: String, raw: &[u8]) -> Result<Self> {
+		let parsed = mail_parser::MessageParser::default().parse(raw).with_context(|| format!("{id} is not an RFC822 message"))?;
+		let sender = parsed.from().and_then(|a| a.first()).with_context(|| format!("{id} has no From"))?;
+		let from_address = sender.address().with_context(|| format!("{id} has a From without an address"))?.to_owned();
+		let ids = |v: &mail_parser::HeaderValue| v.as_text_list().map(|ids| ids.iter().map(|id| id.to_string()).collect()).unwrap_or_default();
+		Ok(Self {
+			from: match sender.name() {
+				Some(name) => format!("{name} <{from_address}>"),
+				None => from_address.clone(),
+			},
+			from_address,
+			subject: parsed.subject().unwrap_or_default().to_owned(),
+			date: parsed.date().map(|d| Timestamp::from_second(d.to_timestamp())).transpose()?,
+			// ponytail: `>`-prefixed lines are the whole of quote detection; Gmail's "On … wrote:" line stays
+			body: parsed
+				.body_text(0)
+				.map(|t| t.lines().filter(|l| !l.starts_with('>')).collect::<Vec<_>>().join("\n"))
+				.unwrap_or_default(),
+			reply_to: parsed.reply_to().and_then(|a| a.first()?.address()).map(str::to_owned),
+			list_unsubscribe: parsed.header_raw("List-Unsubscribe").map(|v| v.trim().to_owned()),
+			extra_headers: ["X-Mailer", "User-Agent", "X-Auto-Response-Suppress", "Auto-Submitted", "Precedence"]
+				.into_iter()
+				.filter_map(|h| Some(format!("{h}: {}", parsed.header_raw(h)?.trim())))
+				.collect::<Vec<_>>()
+				.join("\n"),
+			message_id: parsed.message_id().map(str::to_owned),
+			in_reply_to: ids(parsed.in_reply_to()),
+			references: ids(parsed.references()),
+			id,
+		})
+	}
+
+	fn body_preview(&self) -> String {
+		self.body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(500).collect()
+	}
+}
+impl std::fmt::Display for EmailMessage {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "From: {}\nDate: ", self.from)?;
+		match self.date {
+			Some(date) => write!(f, "{date}")?,
+			None => f.write_str("unknown")?,
+		}
+		write!(f, "\nSubject: {}\n\n{}", self.subject, self.body.trim())
+	}
 }
 
 #[cfg(test)]

@@ -106,6 +106,11 @@ Sentiment check: $BTC, how are we feeling?
       {
         email = "valeratrades@gmail.com";
         inherit rules;
+        # regex over the From, Subject and body of the message that opened a thread
+        scripts."Google Business Profile" = {
+          goal = "Google support agrees to verify the profile over a live video call.";
+          methods = "Politely restate that the business is real and ask for a live call; offer documents, never pay.";
+        };
         auth.imap.pass = { env = "GOOGLE_MAIN_MAIL_PASS"; };
       }
       {

@@ -37,7 +37,7 @@ social_networks/
 │       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
-│       ├── email.rs                        # Gmail IMAP/OAuth, LLM classification
+│       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
 │       ├── telegram_notifier.rs            # central notification hub
@@ -117,7 +117,7 @@ pub trait Client {
 | Discord DMs | network errors, codes 1000-1011, 4000-4003, 4005-4009 | **4004, 4010, 4011, 4012, 4013, 4014** |
 | Telegram DMs / channel watch | network errors, generic RPC failures, runner exit | RPC `AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`, `USER_DEACTIVATED`, `AUTH_KEY_INVALID`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED` |
 | Twitter monitor / schedule | 429, 5xx, network errors | **401, 403** |
-| Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; OAuth refresh 401/403 |
+| Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
 | YouTube | 429, 5xx | 401/403 |
 | Skool chat | any refused poll, up to 5 in a row | — a dead cookie is re-minted in-process |
 
@@ -134,6 +134,10 @@ Gmail ────┘                              └── Output Channel (pol
 When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
+
+The email daemon is the one daemon that writes back: a thread its account's `scripts` key opened is
+answered by the LLM toward the script's goal, until it answers that the goal is reached, which goes
+to the alerts channel instead. `--dry-run` sends the drafts there too.
 
 `purpose` (and `rolodex`, which is `purpose rolodex`) and `recon` are the commands that are not daemons and notify nobody — they read the same
 sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them:

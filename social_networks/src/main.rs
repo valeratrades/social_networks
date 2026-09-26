@@ -121,7 +121,7 @@ fn main() {
 				}
 				let mut monitors = Vec::with_capacity(config.email.len());
 				for email_config in config.email.clone() {
-					let monitor = EmailMonitor::try_from_configs(email_config, llm_config.clone(), config.telegram.clone())
+					let monitor = EmailMonitor::try_from_configs(email_config, llm_config.clone(), config.telegram.clone(), args.dry_run)
 						.await
 						.map_err(|e| adapter_from_eyre("email", e))?;
 					monitors.push(monitor);
