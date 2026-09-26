@@ -92,8 +92,9 @@ impl Purpose {
 	}
 
 	/// Whether `value` may stand under `tag` here. The one check every writer of a tag goes through: a
-	/// load, the `tag` command, a procurement strategy and the extraction.
-	pub fn check(&self, tag: &str, value: &Value) -> Result<()> {
+	/// load, the `tag` command, a procurement strategy and the extraction. `None` — judged, nothing
+	/// supports a value — is only ever the extraction's to write.
+	pub fn check(&self, tag: &str, value: Option<&Value>) -> Result<()> {
 		let kind = self.tags.get(tag).ok_or_else(|| {
 			eyre!(
 				"`{tag}` is not in `purposes.{}.tags`, which names {}",
@@ -101,6 +102,12 @@ impl Purpose {
 				self.tags.keys().cloned().collect::<Vec<_>>().join(", ")
 			)
 		})?;
+		let Some(value) = value else {
+			return match kind.about() {
+				Some(_) => Ok(()),
+				None => bail!("`{tag}` is null, which only a tag the extraction judges may be"),
+			};
+		};
 		match (kind, value) {
 			(TagType::Bool { .. }, Value::Bool(_)) | (TagType::Timestamp, Value::Timestamp(_)) => Ok(()),
 			(TagType::Number { min, max, .. }, Value::Number(n)) if (*min..=*max).contains(n) => Ok(()),
@@ -176,7 +183,7 @@ impl Purpose {
 	fn strategy(&self, raw: RawStrategy) -> Result<Strategy> {
 		let at: VenueRef = raw.venue.parse()?;
 		for (tag, value) in &raw.tags {
-			self.check(tag, value)?;
+			self.check(tag, Some(value))?;
 		}
 		Ok(Strategy::Venue {
 			at,

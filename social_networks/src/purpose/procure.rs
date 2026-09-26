@@ -115,7 +115,7 @@ async fn run(purpose: &Purpose, venues: &Path, people: &mut BTreeMap<String, Per
 		already += 1;
 		let person = people.get_mut(&name).expect("found among these very people");
 		let before = person.tags.clone();
-		person.tags.extend(tags.clone());
+		person.tags.extend(tags.iter().map(|(tag, value)| (tag.clone(), Some(value.clone()))));
 		if person.tags != before {
 			retagged += 1;
 			println!("   {retag_mark} {name}\t{platform}/{}", member.handle);
@@ -135,7 +135,7 @@ async fn run(purpose: &Purpose, venues: &Path, people: &mut BTreeMap<String, Per
 		println!("   {fresh_mark} {name}\t{platform}/{}\t{}", member.handle, member.display);
 		let mut person = Person::skeleton(&name);
 		person.handles = BTreeMap::from([(platform.to_string(), member.handle.clone())]);
-		person.tags = tags.clone();
+		person.tags = tags.iter().map(|(tag, value)| (tag.clone(), Some(value.clone()))).collect();
 		if !args.dry_run {
 			person.write(dir)?;
 		}

@@ -227,7 +227,7 @@ pub fn clause(predicate: &str) -> Result<String> {
 	}
 }
 /// The year files under `dir`, a venue's or a person's alike: both are written in the one line format.
-pub(crate) fn read(dir: &Path, since: Option<Timestamp>) -> Result<Vec<Line>> {
+pub fn read(dir: &Path, since: Option<Timestamp>) -> Result<Vec<Line>> {
 	let mut years: Vec<PathBuf> = match std::fs::read_dir(dir) {
 		Ok(entries) => entries
 			.map(|e| e.map(|e| e.path()))

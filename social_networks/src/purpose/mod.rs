@@ -21,7 +21,7 @@ use jiff::Timestamp;
 use social_networks_adapters::{
 	github::Github,
 	linkedin::Linkedin,
-	reach::{Author, Direct, Item, Kind, Page, Profiles, Source, VenueRef, Window},
+	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Profiles, Source, VenueRef, Window},
 	skool::Skool,
 	telegram_dms::{self, TelegramConfig},
 };
@@ -110,7 +110,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 			println!("   `purposes.{}.tags` names none", purpose.name);
 		}
 		for (known, kind) in &purpose.tags {
-			let carrying = people.values().filter(|p| p.tags.contains_key(known)).count();
+			let carrying = people.values().filter(|p| matches!(p.tags.get(known), Some(Some(_)))).count();
 			println!("   {known:<20} {carrying:>4}  {}", kind.to_string().dimmed());
 		}
 		return Ok(());
@@ -133,7 +133,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 		(true, None) => None,
 		(false, Some(raw)) => {
 			let value = kind.parse(raw)?;
-			purpose.check(name, &value)?;
+			purpose.check(name, Some(&value))?;
 			Some(value)
 		}
 		(false, None) => match kind {
@@ -143,7 +143,14 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 	};
 	let pattern = pattern.ok_or_else(|| eyre!("`tag {name}` needs a pattern saying who"))?;
 
-	let mut changed: Vec<Person> = people.into_values().filter(|p| p.matches(pattern)).filter(|p| p.tags.get(name) != value.as_ref()).collect();
+	let mut changed: Vec<Person> = people
+		.into_values()
+		.filter(|p| p.matches(pattern))
+		.filter(|p| match &value {
+			Some(value) => p.tags.get(name) != Some(&Some(value.clone())),
+			None => p.tags.contains_key(name),
+		})
+		.collect();
 	if changed.is_empty() {
 		bail!("nobody in {} matching `{pattern}` to {}", dir.display(), if rm { "untag" } else { "tag" });
 	}
@@ -162,7 +169,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 	}
 	for person in &mut changed {
 		match &value {
-			Some(value) => person.tags.insert(name.clone(), value.clone()),
+			Some(value) => person.tags.insert(name.clone(), Some(value.clone())),
 			None => person.tags.remove(name),
 		};
 		person.write(dir)?;
@@ -539,7 +546,12 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		fetched.extend(from_venues);
 
 		let moved = person.set_venues(member_of);
-		let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched) else {
+		let owed = purpose.tags.iter().any(|(tag, kind)| kind.about().is_some() && !person.tags.contains_key(tag));
+		let record = match owed {
+			true => Some(record(&person_dir, venues, &person)?),
+			false => None,
+		};
+		let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched, record) else {
 			// a venue they left is a change with no text and no items behind it, so it has to be
 			// written on the path a text delta calls empty
 			if moved {
@@ -594,12 +606,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			)
 		});
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
-		for (tag, value) in extraction.tags {
-			match value {
-				Some(value) => person.tags.insert(tag, value),
-				None => person.tags.remove(&tag),
-			};
-		}
+		person.tags.extend(extraction.tags);
 		person.write(dir)?;
 		pb.inc(1);
 	}
@@ -674,6 +681,26 @@ async fn backfill<C: Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'
 		before = Some(oldest);
 	}
 	cursor.exhausted()
+}
+
+/// Their year files and their venue lines, newest [`INITIAL_ITEMS`] of the two, as prompt lines.
+fn record(person_dir: &Path, venues: &Path, person: &Person) -> Result<Vec<String>> {
+	let mut lines: Vec<(Timestamp, String)> = venue::read(person_dir, None)?
+		.into_iter()
+		.map(|line| {
+			let who = if line.handle == history::ME { history::ME } else { &person.name };
+			(line.at, format!("- [{} | {who}] {}", line.at.to_zoned(jiff::tz::TimeZone::UTC).date(), line.text))
+		})
+		.collect();
+	lines.extend(venue::lines_by(venues, person, None)?.into_iter().map(|(at, line)| {
+		(
+			line.at,
+			format!("- [{} | {} in {at}] {}", line.at.to_zoned(jiff::tz::TimeZone::UTC).date(), person.name, line.text),
+		)
+	}));
+	lines.sort_by_key(|(at, _)| *at);
+	let skip = lines.len().saturating_sub(INITIAL_ITEMS);
+	Ok(lines.into_iter().skip(skip).map(|(_, line)| line).collect())
 }
 
 fn venue_items(venues: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {

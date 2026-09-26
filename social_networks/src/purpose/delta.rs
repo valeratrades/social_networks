@@ -24,12 +24,15 @@ pub struct Delta<'a> {
 	/// bar than a DM, and the prompt says so.
 	new_public: Vec<Item>,
 	changed_sources: BTreeMap<String, String>,
+	/// What is already on record, when a judgement is owed that no extraction has made yet: a tag
+	/// added to the vocabulary after the person was, which nothing new would otherwise ever ask about.
+	record: Option<Vec<String>>,
 }
 
 impl<'a> Delta<'a> {
 	/// Only the newest [`INITIAL_ITEMS`] of each half reach the prompt. The archive keeps the rest; a
 	/// conversation the model cannot hold in one read is not one it summarises better for trying.
-	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, items: Vec<Item>) -> Option<Self> {
+	pub fn new(person: &'a Person, fetched_sources: &BTreeMap<String, String>, items: Vec<Item>, record: Option<Vec<String>>) -> Option<Self> {
 		let (mut new_messages, mut new_public): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|item| item.kind == Kind::Direct);
 		for half in [&mut new_messages, &mut new_public] {
 			if half.len() > INITIAL_ITEMS {
@@ -41,11 +44,12 @@ impl<'a> Delta<'a> {
 			.filter(|(key, value)| person.sources.get(*key) != Some(value))
 			.map(|(key, value)| (key.clone(), value.clone()))
 			.collect();
-		(!changed_sources.is_empty() || !new_messages.is_empty() || !new_public.is_empty()).then_some(Self {
+		(!changed_sources.is_empty() || !new_messages.is_empty() || !new_public.is_empty() || record.is_some()).then_some(Self {
 			person,
 			new_messages,
 			new_public,
 			changed_sources,
+			record,
 		})
 	}
 }
@@ -54,7 +58,7 @@ pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
 	/// Every tag carrying an `about`, regenerated whole the way `summary` is. `None` is "nothing
-	/// supports a value", which takes the tag off.
+	/// supports a value", and is kept as such.
 	pub tags: BTreeMap<String, Option<Value>>,
 }
 pub async fn extract(delta: &Delta<'_>, purpose: &Purpose, llm_config: &LlmConfig) -> Result<Extraction> {
@@ -76,7 +80,7 @@ pub async fn extract(delta: &Delta<'_>, purpose: &Purpose, llm_config: &LlmConfi
 	}
 	for (tag, value) in &tags {
 		if let Some(value) = value {
-			purpose.check(tag, value).wrap_err("extraction returned a tag value of the wrong type")?;
+			purpose.check(tag, Some(value)).wrap_err("extraction returned a tag value of the wrong type")?;
 		}
 	}
 	Ok(Extraction { summary, new_log_entries, tags })
@@ -230,13 +234,25 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 				TagType::Place | TagType::Timestamp => unreachable!("a purpose refuses an `about` on a {kind} at load"),
 			};
 			let now = match delta.person.tags.get(*tag) {
-				None => "null".to_string(),
-				Some(Value::Bool(b)) => b.to_string(),
-				Some(Value::Number(n)) => n.to_string(),
-				Some(Value::Range { min, max }) => format!("{{\"min\": {min}, \"max\": {max}}}"),
-				Some(v @ (Value::Place { .. } | Value::Timestamp(_))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
+				None => "never judged".to_string(),
+				Some(None) => "null".to_string(),
+				Some(Some(Value::Bool(b))) => b.to_string(),
+				Some(Some(Value::Number(n))) => n.to_string(),
+				Some(Some(Value::Range { min, max })) => format!("{{\"min\": {min}, \"max\": {max}}}"),
+				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
 			};
 			p.push_str(&format!("- `{tag}` ({shape}): {about}. Now: {now}\n"));
+		}
+	}
+
+	if let Some(record) = &delta.record {
+		p.push_str(
+			"\n## Their record so far (oldest first)\n\
+			 Already folded into the summary and log above, and here only so that every tag can be \
+			 judged. Draw no log entries from it.\n",
+		);
+		for line in record {
+			p.push_str(&format!("{line}\n"));
 		}
 	}
 

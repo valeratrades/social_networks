@@ -107,7 +107,7 @@ struct Facts {
 }
 
 fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {
-	let tags = || people.iter().map(|person| person.tags.get(&term.of));
+	let tags = || people.iter().map(|person| person.tags.get(&term.of).and_then(Option::as_ref));
 	let mistyped = |v: &Value| -> ! { unreachable!("`{}` = {} was typed against the purpose at load", term.of, v.nix()) };
 	match &term.signal {
 		Signal::Bool => tags()

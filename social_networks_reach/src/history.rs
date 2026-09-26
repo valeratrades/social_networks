@@ -27,7 +27,7 @@ use strum::IntoEnumIterator as _;
 use tracing::warn;
 
 /// The slot my own lines carry, in a person's file and a venue's alike.
-pub(crate) const ME: &str = "me";
+pub const ME: &str = "me";
 
 /// Whose transcript is being written. A DM file has two participants and names the other one in
 /// every incoming line; a venue file has as many as it has, and names the place too.

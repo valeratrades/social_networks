@@ -173,7 +173,12 @@ a tag is what is said about them. The vocabulary is the purpose's `tags`, typed,
 carries that it does not name, or a value of the wrong type, fails every load by name: a misspelling
 would otherwise read as a cohort of one forever. A human writes them (`tag`, `open`), a strategy puts
 its own on everyone it procures, and `pull`'s extraction regenerates every tag carrying an `about`,
-whole, the same way it regenerates `summary`.
+whole, the same way it regenerates `summary`. Those are the judgements only an LLM can make — how
+sharp somebody is, how much they would share — and a purpose pays for exactly the ones it declares.
+A judgement that found nothing to support a value is written `null`, so it stays apart from one never
+made: a person missing any of them is extracted on the next `pull` whether or not anything new
+surfaced, off their year files and venue lines, which is how a tag added to the vocabulary reaches
+everybody already in it.
 
 ```nix
 tags = { ServiceArb = true; interest = 0.7; age = { min = 25; max = 35; };

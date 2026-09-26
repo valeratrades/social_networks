@@ -24,9 +24,10 @@ pub struct Person {
 	#[serde(skip)]
 	pub name: String,
 	/// What is said about them rather than what a platform says, typed by the purpose's vocabulary —
-	/// a load refuses a tag it does not name, or a value of the wrong type.
+	/// a load refuses a tag it does not name, or a value of the wrong type. `None` is a judgement the
+	/// extraction made and found nothing to support, which is not the same as one never asked for.
 	#[serde(default)]
-	pub tags: BTreeMap<String, Value>,
+	pub tags: BTreeMap<String, Option<Value>>,
 	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
 	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
@@ -75,7 +76,7 @@ impl Person {
 	/// that is `true` matches whole rather than by substring: a cohort that swallowed a name fragment is
 	/// not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
-		if self.tags.iter().any(|(t, v)| *v == Value::Bool(true) && t.eq_ignore_ascii_case(pattern)) {
+		if self.tags.iter().any(|(t, v)| *v == Some(Value::Bool(true)) && t.eq_ignore_ascii_case(pattern)) {
 			return true;
 		}
 		let pattern = pattern.to_lowercase();
@@ -205,7 +206,7 @@ fn render(person: &Person) -> String {
 	if !person.tags.is_empty() {
 		s.push_str("  tags = {\n");
 		for (tag, value) in &person.tags {
-			s.push_str(&format!("    {} = {};\n", nix_attr(tag), value.nix()));
+			s.push_str(&format!("    {} = {};\n", nix_attr(tag), value.as_ref().map_or_else(|| "null".to_string(), Value::nix)));
 		}
 		s.push_str("  };\n");
 	}
@@ -256,7 +257,7 @@ fn render(person: &Person) -> String {
 }
 fn check_tags(person: &Person, purpose: &Purpose) -> Result<()> {
 	for (tag, value) in &person.tags {
-		purpose.check(tag, value).wrap_err_with(|| format!("{} in {}", person.name, purpose.path.display()))?;
+		purpose.check(tag, value.as_ref()).wrap_err_with(|| format!("{} in {}", person.name, purpose.path.display()))?;
 	}
 	Ok(())
 }
@@ -326,6 +327,7 @@ mod tests {
 			"ServiceArb": { "type": "bool" },
 			"Rust": { "type": "bool" },
 			"interest": { "type": "number", "min": -1, "max": 1 },
+			"judged": { "type": "number", "min": 0, "max": 1, "about": "left unjudged" },
 			"age": { "type": "range" },
 			"lives_in": { "type": "place" },
 			"last_login": { "type": "timestamp" },
@@ -333,19 +335,20 @@ mod tests {
 		let person = Person {
 			name: "ardi".to_string(),
 			tags: BTreeMap::from([
-				("ServiceArb".to_string(), Value::Bool(true)),
-				("Rust".to_string(), Value::Bool(false)),
-				("interest".to_string(), Value::Number(-0.25)),
-				("age".to_string(), Value::Range { min: 25.0, max: 35.5 }),
+				("ServiceArb".to_string(), Some(Value::Bool(true))),
+				("Rust".to_string(), Some(Value::Bool(false))),
+				("interest".to_string(), Some(Value::Number(-0.25))),
+				("judged".to_string(), None),
+				("age".to_string(), Some(Value::Range { min: 25.0, max: 35.5 })),
 				(
 					"lives_in".to_string(),
-					Value::Place {
+					Some(Value::Place {
 						name: "São \"Paulo\"".to_string(),
 						lat: -23.55,
 						lon: -46.63,
-					},
+					}),
 				),
-				("last_login".to_string(), Value::Timestamp("2026-09-01T12:30:00Z".parse().unwrap())),
+				("last_login".to_string(), Some(Value::Timestamp("2026-09-01T12:30:00Z".parse().unwrap()))),
 			]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
@@ -376,7 +379,7 @@ mod tests {
 		// what the vocabulary is for: the same file, against a config that never named the tag
 		assert!(load_one(&purpose(serde_json::json!({})), &person.path(&dir)).is_err());
 		// and against one that types it differently
-		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "age": { "type": "range" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
+		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "judged": { "type": "number", "min": 0, "max": 1, "about": "x" }, "age": { "type": "range" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }
