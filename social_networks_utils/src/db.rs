@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use color_eyre::eyre::{Result, WrapErr};
 use libsql::Connection;
 use tracing::info;
@@ -36,7 +38,7 @@ impl Database {
 	}
 
 	/// Ids are `<account>/<id>` since multi-account; which account wrote the older rows is known only to the operator.
-	async fn refuse_unscoped_email_ids(&self, db_path: &std::path::Path) -> Result<()> {
+	async fn refuse_unscoped_email_ids(&self, db_path: &Path) -> Result<()> {
 		let mut rows = self
 			.conn
 			.query("SELECT count(*) FROM processed_emails WHERE instr(message_id, '/') = 0", ())
