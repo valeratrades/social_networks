@@ -31,7 +31,26 @@ impl Database {
 
 		let this = Self { conn };
 		this.migrate_is_human_to_action().await?;
+		this.refuse_unscoped_email_ids(&db_path).await?;
 		Ok(this)
+	}
+
+	/// Ids are `<account>/<id>` since multi-account; which account wrote the older rows is known only to the operator.
+	async fn refuse_unscoped_email_ids(&self, db_path: &std::path::Path) -> Result<()> {
+		let mut rows = self
+			.conn
+			.query("SELECT count(*) FROM processed_emails WHERE instr(message_id, '/') = 0", ())
+			.await
+			.wrap_err("failed to count unscoped email ids")?;
+		let row = rows.next().await.wrap_err("failed to read count")?.expect("count(*) always yields a row");
+		let unscoped: i64 = row.get(0).wrap_err("failed to read count")?;
+		if unscoped > 0 {
+			color_eyre::eyre::bail!(
+				"{unscoped} processed_emails rows predate per-account ids. Claim them for the account that wrote them:\n  sqlite3 {} \"UPDATE processed_emails SET message_id = '<account>/' || message_id WHERE instr(message_id, '/') = 0\"",
+				db_path.display()
+			);
+		}
+		Ok(())
 	}
 
 	/// Pre-`action` DBs carried a boolean `is_human`. Dropping the table instead would re-notify the whole unread inbox.

@@ -124,7 +124,7 @@ fn check_env_vars(config: &AppConfig) {
 	println!("  {} Twitter OAuth config", status_icon(twitter_oauth_ok));
 
 	// Check Email config
-	let email_ok = config.email.is_some();
+	let email_ok = !config.email.is_empty();
 	println!("  {} Email config", status_icon(email_ok));
 
 	// Check SQLite db

@@ -116,18 +116,23 @@ fn main() {
 			let llm_config = exit_on_error(config.require_llm("email"));
 			run_async("email", || async {
 				v_utils::clientside!(Some("email"));
-				let email_config = config
-					.email
-					.clone()
-					.ok_or_else(|| color_eyre::eyre::eyre!("Email config not found in config file"))
-					.map_err(|e| adapter_from_eyre("email", e))?;
-				let mut monitor = EmailMonitor::try_from_configs(email_config, llm_config, config.telegram)
-					.await
-					.map_err(|e| adapter_from_eyre("email", e))?;
-				if args.mark_all_read {
-					return monitor.mark_all_as_read().await.map_err(|e| adapter_from_eyre("email", e));
+				if config.email.is_empty() {
+					return Err(adapter_from_eyre("email", color_eyre::eyre::eyre!("no `email` accounts in config file")));
 				}
-				let err = monitor.listen().await.unwrap_err();
+				let mut monitors = Vec::with_capacity(config.email.len());
+				for email_config in config.email.clone() {
+					let monitor = EmailMonitor::try_from_configs(email_config, llm_config.clone(), config.telegram.clone())
+						.await
+						.map_err(|e| adapter_from_eyre("email", e))?;
+					monitors.push(monitor);
+				}
+				if args.mark_all_read {
+					for monitor in &monitors {
+						monitor.mark_all_as_read().await.map_err(|e| adapter_from_eyre("email", e))?;
+					}
+					return Ok(());
+				}
+				let (err, ..) = futures::future::select_all(monitors.iter_mut().map(|m| Box::pin(async move { m.listen().await.unwrap_err() }))).await;
 				alert(&err).await;
 				Err::<(), AdapterError>(err)
 			})

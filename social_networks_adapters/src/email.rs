@@ -218,7 +218,7 @@ impl EmailMonitor {
 		let body_preview: String = message.body().map(decode_body_preview).unwrap_or_default();
 
 		let email_msg = EmailMessage {
-			id: format!("imap-{uid}"),
+			id: format!("{}/imap-{uid}", self.config.email),
 			from,
 			subject,
 			date,
@@ -406,7 +406,7 @@ impl EmailMonitor {
 		};
 
 		let email_msg = EmailMessage {
-			id: message_id.clone(),
+			id: format!("{}/{message_id}", self.config.email),
 			from,
 			subject,
 			date,
@@ -516,7 +516,10 @@ impl EmailMonitor {
 
 	#[instrument(skip(self, email))]
 	async fn forward_to_telegram(&self, email: &EmailMessage) -> Result<()> {
-		let text = format!("📧 New Email\n\nFrom: {}\nSubject: {}\n\n{}", email.from, email.subject, email.body_preview);
+		let text = format!(
+			"📧 New Email → {}\n\nFrom: {}\nSubject: {}\n\n{}",
+			self.config.email, email.from, email.subject, email.body_preview
+		);
 		self.notifier.send_message_to_alerts(&text).await?;
 		info!("Forwarded email from {} to Telegram", email.from);
 		Ok(())

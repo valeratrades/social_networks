@@ -30,7 +30,7 @@ The email command supports two authentication methods:
 3. Generate an app password for "Mail"
 4. Add to your config:
    ```toml
-   [email]
+   [[email]] # repeat per account
    email = "your@gmail.com"
    [email.auth.imap]
    pass = "your-app-password"
@@ -42,7 +42,7 @@ The email command supports two authentication methods:
 3. Create OAuth 2.0 credentials (Desktop app)
 4. Add to your config:
    ```toml
-   [email]
+   [[email]]
    email = "your@gmail.com"
    [email.auth.oauth]
    client_id = "..."

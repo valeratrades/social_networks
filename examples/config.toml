@@ -74,7 +74,7 @@ rank = [{ of = "venue_activity", decay = 3, weight = 1 }]
 email = { env = "DEFAULT_MAIL" }
 password = { env = "DEFAULT_PASSWORD" }
 
-[email]
+[[email]]
 email = "valeratrades@gmail.com"
 
 # regex; checked in order important > read_later > discard, unmatched -> LLM
@@ -90,6 +90,12 @@ address = ["imperiumlabs"]
 
 [email.auth.imap]
 pass = { env = "GOOGLE_MAIN_MAIL_PASS" }
+
+[[email]]
+email = "v79166789533@gmail.com"
+
+[email.auth.imap]
+pass = { env = "GOOGLE_SPAM_MAIL_PASS" }
 
 [clickhouse]
 url = "http://localhost:8123"

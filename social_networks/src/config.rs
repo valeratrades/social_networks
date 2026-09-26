@@ -27,7 +27,7 @@ pub struct AppConfig {
 	pub youtube: YoutubeConfig,
 	#[settings(skip)]
 	#[serde(default)]
-	pub email: Option<EmailConfig>,
+	pub email: Vec<EmailConfig>,
 	/// `dm --skool` signs in with it, and `recon` sees no group at all without it — reading a *person*
 	/// is what is public either way
 	#[settings(skip)]
