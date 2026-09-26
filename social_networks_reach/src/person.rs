@@ -1,13 +1,14 @@
 use std::{
-	collections::{BTreeMap, BTreeSet},
+	collections::BTreeMap,
 	path::{Path, PathBuf},
 };
 
 use color_eyre::eyre::{Result, WrapErr, bail};
+use jiff::Timestamp;
 use serde::Deserialize;
 
-/// `<rolodex dir>/people/<name>/`, alongside [`venue`](social_networks_reach::venue)'s `venues/`.
-const PEOPLE: &str = "people";
+use crate::purpose::Purpose;
+
 const MAIN: &str = "__main__.nix";
 
 /// What a person's directory states about them, next to the conversation itself. [`MAIN`] is a
@@ -22,10 +23,10 @@ pub struct Person {
 	/// Directory name. Not in the file itself.
 	#[serde(skip)]
 	pub name: String,
-	/// What I say they are, as opposed to what a platform says. Every one of these is named by
-	/// `[rolodex] tags`; an unnamed one is a typo, and a load refuses it rather than inventing a cohort.
+	/// What is said about them rather than what a platform says, typed by the purpose's vocabulary —
+	/// a load refuses a tag it does not name, or a value of the wrong type.
 	#[serde(default)]
-	pub tags: BTreeSet<String>,
+	pub tags: BTreeMap<String, Value>,
 	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
 	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
@@ -62,7 +63,7 @@ impl Person {
 
 	/// Their whole directory: [`MAIN`] and the conversation `history` keeps next to it.
 	pub fn dir(&self, root: &Path) -> PathBuf {
-		root.join(PEOPLE).join(&self.name)
+		root.join(&self.name)
 	}
 
 	pub fn path(&self, root: &Path) -> PathBuf {
@@ -70,10 +71,11 @@ impl Person {
 	}
 
 	/// Match on the directory name and on every handle, so `pull dev_ardi` finds the person whose
-	/// discord handle that is without anyone having to know what their directory is called. A tag
-	/// matches whole rather than by substring: a cohort that swallowed a name fragment is not a cohort.
+	/// discord handle that is without anyone having to know what their directory is called. A bool tag
+	/// that is `true` matches whole rather than by substring: a cohort that swallowed a name fragment is
+	/// not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
-		if self.tags.iter().any(|t| t.eq_ignore_ascii_case(pattern)) {
+		if self.tags.iter().any(|(t, v)| *v == Value::Bool(true) && t.eq_ignore_ascii_case(pattern)) {
 			return true;
 		}
 		let pattern = pattern.to_lowercase();
@@ -133,13 +135,36 @@ pub struct LogEntry {
 	pub source: Option<String>,
 }
 
-/// Evaluate every `<name>/`[`MAIN`] under [`PEOPLE`] in one nix process, keyed by directory name.
-/// Holding that file is what makes a directory a person's, so a stray one in there costs nothing.
+/// A tag's value. Untyped here: which of these a tag may hold is the purpose's to say, and
+/// [`Purpose::check`] says it.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Value {
+	Bool(bool),
+	Number(f64),
+	Timestamp(Timestamp),
+	Range { min: f64, max: f64 },
+	Place { name: String, lat: f64, lon: f64 },
+}
+impl Value {
+	pub fn nix(&self) -> String {
+		match self {
+			Self::Bool(b) => b.to_string(),
+			Self::Number(n) => n.to_string(),
+			Self::Timestamp(at) => nix_dq(&at.to_string()),
+			Self::Range { min, max } => format!("{{ min = {min}; max = {max}; }}"),
+			Self::Place { name, lat, lon } => format!("{{ name = {}; lat = {lat}; lon = {lon}; }}", nix_dq(name)),
+		}
+	}
+}
+
+/// Evaluate every `<name>/`[`MAIN`] under the purpose's path in one nix process, keyed by directory
+/// name. Holding that file is what makes a directory a person's, so a stray one in there costs nothing.
 ///
-/// A tag `vocabulary` does not name is refused here rather than read as a cohort of one, for the same
-/// reason as `deny_unknown_fields` above.
-pub fn load_dir(root: &Path, vocabulary: &[String]) -> Result<BTreeMap<String, Person>> {
-	let dir = root.join(PEOPLE);
+/// A tag the purpose does not name, or a value of the wrong type, is refused here rather than read as
+/// a cohort of one, for the same reason as `deny_unknown_fields` above.
+pub fn load_dir(purpose: &Purpose) -> Result<BTreeMap<String, Person>> {
+	let dir = &purpose.path;
 	if !dir.exists() {
 		return Ok(BTreeMap::new());
 	}
@@ -154,13 +179,13 @@ pub fn load_dir(root: &Path, vocabulary: &[String]) -> Result<BTreeMap<String, P
 		.map(|(name, mut person)| {
 			person.name = name.clone();
 			person.normalize();
-			check_tags(&person, vocabulary)?;
+			check_tags(&person, purpose)?;
 			Ok((name, person))
 		})
 		.collect()
 }
 
-pub fn load_one(path: &Path, vocabulary: &[String]) -> Result<Person> {
+pub fn load_one(purpose: &Purpose, path: &Path) -> Result<Person> {
 	let mut person: Person = serde_json::from_slice(&nix_eval(&["--file", &path.display().to_string()])?).wrap_err_with(|| format!("{} is not a person", path.display()))?;
 	person.name = path
 		.parent()
@@ -170,19 +195,19 @@ pub fn load_one(path: &Path, vocabulary: &[String]) -> Result<Person> {
 		.to_string_lossy()
 		.into_owned();
 	person.normalize();
-	check_tags(&person, vocabulary)?;
+	check_tags(&person, purpose)?;
 	Ok(person)
 }
 
-pub fn render(person: &Person) -> String {
+fn render(person: &Person) -> String {
 	let mut s = String::from("{\n");
 
 	if !person.tags.is_empty() {
-		s.push_str("  tags = [\n");
-		for tag in &person.tags {
-			s.push_str(&format!("    {}\n", nix_dq(tag)));
+		s.push_str("  tags = {\n");
+		for (tag, value) in &person.tags {
+			s.push_str(&format!("    {} = {};\n", nix_attr(tag), value.nix()));
 		}
-		s.push_str("  ];\n");
+		s.push_str("  };\n");
 	}
 
 	s.push_str("  handles = {\n");
@@ -229,11 +254,9 @@ pub fn render(person: &Person) -> String {
 	s.push_str("}\n");
 	s
 }
-fn check_tags(person: &Person, vocabulary: &[String]) -> Result<()> {
-	for tag in &person.tags {
-		if !vocabulary.contains(tag) {
-			bail!("{} carries the tag `{tag}`, which `[rolodex] tags` does not name", person.name);
-		}
+fn check_tags(person: &Person, purpose: &Purpose) -> Result<()> {
+	for (tag, value) in &person.tags {
+		purpose.check(tag, value).wrap_err_with(|| format!("{} in {}", person.name, purpose.path.display()))?;
 	}
 	Ok(())
 }
@@ -277,9 +300,10 @@ fn nix_attr(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::{BTreeMap, BTreeSet};
+	use std::collections::BTreeMap;
 
 	use super::*;
+	use crate::purpose::Purposes;
 
 	/// The file is the storage format, so anything `render` writes must come back identical through
 	/// nix — quoting, escaping and the indented-block trailing newline included.
@@ -293,10 +317,36 @@ mod tests {
 			return;
 		}
 
-		let vocabulary = ["ServiceArb".to_string(), "Rust".to_string()];
+		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");
+		let purpose = |tags: serde_json::Value| -> Purpose {
+			let purposes: Purposes = serde_json::from_value(serde_json::json!({ "t": { "path": dir, "tags": tags, "rank": [{ "of": "interactions", "weight": 1 }] } })).unwrap();
+			purposes.get("t").unwrap().clone()
+		};
+		let vocabulary = purpose(serde_json::json!({
+			"ServiceArb": { "type": "bool" },
+			"Rust": { "type": "bool" },
+			"interest": { "type": "number", "min": -1, "max": 1 },
+			"age": { "type": "range" },
+			"lives_in": { "type": "place" },
+			"last_login": { "type": "timestamp" },
+		}));
 		let person = Person {
 			name: "ardi".to_string(),
-			tags: BTreeSet::from(["ServiceArb".to_string(), "Rust".to_string()]),
+			tags: BTreeMap::from([
+				("ServiceArb".to_string(), Value::Bool(true)),
+				("Rust".to_string(), Value::Bool(false)),
+				("interest".to_string(), Value::Number(-0.25)),
+				("age".to_string(), Value::Range { min: 25.0, max: 35.5 }),
+				(
+					"lives_in".to_string(),
+					Value::Place {
+						name: "São \"Paulo\"".to_string(),
+						lat: -23.55,
+						lon: -46.63,
+					},
+				),
+				("last_login".to_string(), Value::Timestamp("2026-09-01T12:30:00Z".parse().unwrap())),
+			]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
 			log: vec![
@@ -320,12 +370,13 @@ mod tests {
 			unreachable: BTreeMap::from([("skool".to_string(), "no group of mine opens a chat with them:\n400: not a member".to_string())]),
 		};
 
-		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");
 		let _ = std::fs::remove_dir_all(&dir);
 		person.write(&dir).unwrap();
-		assert_eq!(load_one(&person.path(&dir), &vocabulary).unwrap(), person);
+		assert_eq!(load_one(&vocabulary, &person.path(&dir)).unwrap(), person);
 		// what the vocabulary is for: the same file, against a config that never named the tag
-		assert!(load_one(&person.path(&dir), &[]).is_err());
+		assert!(load_one(&purpose(serde_json::json!({})), &person.path(&dir)).is_err());
+		// and against one that types it differently
+		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "age": { "type": "range" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

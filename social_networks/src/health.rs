@@ -150,8 +150,11 @@ fn check_skool_cookie() {
 fn check_directories(config: &AppConfig) {
 	println!("\n{}", "Directory Sizes:".bold());
 
-	if let Some(rolodex) = &config.rolodex {
-		check_directory_size(&rolodex.path, "Rolodex directory");
+	for purpose in config.purposes.iter() {
+		check_directory_size(&purpose.path, &format!("Purpose `{}`", purpose.name));
+	}
+	if let Some(venues) = &config.venues {
+		check_directory_size(venues, "Venues");
 	}
 
 	let app_name = env!("CARGO_PKG_NAME");

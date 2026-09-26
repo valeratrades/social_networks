@@ -1,28 +1,18 @@
 #![feature(default_field_values)]
 #![doc = include_str!("../README.md")]
 pub mod history;
-pub mod utils;
+pub mod person;
+pub mod purpose;
+pub mod rank;
 pub mod venue;
 
-use std::{future::Future, path::PathBuf};
+use std::future::Future;
 
 use color_eyre::eyre::{Result, eyre};
 use futures::future::{Either, select};
 use grammers_client::Client;
 use social_networks_adapters::telegram_dms::TelegramConfig;
 use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
-use v_utils::macros::MyConfigPrimitives;
-
-/// The rolodex root: `people/<name>/` on one axis, `venues/<platform>/<slug>/` on the other. No
-/// default: a present-but-pathless section is a config mistake, not a request for a guess.
-#[derive(Clone, Debug, Default, MyConfigPrimitives)]
-pub struct RolodexConfig {
-	pub path: PathBuf,
-	/// The whole tag vocabulary. Empty is "no tags in use", which is what a rolodex that never asked
-	/// for them has; a tag on a person and not here is a misspelling.
-	#[serde(default)]
-	pub tags: Vec<String>,
-}
 
 /// The MTProto runner has to be polled alongside whatever uses the client, so every telegram read on
 /// this axis is wrapped rather than owning a client of its own.

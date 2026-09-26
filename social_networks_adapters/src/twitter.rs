@@ -77,7 +77,7 @@ pub struct Reach<'a>(pub &'a TwitterConfig);
 
 impl Direct for Reach<'_> {
 	async fn direct(&mut self, _handle: &str, _window: Window, _assets: &Path) -> Result<Page> {
-		bail!("twitter is not a rolodex source — nothing reads its DMs")
+		bail!("twitter is not a `pull` source — nothing reads its DMs")
 	}
 
 	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {

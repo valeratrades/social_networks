@@ -9,10 +9,13 @@ use social_networks_adapters::{
 	skool::Skool,
 	telegram_dms, twitter,
 };
-use social_networks_reach::RolodexConfig;
+use social_networks_reach::{
+	person::{self, Person},
+	purpose::Purpose,
+};
 use strum::AsRefStr;
 
-use super::{person, with_telegram};
+use super::with_telegram;
 use crate::config::AppConfig;
 
 /// Clap has no flag-to-enum, so the group is how [`Messenger`] is spelled on the command line.
@@ -53,10 +56,10 @@ pub enum Messenger {
 
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
 /// the wrong human and cannot be taken back.
-pub async fn send(config: &AppConfig, rolodex: &RolodexConfig, messenger: Messenger, pattern: &str, text: &str) -> Result<()> {
-	let dir = &rolodex.path;
-	let people = person::load_dir(dir, &rolodex.tags)?;
-	let matches: Vec<&person::Person> = people.values().filter(|p| p.matches(pattern)).collect();
+pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str) -> Result<()> {
+	let dir = &purpose.path;
+	let people = person::load_dir(purpose)?;
+	let matches: Vec<&Person> = people.values().filter(|p| p.matches(pattern)).collect();
 	let [person] = matches[..] else {
 		bail!(
 			"`{pattern}` matches {} in {}: {}",

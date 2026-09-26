@@ -1,3 +1,4 @@
+venues = "~/Sync/rolodex/venues"
 [llm]
 # at least one; which one a surface needs follows from the `ask_llm::Model` tier it asks for
 claude_token = { env = "CLAUDE_TOKEN" }
@@ -64,9 +65,10 @@ for future reference: $BTC ~$${btc_price}
 [youtube]
 channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjSmg" } #Q: is `test` one still relevant?
 
-[rolodex]
-path = "~/Sync/rolodex"
-tags = ["ServiceArb"]
+[purposes.rolodex]
+path = "/home/v/Sync/rolodex/people"
+tags = { ServiceArb = { type = "bool" } }
+rank = [{ of = "venue_activity", decay = 3, weight = 1 }]
 
 [skool]
 email = { env = "DEFAULT_MAIL" }

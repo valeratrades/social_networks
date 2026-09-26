@@ -13,7 +13,7 @@
 //! recon find    skool:<slug> <term>                   the group's own member search
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
@@ -26,7 +26,6 @@ use social_networks_adapters::{
 	telegram_dms::{self, TelegramConfig},
 };
 use social_networks_reach::{
-	RolodexConfig,
 	venue::{self, Store},
 	with_telegram,
 };
@@ -46,9 +45,10 @@ pub struct ReconConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub skool: Option<SkoolCredentials>,
+	/// Every venue transcript, shared by every purpose that procures from one
 	#[settings(skip)]
 	#[serde(default)]
-	pub rolodex: Option<RolodexConfig>,
+	pub venues: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -113,12 +113,7 @@ fn main() -> Result<()> {
 		.init();
 	let cli = Cli::parse();
 	let config = ReconConfig::try_build(cli.settings).map_err(|e| eyre!("{e}"))?;
-	let dir = config
-		.rolodex
-		.as_ref()
-		.ok_or_else(|| eyre!("no `[rolodex]` section in the config — a venue transcript lives under its `path`"))?
-		.path
-		.clone();
+	let dir = config.venues.clone().ok_or_else(|| eyre!("no `venues` in the config, which is where a venue transcript lives"))?;
 
 	// telegram TL types are deep enough to need the same 8 MiB the daemon provisions
 	tokio::runtime::Builder::new_multi_thread()
@@ -191,7 +186,7 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			let members = store.roster()?;
 			let chosen = match predicate {
 				None => members,
-				Some(predicate) => venue::select(&members, &store.lines(None)?, &clause(&predicate)?).await?,
+				Some(predicate) => venue::select(&members, &store.lines(None)?, &venue::clause(&predicate)?).await?,
 			};
 			match json {
 				true => println!("{}", serde_json::to_string_pretty(&chosen)?),
@@ -208,14 +203,4 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 
 fn venue_ref(s: &str) -> std::result::Result<VenueRef, String> {
 	s.parse().map_err(|e| format!("{e:#}"))
-}
-
-/// Inline SQL, or a path to a file holding it — resolved by asking whether the argument names a file,
-/// so anything worth an LSP can be written in one.
-fn clause(predicate: &str) -> Result<String> {
-	let path = Path::new(predicate);
-	match path.is_file() {
-		true => std::fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display())),
-		false => Ok(predicate.to_string()),
-	}
 }

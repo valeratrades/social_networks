@@ -1,8 +1,7 @@
 #![doc = include_str!("README.md")]
 mod delta;
-mod discover;
 mod dm;
-mod person;
+mod procure;
 
 use std::{
 	collections::BTreeMap,
@@ -13,13 +12,12 @@ use std::{
 	time::Duration,
 };
 
-use clap::{Args, Subcommand};
+use clap::Subcommand;
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use colored::Colorize as _;
 use grammers_client::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use jiff::Timestamp;
-use person::Person;
 use social_networks_adapters::{
 	github::Github,
 	linkedin::Linkedin,
@@ -28,48 +26,22 @@ use social_networks_adapters::{
 	telegram_dms::{self, TelegramConfig},
 };
 use social_networks_reach::{
-	RolodexConfig,
 	history::{self, Cursor},
-	utils, venue,
+	person::{self, Person, Value},
+	purpose::{Purpose, TagType},
+	rank::{self, Ranked},
+	venue,
 };
 use tracing::{error, info};
 
 use crate::config::AppConfig;
 
 const TICK: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-#[derive(Args)]
-pub struct RolodexArgs {
-	#[command(subcommand)]
-	command: RolodexCommand,
-}
-
-pub async fn main(args: RolodexArgs, config: AppConfig) -> Result<()> {
-	let rolodex = config.rolodex.clone().ok_or_else(|| eyre!("no `[rolodex]` section in the config"))?;
-	match args.command {
-		RolodexCommand::Cold { pattern, decay } => cold(&config, &rolodex, pattern.as_deref(), decay).await,
-		RolodexCommand::Discover(args) => discover::main(&rolodex, args).await,
-		RolodexCommand::Dm { messenger, pattern, text } => dm::send(&config, &rolodex, (&messenger).into(), &pattern, &text).await,
-		RolodexCommand::Lines { pattern } => lines(&rolodex, pattern.as_deref()),
-		RolodexCommand::Open { pattern } => open(&rolodex, pattern.as_deref()).await,
-		RolodexCommand::Prune => prune(&rolodex),
-		RolodexCommand::Pull { pattern } => pull(&config, &rolodex, pattern.as_deref()).await,
-		RolodexCommand::Tag { tag: name, pattern, rm } => tag(&rolodex, name.as_deref(), pattern.as_deref(), rm),
-	}
-}
 
 #[derive(Subcommand)]
-enum RolodexCommand {
-	/// List matching people no conversation is on record with, on any platform
-	Cold {
-		pattern: Option<String>,
-		/// How hard to discount age when ranking them. `0` counts their lines and ignores when they
-		/// wrote them; the axis is `ln(age)`, so what this raises is how far the cohort's newest
-		/// crowd out the rest. See [`social_networks_reach::utils`].
-		#[arg(long, default_value_t = 3.0)]
-		decay: f64,
-	},
-	/// Write skeleton files for the members of a venue nobody has a file for yet
-	Discover(discover::DiscoverArgs),
+pub enum PurposeCommand {
+	/// Rank matching people no conversation is on record with, on any platform
+	Cold { pattern: Option<String> },
 	/// Send a message to exactly one matching person over one messenger
 	Dm {
 		#[command(flatten)]
@@ -81,11 +53,16 @@ enum RolodexCommand {
 	Lines { pattern: Option<String> },
 	/// Open a person file in $EDITOR, creating it when the pattern names nobody yet
 	Open { pattern: Option<String> },
+	/// Run the purpose's procurement strategies, one of them, or an ad-hoc venue
+	Procure(procure::ProcureArgs),
 	/// Remove people every venue we keep has lost, and no conversation is on record with
 	Prune,
 	/// Fetch what is new about matching people and fold it into their files
 	Pull { pattern: Option<String> },
-	/// Put one of `[rolodex] tags` on matching people, or print the vocabulary when named nothing
+	/// Matching people in order, with the score and what each term of the ranking gave it
+	Rank { pattern: Option<String> },
+	/// Put `<name>[=<value>]` on matching people, or print the vocabulary when named nothing. A bare
+	/// name is a bool tag set to true
 	Tag {
 		tag: Option<String>,
 		pattern: Option<String>,
@@ -94,48 +71,99 @@ enum RolodexCommand {
 		rm: bool,
 	},
 }
+pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Result<()> {
+	let purpose = config.purposes.get(name)?;
+	// asked for only by the commands that read a venue, so a purpose nobody procures from venues for
+	// runs the rest without one
+	let venues = || {
+		config
+			.venues
+			.as_deref()
+			.ok_or_else(|| eyre!("no `venues` in the config, which is where every venue transcript lives"))
+	};
+	match command {
+		PurposeCommand::Cold { pattern } => cold(&config, purpose, venues()?, pattern.as_deref()).await,
+		PurposeCommand::Dm { messenger, pattern, text } => dm::send(&config, purpose, (&messenger).into(), &pattern, &text).await,
+		PurposeCommand::Lines { pattern } => lines(purpose, venues()?, pattern.as_deref()),
+		PurposeCommand::Open { pattern } => open(purpose, pattern.as_deref()).await,
+		PurposeCommand::Procure(args) => procure::main(purpose, venues()?, args).await,
+		PurposeCommand::Prune => prune(purpose, venues()?),
+		PurposeCommand::Pull { pattern } => pull(&config, purpose, venues()?, pattern.as_deref()).await,
+		PurposeCommand::Rank { pattern } => {
+			let selected: Vec<Person> = select(purpose, pattern.as_deref())?;
+			let total = selected.len();
+			print_ranked(purpose, &rank::rank(purpose, venues()?, selected)?);
+			println!("   {total} ranked");
+			Ok(())
+		}
+		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
+	}
+}
 
 /// The one axis a platform has no say in. Naming nothing prints the vocabulary and who carries what,
 /// which is the only way to read a cohort's size without grepping the files.
-fn tag(rolodex: &RolodexConfig, tag: Option<&str>, pattern: Option<&str>, rm: bool) -> Result<()> {
-	let dir = &rolodex.path;
-	let people = person::load_dir(dir, &rolodex.tags)?;
+fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) -> Result<()> {
+	let dir = &purpose.path;
+	let people = person::load_dir(purpose)?;
 	let Some(tag) = tag else {
-		if rolodex.tags.is_empty() {
-			println!("   `[rolodex] tags` names none");
+		if purpose.tags.is_empty() {
+			println!("   `purposes.{}.tags` names none", purpose.name);
 		}
-		for known in &rolodex.tags {
-			let carrying = people.values().filter(|p| p.tags.contains(known)).count();
-			println!("   {known:<20} {carrying}");
+		for (known, kind) in &purpose.tags {
+			let carrying = people.values().filter(|p| p.tags.contains_key(known)).count();
+			println!("   {known:<20} {carrying:>4}  {}", kind.to_string().dimmed());
 		}
 		return Ok(());
 	};
+	let (typed, raw) = match tag.split_once('=') {
+		Some((name, raw)) => (name, Some(raw)),
+		None => (tag, None),
+	};
 	// a tag typed rather than configured is the misspelling `load_dir` exists to refuse, caught before
 	// it reaches a file rather than after
-	let tag = rolodex
-		.tags
-		.iter()
-		.find(|known| known.eq_ignore_ascii_case(tag))
-		.ok_or_else(|| eyre!("`{tag}` is not in `[rolodex] tags`: {}", rolodex.tags.join(", ")))?;
-	let pattern = pattern.ok_or_else(|| eyre!("`tag {tag}` needs a pattern saying who"))?;
+	let (name, kind) = purpose.tags.iter().find(|(known, _)| known.eq_ignore_ascii_case(typed)).ok_or_else(|| {
+		eyre!(
+			"`{typed}` is not in `purposes.{}.tags`: {}",
+			purpose.name,
+			purpose.tags.keys().cloned().collect::<Vec<_>>().join(", ")
+		)
+	})?;
+	let value = match (rm, raw) {
+		(true, Some(_)) => bail!("`--rm` takes `{name}` off whatever it holds, so it takes no value"),
+		(true, None) => None,
+		(false, Some(raw)) => {
+			let value = kind.parse(raw)?;
+			purpose.check(name, &value)?;
+			Some(value)
+		}
+		(false, None) => match kind {
+			TagType::Bool { .. } => Some(Value::Bool(true)),
+			kind => bail!("`{name}` is {kind}, so it takes a value: `{name}=<value>`"),
+		},
+	};
+	let pattern = pattern.ok_or_else(|| eyre!("`tag {name}` needs a pattern saying who"))?;
 
-	let mut changed: Vec<Person> = people.into_values().filter(|p| p.matches(pattern)).filter(|p| p.tags.contains(tag) == rm).collect();
+	let mut changed: Vec<Person> = people.into_values().filter(|p| p.matches(pattern)).filter(|p| p.tags.get(name) != value.as_ref()).collect();
 	if changed.is_empty() {
 		bail!("nobody in {} matching `{pattern}` to {}", dir.display(), if rm { "untag" } else { "tag" });
 	}
+	let shown = match &value {
+		Some(value) => format!("{name} = {}", value.nix()),
+		None => name.clone(),
+	};
 	for person in &changed {
-		println!("   {} {}", if rm { "-".red() } else { "+".green() }, person.name);
+		println!("   {} {} {}", if rm { "-".red() } else { "+".green() }, person.name, shown.dimmed());
 	}
 	if changed.len() > 1 {
-		let scope = format!("{} `{tag}` {} {} people", if rm { "take" } else { "put" }, if rm { "off" } else { "on" }, changed.len());
+		let scope = format!("{} `{shown}` {} {} people", if rm { "take" } else { "put" }, if rm { "off" } else { "on" }, changed.len());
 		if v_utils::io::confirmation(&scope).flush_blocking() == v_utils::io::ConfirmResult::No {
 			return Ok(());
 		}
 	}
 	for person in &mut changed {
-		match rm {
-			true => person.tags.remove(tag),
-			false => person.tags.insert(tag.clone()),
+		match &value {
+			Some(value) => person.tags.insert(name.clone(), value.clone()),
+			None => person.tags.remove(name),
 		};
 		person.write(dir)?;
 	}
@@ -143,9 +171,9 @@ fn tag(rolodex: &RolodexConfig, tag: Option<&str>, pattern: Option<&str>, rm: bo
 	Ok(())
 }
 
-async fn open(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
-	let dir = &rolodex.path;
-	let people = person::load_dir(dir, &rolodex.tags)?;
+async fn open(purpose: &Purpose, pattern: Option<&str>) -> Result<()> {
+	let dir = &purpose.path;
+	let people = person::load_dir(purpose)?;
 	let name = match pattern {
 		None => {
 			if people.is_empty() {
@@ -172,21 +200,23 @@ async fn open(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
 		person.write(dir)?;
 	}
 	v_utils::io::file_open::open(&path).await.map_err(|e| eyre!("{e:#}"))?;
-	person::load_one(&path, &rolodex.tags).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
+	person::load_one(purpose, &path).wrap_err_with(|| format!("{} no longer evaluates — fix it before anything reads it again", path.display()))?;
 	Ok(())
+}
+
+fn select(purpose: &Purpose, pattern: Option<&str>) -> Result<Vec<Person>> {
+	Ok(person::load_dir(purpose)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect())
 }
 
 /// What they said in a venue, in their own words rather than through the labels a pull made of them.
 /// This is what outreach is written off, so it prints the whole line and the venue that holds it.
-fn lines(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
-	let dir = &rolodex.path;
-	let people = person::load_dir(dir, &rolodex.tags)?;
-	let selected: Vec<&Person> = people.values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect();
+fn lines(purpose: &Purpose, venues: &Path, pattern: Option<&str>) -> Result<()> {
+	let selected = select(purpose, pattern)?;
 	if selected.is_empty() {
-		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
+		bail!("no people in {} matching {}", purpose.path.display(), pattern.unwrap_or("anything"));
 	}
 	for person in selected {
-		let lines = venue_lines(dir, person, None)?;
+		let lines = venue::lines_by(venues, &person, None)?;
 		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
 		println!("\n{} {}", person.name.bold(), handles.join(" ").dimmed());
 		if lines.is_empty() {
@@ -199,19 +229,13 @@ fn lines(rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
-/// Everybody no conversation is on record with, on any platform that could hold one. What a person
-/// said in a venue is not a conversation with them — it stayed in the venue's transcript, and is why
-/// the members `discover` wrote a file for come out cold until somebody writes to them.
-///
-/// Ranked by that same venue activity, loudest first, because who to write to next is the only
-/// question the list is read for. The venue lines are the whole of the score here: a cold person has
-/// no messages with us by construction.
-async fn cold(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>, decay: f64) -> Result<()> {
-	let dir = &rolodex.path;
-	let selected: Vec<Person> = person::load_dir(dir, &rolodex.tags)?
-		.into_values()
-		.filter(|p| pattern.is_none_or(|pattern| p.matches(pattern)))
-		.collect();
+/// `rank`, over everybody no conversation is on record with on any platform that could hold one —
+/// who to write to next is the only question the list is read for. What a person said in a venue is
+/// not a conversation with them: it stayed in the venue's transcript, and is why the members
+/// `procure` wrote a file for come out cold until somebody writes to them.
+async fn cold(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>) -> Result<()> {
+	let dir = &purpose.path;
+	let selected = select(purpose, pattern)?;
 	let total = selected.len();
 	let candidates = sift(dir, selected)?;
 
@@ -221,37 +245,9 @@ async fn cold(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>
 		false => probe_all(config, dir, candidates, None).await?,
 	};
 
-	let (cold, gone) = partition_in_scope(dir, cold)?;
-	let mut spoke: Vec<(Person, Vec<Timestamp>)> = Vec::new();
-	for person in cold {
-		let at = venue_lines(dir, &person, None)?.into_iter().map(|(_, line)| line.at).collect();
-		spoke.push((person, at));
-	}
-	// over the cohort rather than per person: scored alone, somebody whose last line was two years
-	// ago sits at the same recency as anybody else's newest
-	let span = utils::Span::over(spoke.iter().flat_map(|(_, at)| at.iter().copied()), decay);
-	// somebody with nothing in any transcript has no score, which is not a score of zero: the two
-	// read the same on the line and mean different things about whether we know anything about them
-	let mut ranked: Vec<(Person, Option<f64>)> = spoke
-		.into_iter()
-		.map(|(person, at)| {
-			let score = (!at.is_empty()).then(|| span.expect("a span exists once anybody spoke").activity(at));
-			(person, score)
-		})
-		.collect();
-	// `Span::over` is `Some` only if somebody spoke, and every weight is above zero, so the top is too
-	let top = ranked.iter().filter_map(|(_, score)| *score).fold(0.0f64, f64::max);
-	ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("a score is finite"));
-
-	let width = ranked.iter().map(|(p, _)| p.name.chars().count()).max().unwrap_or(0);
-	for (person, score) in &ranked {
-		let handles: Vec<String> = person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
-		let rank = match score {
-			Some(score) => format!("{:>3.0}", score / top * 100.0),
-			None => "  ·".to_string(),
-		};
-		println!("   {} {:<width$} {}", rank.dimmed(), person.name, handles.join(" ").dimmed());
-	}
+	let (cold, gone) = partition_in_scope(venues, cold)?;
+	let ranked = rank::rank(purpose, venues, cold)?;
+	print_ranked(purpose, &ranked);
 	// named, not counted: a selection that narrows silently reads as one that covered everything
 	if !gone.is_empty() {
 		println!(
@@ -264,6 +260,34 @@ async fn cold(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>
 	Ok(())
 }
 
+/// A column per term, `·` where it had nothing to credit.
+fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
+	let Some(width) = ranked.iter().map(|r| r.person.name.chars().count()).max() else { return };
+	let columns: Vec<usize> = purpose.rank.iter().map(|term| term.of.chars().count().max(3)).collect();
+	let header: String = purpose.rank.iter().zip(&columns).map(|(term, w)| format!(" {:>w$}", term.of)).collect();
+	println!("   {} {:<width$}{}", "score".dimmed(), "", header.dimmed());
+	for r in ranked {
+		let terms: String = r
+			.terms
+			.iter()
+			.zip(&columns)
+			.map(|(v, w)| match v {
+				Some(v) => format!(" {:>w$.0}", v * 100.0),
+				None => format!(" {:>w$}", "·"),
+			})
+			.collect();
+		let handles: Vec<String> = r.person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
+		let backfilling = if r.backfilling { " backfilling".yellow().to_string() } else { String::new() };
+		println!(
+			"   {:>5.0} {:<width$}{} {}{backfilling}",
+			r.score * 100.0,
+			r.person.name,
+			terms.dimmed(),
+			handles.join(" ").dimmed()
+		);
+	}
+}
+
 /// Split on whether any venue we keep a transcript for still lists them. A person the platform has
 /// never been asked about stays in — [`Person::venues`] is `None` then, and absence of an answer is
 /// not an answer.
@@ -271,8 +295,8 @@ async fn cold(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>
 /// This is what a roster cannot say. `members.json` is the snapshot some `recon members` left
 /// behind, so it goes on listing somebody long after they walked out; their own profile is asked
 /// fresh on every `pull` and is the only thing that notices.
-fn partition_in_scope(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<Person>)> {
-	let kept: Vec<String> = venue::all(dir)?.iter().map(VenueRef::to_string).collect();
+fn partition_in_scope(venues: &Path, people: Vec<Person>) -> Result<(Vec<Person>, Vec<Person>)> {
+	let kept: Vec<String> = venue::all(venues)?.iter().map(VenueRef::to_string).collect();
 	Ok(people.into_iter().partition(|person| {
 		let listed = person.venues.as_ref().is_none_or(|theirs| theirs.iter().any(|at| kept.contains(at)));
 		// a platform that has already refused to carry a message is not a way to reach them, so
@@ -282,14 +306,14 @@ fn partition_in_scope(dir: &Path, people: Vec<Person>) -> Result<(Vec<Person>, V
 	}))
 }
 
-/// People every venue we keep has lost, and no conversation is on record with — a `discover` wrote
+/// People every venue we keep has lost, and no conversation is on record with — a `procure` wrote
 /// them a file off a roster row, and nothing points at them any more. The venue transcripts keep
 /// their lines regardless: a thread with the departed cut out is not the thread.
-fn prune(rolodex: &RolodexConfig) -> Result<()> {
-	let dir = &rolodex.path;
-	let people: Vec<Person> = person::load_dir(dir, &rolodex.tags)?.into_values().collect();
+fn prune(purpose: &Purpose, venues: &Path) -> Result<()> {
+	let dir = &purpose.path;
+	let people: Vec<Person> = person::load_dir(purpose)?.into_values().collect();
 	let mut stale = Vec::new();
-	for person in partition_in_scope(dir, people)?.1 {
+	for person in partition_in_scope(venues, people)?.1 {
 		let meta = history::Meta::load(&person.dir(dir))?;
 		let sources = person.handles.keys().filter_map(|platform| platform.parse::<Source>().ok());
 		if !sources.clone().any(|source| meta.messages(source).is_some_and(|messages| messages > 0)) {
@@ -377,17 +401,14 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 	Ok(cold)
 }
 
-async fn pull(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>) -> Result<()> {
-	let dir = &rolodex.path;
-	let people: Vec<Person> = person::load_dir(dir, &rolodex.tags)?
-		.into_values()
-		.filter(|p| pattern.is_none_or(|pattern| p.matches(pattern)))
-		.collect();
+async fn pull(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>) -> Result<()> {
+	let dir = &purpose.path;
+	let people = select(purpose, pattern)?;
 	if people.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
 	}
 
-	// A pattern says who; without one this is the whole rolodex, and whoever has no cursor yet is
+	// A pattern says who; without one this is the whole purpose, and whoever has no cursor yet is
 	// read from their first message rather than from where the last read stopped.
 	if pattern.is_none() {
 		let mut whole: Vec<&str> = Vec::new();
@@ -409,9 +430,9 @@ async fn pull(config: &AppConfig, rolodex: &RolodexConfig, pattern: Option<&str>
 	}
 
 	if !people.iter().any(|p| p.handles.contains_key("telegram")) {
-		return pull_all(config, dir, people, None).await;
+		return pull_all(config, purpose, venues, people, None).await;
 	}
-	with_telegram(&config.telegram, async |client| pull_all(config, dir, people, Some(&client)).await).await
+	with_telegram(&config.telegram, async |client| pull_all(config, purpose, venues, people, Some(&client)).await).await
 }
 
 /// The dialog prefetch inside `connect` takes long enough to look like a hang without the spinner.
@@ -435,8 +456,9 @@ struct Fetched {
 	venues: Option<Vec<VenueRef>>,
 }
 
-async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
-	let llm_config = config.require_llm("rolodex")?;
+async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
+	let dir = &purpose.path;
+	let llm_config = config.require_llm("purpose pull")?;
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let mut github = Github::default();
 	let mut linkedin = Linkedin;
@@ -451,7 +473,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 			.expect("static template")
 			.tick_strings(TICK),
 	);
-	pb.set_prefix("rolodex");
+	pb.set_prefix(purpose.name.clone());
 	pb.enable_steady_tick(Duration::from_millis(80));
 	let (mut updated, mut entries, mut failures) = (0usize, 0usize, 0usize);
 
@@ -512,7 +534,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 		let state = meta.backfill_status().map(|s| format!(", {s}")).unwrap_or_default();
 
 		// costs no network: `recon posts` already paid for these
-		let from_venues = venue_items(dir, &person, meta.venues_through())?;
+		let from_venues = venue_items(venues, &person, meta.venues_through())?;
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
 
@@ -532,7 +554,7 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 			continue;
 		};
 		pb.set_message(format!("{} extracting", person.name));
-		let extraction = match delta::extract(&delta, &llm_config).await {
+		let extraction = match delta::extract(&delta, purpose, &llm_config).await {
 			Ok(extraction) => extraction,
 			Err(e) => {
 				pb.abandon();
@@ -572,6 +594,12 @@ async fn pull_all(config: &AppConfig, dir: &Path, people: Vec<Person>, telegram:
 			)
 		});
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
+		for (tag, value) in extraction.tags {
+			match value {
+				Some(value) => person.tags.insert(tag, value),
+				None => person.tags.remove(&tag),
+			};
+		}
 		person.write(dir)?;
 		pb.inc(1);
 	}
@@ -648,22 +676,8 @@ async fn backfill<C: Direct>(client: &mut C, handle: &str, cursor: &mut Cursor<'
 	cursor.exhausted()
 }
 
-/// This person's own lines out of every venue transcript on disk, and which venue each came from.
-/// Nothing is fetched: `recon posts` already paid for them, and only the lines the slot attributes
-/// to a handle of theirs are read.
-fn venue_lines(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<(VenueRef, venue::Line)>> {
-	let mut out = Vec::new();
-	for at in venue::all(dir)? {
-		let Some(handle) = person.handles.get(at.platform.as_ref()) else { continue };
-		let store = venue::Store::open(dir, &at)?;
-		out.extend(store.lines(since)?.into_iter().filter(|line| &line.handle == handle).map(|line| (at.clone(), line)));
-	}
-	out.sort_by_key(|(_, line)| line.at);
-	Ok(out)
-}
-
-fn venue_items(dir: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {
-	Ok(venue_lines(dir, person, since)?
+fn venue_items(venues: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<Item>> {
+	Ok(venue::lines_by(venues, person, since)?
 		.into_iter()
 		.map(|(at, line)| Item {
 			id: format!("{at}:{}", line.at),
@@ -765,7 +779,7 @@ mod tests {
 	fn a_pull_takes_only_its_own_lines_out_of_a_venue() {
 		let dir = std::env::temp_dir().join("social_networks_rolodex_venue_pull");
 		let _ = std::fs::remove_dir_all(&dir);
-		let venue = dir.join("venues").join("skool").join("20kmodrop");
+		let venue = dir.join("skool").join("20kmodrop");
 		std::fs::create_dir_all(&venue).unwrap();
 		std::fs::write(venue.join("meta.json"), "{}").unwrap();
 		std::fs::write(

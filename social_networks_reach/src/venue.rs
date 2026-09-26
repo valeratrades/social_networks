@@ -1,7 +1,7 @@
 //! A venue transcript, in the same place and the same format as a person's:
 //!
 //! ```text
-//! <dir>/venues/<platform>/<slug>/
+//! <venues>/<platform>/<slug>/
 //!         <year>.md      the transcript, one line per item
 //!         members.json   the roster
 //!         meta.json      where the last read stopped
@@ -19,7 +19,10 @@ use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 use social_networks_adapters::reach::{Member, Page, VenueRef, VenueSource};
 
-use crate::history::{self, Facing};
+use crate::{
+	history::{self, Facing},
+	person::Person,
+};
 
 /// One transcript line, as the writer put it there.
 #[derive(Clone, Debug)]
@@ -61,10 +64,10 @@ pub struct Store {
 	meta: Meta,
 }
 impl Store {
-	/// `<rolodex dir>/venues/<platform>/<slug>`. A slug carrying a `/` — a github repo — nests, which
-	/// is what its own URL does too.
-	pub fn open(root: &Path, at: &VenueRef) -> Result<Self> {
-		let dir = root.join("venues").join(at.platform.as_ref()).join(&at.slug);
+	/// `<venues>/<platform>/<slug>`. A slug carrying a `/` — a github repo — nests, which is what its
+	/// own URL does too.
+	pub fn open(venues: &Path, at: &VenueRef) -> Result<Self> {
+		let dir = venues.join(at.platform.as_ref()).join(&at.slug);
 		let path = dir.join("meta.json");
 		let meta = match std::fs::read(&path) {
 			Ok(bytes) => serde_json::from_slice(&bytes).wrap_err_with(|| format!("{} is not venue state", path.display()))?,
@@ -115,44 +118,33 @@ impl Store {
 	/// Every line in the transcript, oldest year first. Bounded by `since`, which is what keeps a
 	/// per-pull scan proportional to what the pull is going to read anyway.
 	pub fn lines(&self, since: Option<Timestamp>) -> Result<Vec<Line>> {
-		let mut years: Vec<PathBuf> = match std::fs::read_dir(&self.dir) {
-			Ok(entries) => entries
-				.map(|e| e.map(|e| e.path()))
-				.collect::<std::result::Result<Vec<_>, _>>()
-				.wrap_err_with(|| format!("failed to read {}", self.dir.display()))?
-				.into_iter()
-				.filter(|p| p.extension().is_some_and(|e| e == "md"))
-				.collect(),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-			Err(e) => return Err(e).wrap_err_with(|| format!("failed to read {}", self.dir.display())),
-		};
-		years.sort();
-
-		let mut out = Vec::new();
-		for year in years {
-			let body = std::fs::read_to_string(&year).wrap_err_with(|| format!("failed to read {}", year.display()))?;
-			out.extend(Line::read(&body).wrap_err_with(|| format!("{}", year.display()))?);
-		}
-		out.retain(|line| since.is_none_or(|floor| line.at >= floor));
-		Ok(out)
+		read(&self.dir, since)
 	}
 
 	fn save(&self) -> Result<()> {
-		std::fs::create_dir_all(&self.dir).wrap_err_with(|| format!("failed to create {}", self.dir.display()))?;
-		let path = self.dir.join("meta.json");
-		let tmp = self.dir.join("meta.json.tmp");
-		std::fs::write(&tmp, serde_json::to_vec_pretty(&self.meta)?).wrap_err_with(|| format!("failed to write {}", tmp.display()))?;
-		std::fs::rename(&tmp, &path).wrap_err_with(|| format!("failed to replace {}", path.display()))
+		history::save_meta(&self.dir, &self.meta)
 	}
 }
 
-/// Every venue with a transcript under `root`, which is what a `pull` scans for a person's own
+/// This person's own lines out of every venue transcript on disk, and which venue each came from.
+/// Nothing is fetched: `recon posts` already paid for them, and only the lines the slot attributes
+/// to a handle of theirs are read.
+pub fn lines_by(venues: &Path, person: &Person, since: Option<Timestamp>) -> Result<Vec<(VenueRef, Line)>> {
+	let mut out = Vec::new();
+	for at in all(venues)? {
+		let Some(handle) = person.handles.get(at.platform.as_ref()) else { continue };
+		let store = Store::open(venues, &at)?;
+		out.extend(store.lines(since)?.into_iter().filter(|line| &line.handle == handle).map(|line| (at.clone(), line)));
+	}
+	out.sort_by_key(|(_, line)| line.at);
+	Ok(out)
+}
+/// Every venue with a transcript under `venues`, which is what a `pull` scans for a person's own
 /// lines. A venue is a directory holding a `meta.json`; a github slug nests one level further, which
 /// is what its own URL does too.
-pub fn all(root: &Path) -> Result<Vec<VenueRef>> {
-	let venues = root.join("venues");
+pub fn all(venues: &Path) -> Result<Vec<VenueRef>> {
 	let mut out = Vec::new();
-	for platform in read_dirs(&venues)? {
+	for platform in read_dirs(venues)? {
 		let Some(name) = platform.file_name().and_then(|n| n.to_str()) else { continue };
 		let Ok(platform_source) = name.parse::<VenueSource>() else { continue };
 		for slug in read_dirs(&platform)? {
@@ -225,6 +217,39 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	}
 	Ok(chosen)
 }
+/// A `WHERE` clause inline, or a path to a file holding one — told apart by asking the filesystem, so
+/// anything worth an LSP can be written in a `.sql` file.
+pub fn clause(predicate: &str) -> Result<String> {
+	let path = Path::new(predicate);
+	match path.is_file() {
+		true => std::fs::read_to_string(path).wrap_err_with(|| format!("failed to read {}", path.display())),
+		false => Ok(predicate.to_string()),
+	}
+}
+/// The year files under `dir`, a venue's or a person's alike: both are written in the one line format.
+pub(crate) fn read(dir: &Path, since: Option<Timestamp>) -> Result<Vec<Line>> {
+	let mut years: Vec<PathBuf> = match std::fs::read_dir(dir) {
+		Ok(entries) => entries
+			.map(|e| e.map(|e| e.path()))
+			.collect::<std::result::Result<Vec<_>, _>>()
+			.wrap_err_with(|| format!("failed to read {}", dir.display()))?
+			.into_iter()
+			.filter(|p| p.extension().is_some_and(|e| e == "md"))
+			.collect(),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		Err(e) => return Err(e).wrap_err_with(|| format!("failed to read {}", dir.display())),
+	};
+	years.sort();
+
+	let mut out = Vec::new();
+	for year in years {
+		let body = std::fs::read_to_string(&year).wrap_err_with(|| format!("failed to read {}", year.display()))?;
+		out.extend(Line::read(&body).wrap_err_with(|| format!("{}", year.display()))?);
+	}
+	out.retain(|line| since.is_none_or(|floor| line.at >= floor));
+	Ok(out)
+}
+
 /// Where the last read of this venue stopped. A venue has no backfill — its feed is what the
 /// platform still serves — so a checkpoint and a running tally are the whole of its state.
 #[derive(Debug, Default, Deserialize, Serialize)]

@@ -10,7 +10,7 @@
 //! `/<group>/-/members` redirect to `/[group]/about`, so the venue axis needs `[skool]` credentials
 //! and an actual membership.
 //!
-//! Skool is reached on demand and only by a human — `rolodex` for a person, `recon` for a group,
+//! Skool is reached on demand and only by a human — a purpose's `pull` for a person, `recon` for a group,
 //! [`Skool::classroom`] for the course a group teaches — with one exception: [`SkoolDms`] polls the
 //! chat listing so a `/ping` here lands like one anywhere else.
 

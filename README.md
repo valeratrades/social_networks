@@ -69,25 +69,36 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](./examples
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health status of all services, config, and directories |
 | `migrate-db` | Run database migrations |
-| `rolodex` | Per-person records from Discord, Telegram, GitHub, LinkedIn and Skool |
+| `purpose <name>` | Per-person records for one purpose, from Discord, Telegram, GitHub, LinkedIn and Skool |
+| `rolodex` | The same as `purpose rolodex` |
 | `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
 | `twitter` | Twitter operations |
 | `twitter-schedule` | Twitter scheduled posting |
 | `youtube` | YouTube operations |
 
-All commands other than `health`, `migrate-db` and `rolodex` run as daemons.
+All commands other than `health`, `migrate-db`, `purpose` and `rolodex` run as daemons.
 
-#### `rolodex`
+#### `purpose`
+
+A purpose is one use of the person files: your own connections (`rolodex`), leads to ask for
+reviews (`reviews`), and so on. Each purpose has a folder, a list of tags with a type each, the ways
+to add people (`procure`), and a ranking (`rank`). The config names them under `purposes`, and
+`venues` is the folder that `recon` writes groups to. All purposes use the same groups.
+[examples/purposes](./examples/purposes) has two.
 
 | Command | Description |
 |---------|-------------|
 | `rolodex open [pattern]` | Open a person file in `$EDITOR`. Create the file if the pattern finds nobody. |
 | `rolodex pull [pattern]` | Get new data for each person the pattern finds. Write it to their files. |
-| `rolodex discover <platform>:<slug>` | Make a file for each member of a group that has no file yet. |
-| `rolodex cold [pattern] [--decay <n>]` | Show each person that you sent no message to and got no message from. |
+| `rolodex procure [<strategy> \| <platform>:<slug>]` | Make a file for each person a strategy selects that has no file yet, and put its tags on each person it selects. |
+| `rolodex rank [pattern]` | Show each person in order of the ranking, with the part each term gives. |
+| `rolodex cold [pattern]` | The same as `rank`, for each person that you sent no message to and got no message from. |
+| `rolodex tag [<name>[=<value>]] [pattern]` | Put a tag on each person the pattern finds. Without a name, show the tags. |
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex prune` | Remove each person that left every group and holds no conversation. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
+
+For another purpose, write `purpose <name>` in place of `rolodex`.
 
 A pattern finds a person by file name or by any handle. Without a pattern, `open` starts `fzf` and
 `pull` takes everybody.
@@ -97,12 +108,15 @@ first `pull` gets the full history of each conversation, and can take a long tim
 the next `pull` continues from the same place.
 
 `cold` finds each person that holds no conversation with you. A line that a person wrote in a group
-is not a conversation, so each member that `discover` added stays cold. `cold` checks every platform
+is not a conversation, so each member that `procure` added stays cold. `cold` checks every platform
 that you keep a handle for. It uses the messages that `pull` kept. If `pull` read no messages from a
 platform, `cold` asks that platform for one message. It keeps no message that it gets.
 
-`cold` shows the most active person first. It gets the activity from the group lines. `--decay` sets
-how much it decreases the weight of an old line. With `--decay 0`, each line has the same weight.
+`rank` gives each person a score from 0 to 100. Each term of the ranking reads one tag, or one value
+from the messages: `interactions` (the days they wrote to you), `last_interaction` (the last message),
+or `venue_activity` (their lines in the groups). A term gives 0 if the person has no value for it. A
+`decay` on a term sets how much it decreases the weight of an old line. With `decay = 0`, each line
+has the same weight.
 
 Each `pull` reads the groups a person is in from their profile and writes them to their file. `cold`
 removes each person that is in no group you keep, and shows their names. `prune` deletes those files
@@ -122,7 +136,7 @@ starts it: each command uses part of your rate limit, so you must start it yours
 | `recon roster <platform>:<slug> [--where <sql>]` | Show the member list again. Select part of it with SQL. |
 | `recon find skool:<slug> <term>` | Search the members of the group for a term. Skool only. |
 
-The group files go under `<rolodex path>/venues/<platform>/<slug>/`. `rolodex pull` then reads the
+The group files go under `<venues>/<platform>/<slug>/`. `rolodex pull` then reads the
 lines of each person you keep a file for, and `rolodex lines` shows them to you. `recon` gets the
 posts one time, and every read after that is free.
 
@@ -139,7 +153,7 @@ So use `find` to get one person, and `members` to get the list. `find` reads mem
 #### Select members with SQL
 
 `--where` takes a SQL `WHERE` clause. It also takes a path to a file that holds one. `recon roster`
-and `rolodex discover` use the same clause and the same table.
+and `rolodex procure` use the same clause and the same table.
 
 | Column | Type | Content |
 |--------|------|---------|
@@ -165,12 +179,12 @@ lat BETWEEN 34 AND 72 AND lon BETWEEN -25 AND 45
 ```
 recon members  skool:<group>
 recon posts    skool:<group>
-rolodex discover skool:<group> --where ~/rolodex/queries/europe.sql --dry-run
-rolodex discover skool:<group> --where ~/rolodex/queries/europe.sql
+rolodex procure skool:<group> --where ~/rolodex/queries/europe.sql --dry-run
+rolodex procure skool:<group> --where ~/rolodex/queries/europe.sql
 rolodex pull <stem>
 ```
 
-`discover` writes a file for each selected person who has no file. `pull` then fills each file.
+`procure` writes a file for each selected person who has no file. `pull` then fills each file.
 
 Two limits apply to skool, and both make the member list shorter than the group:
 

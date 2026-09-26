@@ -1,6 +1,6 @@
 # reach
 
-The transcript format of the on-demand axis, and the store that holds it. Everything about *how* to
+The transcript format of the on-demand axis, the store that holds it, and the purposes over it. Everything about *how* to
 talk to a platform is one layer down, in `social_networks_adapters::reach`; this crate knows only
 what an [`Item`](social_networks_adapters::reach::Item) is worth keeping as.
 
@@ -8,11 +8,13 @@ what an [`Item`](social_networks_adapters::reach::Item) is worth keeping as.
  adapters::reach   Profiles · Direct · Venue          the waist
         ▲
  this crate        history   <person>/<year>.md       DMs, cursors, the backfill's two states
-                   venue     venues/<p>/<slug>/…      transcript, roster, cursor
-                   utils     a cohort → a ranking     how much somebody did, and how lately
+                   venue     <venues>/<p>/<slug>/…    transcript, roster, cursor
+                   person    <person>/__main__.nix    what is said about them, typed tags
+                   purpose   the config of one        folder, tags, procurement, ranking
+                   rank      a cohort → an order      one formula over tags and transcripts
                    recon     the venue axis, hand-run
         ▲
- social_networks   people, labels, extraction
+ social_networks   the commands over a purpose, extraction
 ```
 
 One line format for both, because both are the same thing seen from a different side:

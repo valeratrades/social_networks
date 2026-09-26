@@ -26,6 +26,9 @@ use social_networks_adapters::reach::{Attachment, Author, Item, Source, VenueRef
 use strum::IntoEnumIterator as _;
 use tracing::warn;
 
+/// The slot my own lines carry, in a person's file and a venue's alike.
+pub(crate) const ME: &str = "me";
+
 /// Whose transcript is being written. A DM file has two participants and names the other one in
 /// every incoming line; a venue file has as many as it has, and names the place too.
 #[derive(Clone, Copy)]
@@ -58,7 +61,7 @@ impl Meta {
 	pub fn load(person_dir: &Path) -> Result<Self> {
 		let path = person_dir.join("meta.json");
 		let mut meta: Self = match std::fs::read(&path) {
-			Ok(bytes) => serde_json::from_slice(&bytes).wrap_err_with(|| format!("{} is not rolodex history state", path.display()))?,
+			Ok(bytes) => serde_json::from_slice(&bytes).wrap_err_with(|| format!("{} is not history state", path.display()))?,
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
 			Err(e) => return Err(e).wrap_err_with(|| format!("failed to read {}", path.display())),
 		};
@@ -69,17 +72,13 @@ impl Meta {
 	/// Through a temporary, so a kill during the write leaves the previous state rather than half of
 	/// this one.
 	fn save(&self) -> Result<()> {
-		std::fs::create_dir_all(&self.dir).wrap_err_with(|| format!("failed to create {}", self.dir.display()))?;
-		let path = self.dir.join("meta.json");
-		let tmp = self.dir.join("meta.json.tmp");
-		std::fs::write(&tmp, serde_json::to_vec_pretty(self)?).wrap_err_with(|| format!("failed to write {}", tmp.display()))?;
-		std::fs::rename(&tmp, &path).wrap_err_with(|| format!("failed to replace {}", path.display()))
+		save_meta(&self.dir, self)
 	}
 
 	/// Where `source` stopped, and the scratch its backfill checkpoints into.
 	pub fn cursor(&mut self, source: Source) -> Result<Cursor<'_>> {
 		let person = self.label().to_string();
-		let cache = cache_dir(&person)?.join(format!("{}.jsonl", source.as_ref()));
+		let cache = cache_dir(&self.dir)?.join(format!("{}.jsonl", source.as_ref()));
 		// A source first seen on a person whose archive is already rendered cannot be backfilled into
 		// it: the year files are written whole, once, and merging a second pass into them would take
 		// the parser this design does without. It tails forward from now instead.
@@ -123,7 +122,7 @@ impl Meta {
 	}
 
 	/// Direct messages on record for `source`. `None` is "never asked", which is not the same answer
-	/// as none — see `rolodex cold`.
+	/// as none — see `cold`.
 	pub fn messages(&self, source: Source) -> Option<usize> {
 		self.sources.get(source.as_ref()).map(|s| s.messages)
 	}
@@ -146,7 +145,7 @@ impl Meta {
 	fn label(&self) -> &str {
 		self.dir
 			.file_name()
-			.expect("a person directory is <rolodex dir>/<name>")
+			.expect("a person directory is <purpose path>/<name>")
 			.to_str()
 			.expect("a person name came out of a utf-8 file stem")
 	}
@@ -246,7 +245,7 @@ pub fn record(person_dir: &Path, mut items: Vec<Item>, meta: &mut Meta) -> Resul
 	items.sort_by(order);
 	if meta.backfilling() {
 		// every fetch checked its own slice into the cache as it went
-	} else if cache_dir(meta.label())?.exists() {
+	} else if cache_dir(&meta.dir)?.exists() {
 		// the last backfill finished during this pull, so the whole archive lands in one pass
 		render(person_dir, meta)?;
 	} else {
@@ -293,6 +292,15 @@ pub fn append(dir: &Path, facing: Facing<'_>, items: &[Item], last: Option<Times
 	}
 	Ok(())
 }
+/// `<dir>/meta.json`, a person's or a venue's.
+pub(crate) fn save_meta(dir: &Path, meta: &impl Serialize) -> Result<()> {
+	std::fs::create_dir_all(dir).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+	let path = dir.join("meta.json");
+	let tmp = dir.join("meta.json.tmp");
+	std::fs::write(&tmp, serde_json::to_vec_pretty(meta)?).wrap_err_with(|| format!("failed to write {}", tmp.display()))?;
+	std::fs::rename(&tmp, &path).wrap_err_with(|| format!("failed to replace {}", path.display()))
+}
+
 /// `newest` is the cursor the incremental fetch resumes above; `oldest` the floor a backfill
 /// continues below. `last_message` orders two messengers against each other, which a date alone
 /// cannot.
@@ -316,7 +324,7 @@ impl SourceMeta {
 /// one page on the next run — and written out through the same appender the steady state uses, so
 /// an interrupted backfill and an uninterrupted one cannot render differently.
 fn render(person_dir: &Path, meta: &Meta) -> Result<()> {
-	let cache = cache_dir(meta.label())?;
+	let cache = cache_dir(&meta.dir)?;
 	let mut items = Vec::new();
 	let mut seen = HashSet::new();
 	for source in Source::iter() {
@@ -343,7 +351,7 @@ fn render(person_dir: &Path, meta: &Meta) -> Result<()> {
 /// because it is what a person's pull matches their own venue lines on.
 fn line(facing: Facing<'_>, item: &Item) -> String {
 	let who = match (&item.author, facing) {
-		(Author::Me, _) => "me",
+		(Author::Me, _) => ME,
 		(Author::Handle(handle), Facing::Venue(_)) => handle,
 		(Author::Handle(_), Facing::Person(name)) => name,
 	};
@@ -418,11 +426,16 @@ fn has_year_files(person_dir: &Path) -> Result<bool> {
 
 /// Transient by construction: it holds pages a backfill has not turned into year files yet, and is
 /// removed the moment it has.
-fn cache_dir(person: &str) -> Result<PathBuf> {
+///
+/// Keyed by the whole directory rather than the name: two purposes may each hold somebody of one name.
+fn cache_dir(person_dir: &Path) -> Result<PathBuf> {
 	let home = xdg::BaseDirectories::with_prefix("social_networks")
 		.get_cache_home()
-		.ok_or_else(|| eyre!("no XDG cache home to back a rolodex backfill with"))?;
-	Ok(home.join("rolodex").join(person))
+		.ok_or_else(|| eyre!("no XDG cache home to back a backfill with"))?;
+	let relative = person_dir
+		.strip_prefix("/")
+		.unwrap_or_else(|_| panic!("{} is not absolute; a purpose's path is checked to be", person_dir.display()));
+	Ok(home.join("backfill").join(relative))
 }
 
 #[cfg(test)]
@@ -506,7 +519,7 @@ mod tests {
 	fn scratch(name: &str) -> PathBuf {
 		let dir = std::env::temp_dir().join("social_networks_rolodex_history").join(name);
 		let _ = std::fs::remove_dir_all(&dir);
-		let _ = std::fs::remove_dir_all(cache_dir(name).expect("an XDG cache home"));
+		let _ = std::fs::remove_dir_all(cache_dir(&dir).expect("an XDG cache home"));
 		dir
 	}
 
@@ -528,7 +541,7 @@ mod tests {
 		check_in(&mut meta, &pages()[1]).unwrap();
 		// killed between the page landing in the cache and the floor that follows it reaching disk
 		let last = pages().remove(2);
-		append_jsonl(&cache_dir("orion").unwrap().join("discord.jsonl"), &last.iter().collect::<Vec<_>>()).unwrap();
+		append_jsonl(&cache_dir(&resumed).unwrap().join("discord.jsonl"), &last.iter().collect::<Vec<_>>()).unwrap();
 		assert!(archive(&resumed).is_empty(), "a backfill in flight writes no year file");
 
 		let mut meta = Meta::load(&resumed).unwrap();
@@ -537,7 +550,7 @@ mod tests {
 		finish(&resumed, &mut meta).unwrap();
 
 		assert_eq!(archive(&resumed), expected);
-		assert!(!cache_dir("orion").unwrap().exists(), "the cache goes when the archive lands");
+		assert!(!cache_dir(&resumed).unwrap().exists(), "the cache goes when the archive lands");
 
 		assert_eq!(
 			expected.get("2025.md").expect("a 2025 file"),

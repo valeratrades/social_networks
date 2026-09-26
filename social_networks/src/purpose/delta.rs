@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{Result, WrapErr, bail};
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 use social_networks_adapters::{
 	llm::LlmConfig,
 	reach::{Author, INITIAL_ITEMS, Item, Kind, Source},
 };
+use social_networks_reach::{
+	person::{LogEntry, Person, Value},
+	purpose::{Purpose, TagType},
+};
 use strum::IntoEnumIterator as _;
-
-use super::person::{LogEntry, Person};
 
 /// Something new about a person. Only constructible when there is something new, so there is no
 /// "should we call the LLM?" branch anywhere to get wrong — and nothing here names `pull`, so a live
@@ -48,19 +50,36 @@ impl<'a> Delta<'a> {
 	}
 }
 
-#[derive(Debug, Deserialize)]
 pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
+	/// Every tag carrying an `about`, regenerated whole the way `summary` is. `None` is "nothing
+	/// supports a value", which takes the tag off.
+	pub tags: BTreeMap<String, Option<Value>>,
 }
-pub async fn extract(delta: &Delta<'_>, llm_config: &LlmConfig) -> Result<Extraction> {
-	let prompt = prompt(delta);
+pub async fn extract(delta: &Delta<'_>, purpose: &Purpose, llm_config: &LlmConfig) -> Result<Extraction> {
+	let asked: BTreeMap<&str, (&TagType, &str)> = purpose.tags.iter().filter_map(|(tag, kind)| kind.about().map(|about| (tag.as_str(), (kind, about)))).collect();
+	let prompt = prompt(delta, &asked);
 	let response = llm(llm_config)
 		.ask(&prompt)
 		.await
 		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
 		.wrap_err("extraction call failed")?;
-	serde_json::from_str(&response.text).wrap_err_with(|| format!("extraction did not return the requested shape:\n{}", response.text))
+	let Response { summary, new_log_entries, tags } = serde_json::from_str(&response.text).wrap_err_with(|| format!("extraction did not return the requested shape:\n{}", response.text))?;
+	let tags = tags.unwrap_or_default();
+	if !tags.keys().map(String::as_str).eq(asked.keys().copied()) {
+		bail!(
+			"extraction was asked for the tags [{}] and returned [{}]",
+			asked.keys().copied().collect::<Vec<_>>().join(", "),
+			tags.keys().cloned().collect::<Vec<_>>().join(", ")
+		);
+	}
+	for (tag, value) in &tags {
+		if let Some(value) = value {
+			purpose.check(tag, value).wrap_err("extraction returned a tag value of the wrong type")?;
+		}
+	}
+	Ok(Extraction { summary, new_log_entries, tags })
 }
 /// A handle stated in the conversation is a source nobody is looking for. What it finds is fetched
 /// by the *next* pull, the same cadence discord's connected accounts already run on.
@@ -85,6 +104,12 @@ pub async fn discover_handles(delta: &Delta<'_>, llm_config: &LlmConfig) -> Resu
 		.map(|h| (h.platform.to_lowercase(), h.handle.trim().trim_start_matches('@').to_string()))
 		.filter(|(_, handle)| !handle.is_empty())
 		.collect())
+}
+#[derive(Deserialize)]
+struct Response {
+	summary: String,
+	new_log_entries: Vec<LogEntry>,
+	tags: Option<BTreeMap<String, Option<Value>>>,
 }
 fn llm(llm_config: &LlmConfig) -> ask_llm::Client {
 	ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Fast).force_json()
@@ -156,9 +181,9 @@ fn day(item: &Item) -> jiff::civil::Date {
 	item.at.to_zoned(TimeZone::UTC).date()
 }
 
-fn prompt(delta: &Delta<'_>) -> String {
+fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String {
 	let mut p = String::from(
-		"You maintain a personal rolodex entry. Fold the new information below into it.\n\n\
+		"You maintain the record kept on one person. Fold the new information below into it.\n\n\
 		 Keep only significant facts: accomplishments, milestones, stable preferences, roles, \
 		 relationships, and things worth remembering months from now. Discard small talk, logistics, \
 		 moods, and anything already covered.\n\n\
@@ -172,6 +197,14 @@ fn prompt(delta: &Delta<'_>) -> String {
 		 and card numbers are to be referred to, never reproduced: write `shared his login` and not \
 		 the login. The file is plain text on disk and outlives the conversation.\n\n",
 	);
+	if !asked.is_empty() {
+		p.push_str(
+			"Also respond with `tags`: an object holding every tag listed under Tags below, each set to \
+			 its value as of everything you now know, or null when nothing supports one. Like the \
+			 summary, it is rewritten whole — carry a current value forward unless something \
+			 contradicts it, and never guess: a gap costs less than a wrong value.\n\n",
+		);
+	}
 
 	p.push_str(&format!("## Person\n{}\n\n", delta.person.name));
 	p.push_str(&format!(
@@ -185,6 +218,26 @@ fn prompt(delta: &Delta<'_>) -> String {
 	}
 	for entry in &delta.person.log {
 		p.push_str(&format!("- {} {}\n", entry.date, entry.text));
+	}
+
+	if !asked.is_empty() {
+		p.push_str("\n## Tags\n");
+		for (tag, (kind, about)) in asked {
+			let shape = match kind {
+				TagType::Bool { .. } => "true or false".to_string(),
+				TagType::Number { min, max, .. } => format!("a number from {min} to {max}"),
+				TagType::Range { .. } => "{\"min\": number, \"max\": number}".to_string(),
+				TagType::Place | TagType::Timestamp => unreachable!("a purpose refuses an `about` on a {kind} at load"),
+			};
+			let now = match delta.person.tags.get(*tag) {
+				None => "null".to_string(),
+				Some(Value::Bool(b)) => b.to_string(),
+				Some(Value::Number(n)) => n.to_string(),
+				Some(Value::Range { min, max }) => format!("{{\"min\": {min}, \"max\": {max}}}"),
+				Some(v @ (Value::Place { .. } | Value::Timestamp(_))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
+			};
+			p.push_str(&format!("- `{tag}` ({shape}): {about}. Now: {now}\n"));
+		}
 	}
 
 	if !delta.changed_sources.is_empty() {
@@ -206,7 +259,7 @@ fn prompt(delta: &Delta<'_>) -> String {
 		p.push_str(
 			"\n## New public activity (oldest first)\n\
 			 Apply a far higher bar here than to the messages above. A public feed is mostly routine \
-			 churn, and a rolodex full of `pushed to his own repo again` is worse than an empty one. \
+			 churn, and a record full of `pushed to his own repo again` is worse than an empty one. \
 			 Record an entry only for something the person would themselves bring up months later: a \
 			 new project of theirs, a release, a first contribution to a project that is not theirs, \
 			 or a star that marks a real and durable shift in what they work on. Never record ordinary \

@@ -26,6 +26,7 @@ chromiumoxide = "=0.9.1"
 clap = { version = "=4.6.4", features = ["derive"] }
 color-eyre = "=0.6.5"
 colored = "=3.1.1"
+derive_more = { version = "=2.1.1", features = ["display"] }
 exchange_interactions = { version = "=0.19.2", default-features = false, features = ["binance"] }
 futures = "=0.3.33"
 futures-util = "=0.3.33"

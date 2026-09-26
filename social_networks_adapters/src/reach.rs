@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
 
-/// The window the rolodex extraction prompt reads, and therefore how much of a conversation a first
+/// The window the extraction prompt reads, and therefore how much of a conversation a first
 /// read puts in front of it — the history under that is the backfill's, not the prompt's.
 pub const INITIAL_ITEMS: usize = 200;
 /// Ceiling per read once a checkpoint exists. Whatever is left over is picked up by the next run.
@@ -272,7 +272,7 @@ pub enum Kind {
 	Post,
 	Comment,
 	/// Something a platform reports a person did, rather than something they wrote — a release, a
-	/// new repository. Recorded under a far higher bar; see the prompt in `rolodex::delta`.
+	/// new repository. Recorded under a far higher bar; see the prompt in `purpose::delta`.
 	Activity,
 }
 

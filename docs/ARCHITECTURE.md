@@ -8,9 +8,9 @@ Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitt
 
 The repository is a Cargo workspace with four members:
 
-- `social_networks` — the binary crate. Thin CLI dispatcher, and the rolodex: people, labels, extraction.
+- `social_networks` — the binary crate. Thin CLI dispatcher, and the commands over a purpose: pull, procure, rank, dm, extraction.
 - `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`.
-- `social_networks_reach` — the transcript format and its store, plus `recon`, the CLI over the venue axis.
+- `social_networks_reach` — the transcript format and its store, the purposes over it (people, typed tags, the ranking formula), plus `recon`, the CLI over the venue axis.
 - `social_networks_utils` — shared primitives (db, telegram notifier/utils, image conversion, misc utils).
 
 ## Codemap
@@ -25,7 +25,7 @@ social_networks/
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # service/config/disk health checks
-│       └── rolodex/                        # per-person Nix files, and the labels over the transcripts
+│       └── purpose/                        # the commands over a purpose; `rolodex` is `purpose rolodex`
 │
 ├── social_networks_adapters/               # how to talk to a platform
 │   └── src/
@@ -45,12 +45,15 @@ social_networks/
 │       └── youtube.rs                      # RSS monitoring, sentiment analysis; yt-dlp reads of a channel or a video, on demand (feature `youtube-reads`)
 │
 ├── social_networks_reach/                  # the transcript format and its store
-│   └── src/
-│       ├── lib.rs                          # `[rolodex]` path, the telegram session wrapper
-│       ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
-│       ├── venue.rs                        # `venues/<platform>/<slug>/`, roster selection
-│       ├── utils.rs                        # the activity axis: log-age decay over a cohort
-│       └── recon.rs                        # the venue axis, hand-run
+│   ├── src/
+│   │   ├── lib.rs                          # the telegram session wrapper
+│   │   ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
+│   │   ├── venue.rs                        # `<venues>/<platform>/<slug>/`, the line reader, roster selection
+│   │   ├── person.rs                       # `<person>/__main__.nix`, typed tag values
+│   │   ├── purpose.rs                      # `purposes.<name>`: folder, tag vocabulary, procurement, ranking — checked at load
+│   │   ├── rank.rs                         # the one ranking formula, and the log-age recency axis
+│   │   └── recon.rs                        # the venue axis, hand-run
+│   └── tests/                              # the ranking's invariants over `examples/purposes/reviews.nix`
 │
 └── social_networks_utils/                  # shared primitives
     └── src/
@@ -132,22 +135,23 @@ When an adapter's `listen()` returns an error:
   AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
 ```
 
-`rolodex` and `recon` are the commands that are not daemons and notify nobody — they read the same
+`purpose` (and `rolodex`, which is `purpose rolodex`) and `recon` are the commands that are not daemons and notify nobody — they read the same
 sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them:
 
 ```
-Discord ──┐                                                                 ┌──► Discord
-Telegram ─┤              ┌─► history ────────► people/<person>/<year>.md     ├──► Skool
-GitHub ───┼──► pull ─────┤                                               dm ─┼──► Telegram
-LinkedIn ─┤              └─► LLM extraction ─► people/<person>/__main__.nix  └──► Twitter
-Skool ────┘                         ▲
+Discord ──┐                                                                  ┌──► Discord
+Telegram ─┤              ┌─► history ────────► <purpose>/<person>/<year>.md     ├──► Skool
+GitHub ───┼──► pull ─────┤                                                  dm ─┼──► Telegram
+LinkedIn ─┤              └─► LLM extraction ─► <purpose>/<person>/__main__.nix  └──► Twitter
+Skool ────┘                         ▲                    │
+                                    │                    └──► rank ◄── tags + year files + venue lines
                                     │ lines matching `[<handle>/`
-Telegram ─┐   members ──────────────┼──► venues/<platform>/<slug>/members.json
+Telegram ─┐   members ──────────────┼──► <venues>/<platform>/<slug>/members.json
 GitHub ───┼──► recon                │                                    │
-Skool ────┘   posts ────────────────┴──► venues/<platform>/<slug>/<year>.md
+Skool ────┘   posts ────────────────┴──► <venues>/<platform>/<slug>/<year>.md
                                                                          │
-                                    rolodex discover ◄────────────────────┘
-                                         └─► a skeleton under `people/`, which `pull` then fills
+                                    procure ◄────────────────────────────┘
+                                         └─► a skeleton in the purpose's folder, which `pull` then fills
 ```
 
 The transcript is what a read is for; the labels in `__main__.nix` are derived from it and can be
@@ -167,6 +171,9 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - `Database` (utils::db): SQLite (libsql). Email deduplication.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
+- `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
+- `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored.
 
 ## Invariants
 
@@ -175,15 +182,16 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
-- **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, `rolodex pull`), refused when empty.
+- **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, a purpose's `pull`), refused when empty.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
-- **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app.
+- **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app. `procure` fetches nothing — it selects over what `recon` wrote.
+- **A purpose is checked whole at load**: no command holds a purpose whose ranking, procurement or people disagree with its vocabulary.
 
 ## Cross-Cutting Concerns
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
-- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. Rolodex state is co-located with the person it describes, under the user-chosen directory — a person's messages and cursors are worth as much as the labels over them and are synced with them.
-- **LLM integration**: email classification, YouTube sentiment and rolodex extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
+- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
+- **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Systemd deployment**: each command runs as an independent systemd user service.

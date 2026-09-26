@@ -3,13 +3,13 @@
 mod config;
 mod dms;
 mod health;
-mod rolodex;
+mod purpose;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::{DmSource, DmsArgs};
-use rolodex::RolodexArgs;
+use purpose::PurposeCommand;
 use social_networks_adapters::{
 	AdapterError, Client, DiscordDms, EmailMonitor, SkoolDms, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
 	install_panic_alert, telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
@@ -37,8 +37,17 @@ enum Commands {
 	Health,
 	/// Run database migrations
 	MigrateDb,
-	/// Per-person records, fed from Discord and Telegram
-	Rolodex(RolodexArgs),
+	/// People kept for a purpose: its folder, its tags, its ranking
+	Purpose {
+		name: String,
+		#[command(subcommand)]
+		command: PurposeCommand,
+	},
+	/// `purpose rolodex`
+	Rolodex {
+		#[command(subcommand)]
+		command: PurposeCommand,
+	},
 	/// Telegram channel watching (poll/info forwarding)
 	TelegramChannelWatch(TelegramArgs),
 	/// Twitter operations
@@ -123,9 +132,13 @@ fn main() {
 				Err::<(), AdapterError>(err)
 			})
 		}
-		Commands::Rolodex(args) => run_async("rolodex", || async {
-			v_utils::clientside!(Some("rolodex"));
-			rolodex::main(args, config).await
+		Commands::Purpose { name, command } => run_async("purpose", || async {
+			v_utils::clientside!(Some("purpose"));
+			purpose::main(&name, command, config).await
+		}),
+		Commands::Rolodex { command } => run_async("purpose", || async {
+			v_utils::clientside!(Some("purpose"));
+			purpose::main("rolodex", command, config).await
 		}),
 		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
 			v_utils::clientside!(Some("telegram_channel_watch"));

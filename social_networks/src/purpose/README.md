@@ -1,16 +1,35 @@
-# rolodex
+# purpose
 
 A local directory of per-person directories, fed from the platforms we already hold sessions for.
 `__main__.nix` is the single source of truth about a person; nothing it holds is ever written back to
 a platform — `dm` sends only what you type on the command line.
 
+How somebody was found must not dictate how they are dealt with, so the store, the transcripts, the
+tags, the ranking and the outreach are one machinery, and a **purpose** says only what differs: its
+folder, how people are procured into it, its tag vocabulary, and its ranking. `rolodex <cmd>` is
+`purpose rolodex <cmd>`.
+
 ```
-                  ┌──────────────────────────────┐        ┌─ extract() ────────► log + summary ─┐
-   rolodex pull ──┤ fetch ─► diff vs cursor       ├─► Delta┤                                     ▼
-                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► people/<person>/__main__.nix
+config.nix
+├─ venues = "/…/venues"                 shared: a venue feeds any purpose (`recon` writes here)
+└─ purposes.<name>
+     ├─ path     folder whose children are person dirs
+     ├─ tags     { <name> = { type = bool | number{min;max} | range | place | timestamp; about?; }; }
+     ├─ procure  { <name> = { venue = "skool:x"; where = "<sql>"; tags = { … }; }; }
+     └─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
+```
+
+The whole purpose is checked at load, and fails by name: a rank term whose shape does not fit what
+it reads, a tag named like a builtin, an `about` on a type extraction cannot fill, a strategy tag of
+the wrong type.
+
+```
+                  ┌──────────────────────────────┐        ┌─ extract() ───► log, summary, tags ─┐
+   pull ──────────┤ fetch ─► diff vs cursor       ├─► Delta┤                                     ▼
+                  └──────────────┬───────────────┘    ▲   └─ discover_handles() ─► handles ─► <person>/__main__.nix
    a live DM (unwired) ──────────┼─────────────────---┤
    venue lines by this person ───┼──────────────────--┘
-                                 └──► history::record ──► people/<person>/<year>.md
+                                 └──► history::record ──► <person>/<year>.md
 ```
 
 Three inputs, and only two of them cost a request. The third is the venue transcripts `recon` already
@@ -31,20 +50,20 @@ step: its first fetch fails, which is reported per handle and leaves the rest of
 ```
                                        ┌─ __main__.nix ──► Person   what we say about them
                                        │        ▲   ▲
-[rolodex] path ─┬─ people/<person>/ ───┤        │   └── human edits
-                │                      │        └── render (full regen: comments and
-                │                      │                   hand formatting are lost)
-                │                      ├─ 2019.md … 2026.md   the conversation
-                │                      ├─ assets/*.avif       its images
-                │                      └─ meta.json           every cursor
-                │
-                └─ venues/<platform>/<slug>/   `recon`'s axis, read at pull time
+<purpose> path ─── <person>/ ──────────┤        │   └── human edits
+                                       │        └── render (full regen: comments and
+                                       │                   hand formatting are lost)
+                                       ├─ 2019.md … 2026.md   the conversation
+                                       ├─ assets/*.avif       its images
+                                       └─ meta.json           every cursor
+
+venues ─────────── <platform>/<slug>/   `recon`'s axis, read at pull time
 ```
 
 The transcript is the durable artifact and the labels in `__main__.nix` are derived from it, so
 `meta.json` is written *before* the extraction: a failed LLM call costs a re-run, never a message.
-Holding a `__main__.nix` is what makes a directory a person's, so a stray directory under `people/`
-costs nothing.
+Holding a `__main__.nix` is what makes a directory a person's, so a stray directory in a purpose's
+folder costs nothing.
 
 Two states per person, in [`history`](../../../social_networks_reach/src/history.rs):
 
@@ -77,29 +96,60 @@ an orphan from a failed pull is harmless. Everything else is named and not kept.
 `open [pattern]` and `pull [pattern]`. A pattern matches the directory name or any handle, so
 `pull dev_ardi` reaches `orion/`. No pattern means fzf for `open`, everybody for `pull`.
 
-`discover <platform>:<slug>` is the other axis arriving: it reads the roster and transcript `recon`
-wrote and leaves a skeleton file for everyone the selection names and nobody has yet. `pull` needs
-nothing more than a handle, so a skeleton is the whole handover.
+`procure` is the other axis arriving: it reads the roster and transcript `recon` wrote, leaves a
+skeleton for everyone a strategy selects and the purpose lacks, and puts the strategy's `tags` on
+everyone it selects. Nobody is re-created. `pull` needs nothing more than a handle, so a skeleton is
+the whole handover, and nothing here fetches — `recon` stays the only thing that spends a request.
 
 ```
-rolodex discover skool:20kmodrop --active-since 90d --min-posts 2 --dry-run
-rolodex discover skool:20kmodrop --where 'posts > 5 AND joined > "2026-01-01"'
+rolodex procure                                  # every strategy in `procure`
+rolodex procure servicing                        # one of them
+rolodex procure skool:20kmodrop --active-since 90d --min-posts 2 --dry-run
+rolodex procure skool:20kmodrop --where 'posts > 5 AND joined > "2026-01-01"'
 ```
 
 The query language is SQL because the selection *is* relational — a roster joined against its own
 line counts — and any grammar of our own would converge on SQL, worse. `libsql` was already a
-dependency; `select` builds a few hundred rows in memory, runs the `WHERE`, and keeps nothing. The
-flags desugar into that same clause, so there is one evaluator. `--where` takes inline SQL or a path
-to a `.sql` file, told apart by asking the filesystem. Columns: `handle`, `display`, `joined`,
-`posts`, `first_post`, `last_post`.
+dependency; `select` builds a few hundred rows in memory, runs the `WHERE`, and keeps nothing. A
+strategy's `where`, the flags and `--where` are ANDed into that same clause, so there is one
+evaluator. A clause is inline SQL or a path to a `.sql` file, told apart by asking the filesystem.
+Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `posts`, `first_post`, `last_post`.
 
 Directory names are `<first>-<last>` off the display name, the handle when there is nothing else,
-and a numeric suffix on collision. `discover` prints what it wrote so one can be `git mv`'d — the
+and a numeric suffix on collision. `procure` prints what it wrote so one can be `git mv`'d — the
 name is not load-bearing, since a pattern searches handles too.
 
-`cold [pattern]` is the other end of that handover: everybody no conversation is on record with, on
-any platform that could hold one. A venue line is not one — it never entered their year files — so a
-member `discover` wrote a file for stays cold until they are written to.
+`rank [pattern]` is who to reach first: everybody matching, in order, with each term's share.
+
+```
+                   ┌── tags (typed, checked against the vocabulary at load)
+person dir ────────┤
+                   └── year files ──► builtins: interactions, last_interaction, venue_activity
+                                  │
+   rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w
+```
+
+| type / builtin | term params | value |
+|---|---|---|
+| bool | — | 1 / 0 |
+| number | — | linear within its declared bounds |
+| range | `within = [lo hi]` | fraction of their range inside the target |
+| place | `near = {lat; lon; radius_km; halving_km}` | 1 inside the radius, `0.5^((d−r)/halving)` beyond it |
+| timestamp, `last_interaction` | `decay` | recency over the cohort |
+| `interactions` | — | ÷ cohort max |
+| `venue_activity` | `decay` | activity over the cohort ÷ cohort max |
+
+Absent means no credit, so every term is a bonus: a penalty for distance is a lost closeness bonus,
+which orders the same. The builtins are derived from the transcripts at rank time and never stored —
+`interactions` is the distinct days with a line by them in their year files, `last_interaction` their
+newest year-file line in either direction, `venue_activity` their lines across every venue
+transcript. Recency is `ln(age)` over the cohort, as [`rank`](../../../social_networks_reach/src/rank.rs)
+explains, so a score means nothing outside the cohort it was ranked in. A person still backfilling has
+no year files yet, and is marked rather than read as having none.
+
+`cold [pattern]` is `rank` restricted to everybody no conversation is on record with, on any platform
+that could hold one. A venue line is not one — it never entered their year files — so a member
+`procure` wrote a file for stays cold until they are written to.
 
 Every attached source is checked. `meta.json` answers for whatever a pull has already kept, and a
 source it says nothing about is asked outright, for a single message: the question is whether
@@ -118,15 +168,23 @@ rather than a guess. Every one of them goes out through the same `Direct::send` 
 through: discord and telegram over the sessions `pull` uses, twitter from the `[twitter.oauth]`
 account, skool over a chat channel it opens through a shared group.
 
-`tags` is the one axis no platform has a say in — `venues` and `handles` are what a platform states,
-a tag is what you say. The vocabulary is `[rolodex] tags` in the config, and a tag a person carries
-and the config does not name fails every load by name: a misspelling would otherwise read as a cohort
-of one forever. `pull` never touches them.
+`tags` are the axis no platform has a say in — `venues` and `handles` are what a platform states,
+a tag is what is said about them. The vocabulary is the purpose's `tags`, typed, and a tag a person
+carries that it does not name, or a value of the wrong type, fails every load by name: a misspelling
+would otherwise read as a cohort of one forever. A human writes them (`tag`, `open`), a strategy puts
+its own on everyone it procures, and `pull`'s extraction regenerates every tag carrying an `about`,
+whole, the same way it regenerates `summary`.
+
+```nix
+tags = { ServiceArb = true; interest = 0.7; age = { min = 25; max = 35; };
+         lives_in = { name = "Lyon"; lat = 45.76; lon = 4.84; }; last_login = "2026-09-01T00:00:00Z"; };
+```
 
 ```
-rolodex tag                       # the vocabulary, and how many people carry each
-rolodex tag ServiceArb <pattern>  # put it on everyone matching; --rm takes it off
-rolodex cold ServiceArb           # a pattern matches a tag whole, so every subcommand selects on it
+rolodex tag                              # the vocabulary, its types, and how many people carry each
+rolodex tag ServiceArb <pattern>         # a bare name is a bool set to true; --rm takes a tag off
+purpose reviews tag age=25..35 <pattern> # otherwise `<name>=<value>`: 0.7, 25..35, Lyon@45.76,4.84, 2026-09-01
+rolodex cold ServiceArb                  # a pattern matches a true bool tag whole
 ```
 
 `handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin` and `skool` are what
