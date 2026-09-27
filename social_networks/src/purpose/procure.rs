@@ -21,8 +21,8 @@ use colored::Colorize as _;
 use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::reach::{Member, VenueRef};
 use social_networks_reach::{
-	person::{self, Person},
-	purpose::{Bound, Purpose, Strategy, TagType},
+	person::{self, Person, Value},
+	purpose::{Bound, LIVES_IN, Purpose, Strategy, TagType},
 	venue::{self, Store},
 };
 use v_utils::Timeframe;
@@ -184,7 +184,15 @@ async fn run(purpose: &Purpose, venues: &Path, people: &mut BTreeMap<String, Per
 		println!("   {fresh_mark} {name}\t{platform}/{}\t{}", member.handle, member.display);
 		let mut person = Person::skeleton(&name);
 		person.handles = BTreeMap::from([(platform.to_string(), member.handle.clone())]);
-		person.tags = tags.iter().map(|(tag, value)| (tag.clone(), Some(value.clone()))).collect();
+		// a roster that places somebody is taken at its word until a visit to them says otherwise
+		if purpose.tags.contains_key(LIVES_IN)
+			&& let (Some(place), Some(lat), Some(lon)) = (&member.place, member.lat, member.lon)
+		{
+			let value = Value::Place { name: place.clone(), lat, lon };
+			purpose.check(LIVES_IN, Some(&value)).wrap_err_with(|| format!("{platform}/{}", member.handle))?;
+			person.tags.insert(LIVES_IN.to_string(), Some(value));
+		}
+		person.tags.extend(tags.iter().map(|(tag, value)| (tag.clone(), Some(value.clone()))));
 		if !args.dry_run {
 			person.write(dir)?;
 		}
@@ -274,6 +282,8 @@ mod tests {
 			lat: None,
 			lon: None,
 			zone: None,
+			place: None,
+			bio: None,
 		};
 		let mut taken = BTreeSet::from(["lory-bellardant".to_string()]);
 		assert_eq!(name(&member("Lory Bellardant", "lory-bellardant-1253"), &mut taken), "lory-bellardant-2");

@@ -24,7 +24,7 @@ use v_utils::macros::MyConfigPrimitives;
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
 	dm_event::DmEvent,
-	reach::{Attachment, Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window},
+	reach::{Attachment, Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, VenueSource, Window},
 };
 
 const SURFACE: &str = "telegram_dms";
@@ -403,7 +403,7 @@ impl Venue for Reach<'_> {
 		Ok(out)
 	}
 
-	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>> {
+	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()> {
 		let peer = self.peer(&at.slug).await?;
 		let mut out = Vec::new();
 		let mut participants = self.client.iter_participants(peer);
@@ -422,9 +422,11 @@ impl Venue for Reach<'_> {
 				lat: None,
 				lon: None,
 				zone: None,
+				place: None,
+				bio: None,
 			});
 		}
-		Ok(out)
+		roster.check_in(&out, None).map(|_| ())
 	}
 
 	async fn posts(&mut self, at: &VenueRef, window: Window, assets: &Path) -> Result<Page> {

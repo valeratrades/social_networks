@@ -6,7 +6,7 @@
 //!          ──► Direct::direct   ──► Page          the conversation with them
 //!          ──► Direct::send                       the one thing that goes out
 //!   venue  ──► Venue::venues    ──► [VenueRef]    what this session can see
-//!          ──► Venue::members   ──► [Member]
+//!          ──► Venue::members   ──► Roster        checked in page by page
 //!          ──► Venue::posts     ──► Page
 //! ```
 //!
@@ -53,8 +53,18 @@ pub trait Direct {
 pub trait Venue {
 	/// What this session can see. Without it a venue selector can only guess at slugs.
 	async fn venues(&mut self) -> Result<Vec<VenueRef>>;
-	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>>;
+	/// Checks every page in as it arrives, and resumes from [`Roster::cursor`]: a listing can run for
+	/// days, and one returned whole at the end would be lost to a Ctrl-C.
+	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()>;
 	async fn posts(&mut self, at: &VenueRef, window: Window, assets: &Path) -> Result<Page>;
+}
+/// Where [`Venue::members`] puts what it lists.
+pub trait Roster: Send {
+	/// Where the last walk stopped. `None` is from the start.
+	fn cursor(&self) -> Option<&str>;
+	/// Upserts `members` by handle and moves the cursor to `cursor`. Returns how many were not on the
+	/// roster before.
+	fn check_in(&mut self, members: &[Member], cursor: Option<String>) -> Result<usize>;
 }
 /// A platform the person axis can be addressed on. `as_ref` is the `handles` key a person file
 /// spells, so a source cannot be reachable under a name the files do not use.
@@ -67,6 +77,7 @@ pub enum Source {
 	Github,
 	Linkedin,
 	Skool,
+	Facebook,
 }
 impl Source {
 	/// Whether there is anything below the newest item to page down to. A github feed and a linkedin
@@ -91,6 +102,7 @@ pub enum VenueSource {
 	Telegram,
 	Github,
 	Skool,
+	Facebook,
 }
 impl From<VenueSource> for Source {
 	fn from(venue: VenueSource) -> Self {
@@ -98,11 +110,13 @@ impl From<VenueSource> for Source {
 			VenueSource::Telegram => Self::Telegram,
 			VenueSource::Github => Self::Github,
 			VenueSource::Skool => Self::Skool,
+			VenueSource::Facebook => Self::Facebook,
 		}
 	}
 }
 
-/// A named place with members and content: a skool group, a telegram chat, a github org or repo.
+/// A named place with members and content: a skool group, a telegram chat, a github org or repo, a
+/// facebook group or city search.
 /// `slug` is whatever the platform's own URL uses, so `<platform>:<slug>` round-trips through the
 /// command line and through a directory name.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -147,7 +161,7 @@ impl FromStr for VenueRef {
 
 /// One member of a venue. `handle` is what [`Profiles::profile`] and the `handles` map address, so
 /// a roster row and a person file speak the same name.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Member {
 	pub handle: String,
 	pub display: String,
@@ -161,6 +175,16 @@ pub struct Member {
 	/// An IANA zone — `Europe/Paris`. Where a pin is missing, this is often the only signal left, and
 	/// its first component is the continent.
 	pub zone: Option<String>,
+	/// The platform's own name for `lat`/`lon` — `Lyon, France`.
+	pub place: Option<String>,
+	pub bio: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+	pub name: String,
+	pub lat: f64,
+	pub lon: f64,
 }
 
 /// What a platform states about one person, and what they did in public above the window asked for.
@@ -172,6 +196,9 @@ pub struct Profile {
 	pub handles: BTreeMap<String, String>,
 	/// Where the platform says they are a member.
 	pub venues: Vec<VenueRef>,
+	/// `None`: the platform says nothing about residence. `Some(None)`: asked, it states no current
+	/// city — which outranks a city anything else implied.
+	pub lives_in: Option<Option<Place>>,
 	pub activity: Page,
 }
 impl Profile {

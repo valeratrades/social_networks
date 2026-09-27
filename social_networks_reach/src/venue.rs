@@ -3,8 +3,8 @@
 //! ```text
 //! <venues>/<platform>/<slug>/
 //!         <year>.md      the transcript, one line per item
-//!         members.json   the roster
-//!         meta.json      where the last read stopped
+//!         members.json   the roster, upserted by handle: a member who left stays on it
+//!         meta.json      where the last read and the last roster walk stopped
 //! ```
 //!
 //! Nothing is derived from the markdown that cannot be rebuilt from it. A person's own venue lines
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use serde::{Deserialize, Serialize};
-use social_networks_adapters::reach::{Member, Page, VenueRef, VenueSource};
+use social_networks_adapters::reach::{Member, Page, Roster, VenueRef, VenueSource};
 
 use crate::{
 	history::{self, Facing},
@@ -86,12 +86,6 @@ impl Store {
 		self.meta.newest.as_deref()
 	}
 
-	pub fn put_roster(&self, members: &[Member]) -> Result<()> {
-		std::fs::create_dir_all(&self.dir).wrap_err_with(|| format!("failed to create {}", self.dir.display()))?;
-		let path = self.dir.join("members.json");
-		std::fs::write(&path, serde_json::to_vec_pretty(members)?).wrap_err_with(|| format!("failed to write {}", path.display()))
-	}
-
 	pub fn roster(&self) -> Result<Vec<Member>> {
 		let path = self.dir.join("members.json");
 		let bytes = std::fs::read(&path).wrap_err_with(|| format!("no roster for {} — `recon members {}` writes one", self.at, self.at))?;
@@ -123,6 +117,34 @@ impl Store {
 
 	fn save(&self) -> Result<()> {
 		history::save_meta(&self.dir, &self.meta)
+	}
+}
+impl Roster for Store {
+	fn cursor(&self) -> Option<&str> {
+		self.meta.roster_cursor.as_deref()
+	}
+
+	fn check_in(&mut self, members: &[Member], cursor: Option<String>) -> Result<usize> {
+		let path = self.dir.join("members.json");
+		let mut roster = match path.exists() {
+			true => self.roster()?,
+			false => Vec::new(),
+		};
+		let mut fresh = 0;
+		for member in members {
+			match roster.iter_mut().find(|m| m.handle == member.handle) {
+				Some(known) => *known = member.clone(),
+				None => {
+					roster.push(member.clone());
+					fresh += 1;
+				}
+			}
+		}
+		std::fs::create_dir_all(&self.dir).wrap_err_with(|| format!("failed to create {}", self.dir.display()))?;
+		std::fs::write(&path, serde_json::to_vec_pretty(&roster)?).wrap_err_with(|| format!("failed to write {}", path.display()))?;
+		self.meta.roster_cursor = cursor;
+		self.save()?;
+		Ok(fresh)
 	}
 }
 
@@ -167,7 +189,7 @@ pub fn all(venues: &Path) -> Result<Vec<VenueRef>> {
 /// written in SQL rather than in a grammar of our own. Nothing is persisted — the markdown is the
 /// store, and this table is rebuilt from it on every call.
 ///
-/// Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `posts`, `first_post`, `last_post`.
+/// Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `place`, `bio`, `posts`, `first_post`, `last_post`.
 /// Dates are RFC3339 text, which sqlite compares lexicographically in the same order it compares them
 /// chronologically. `lat`/`lon` are coarse by construction, so a bounding box is the honest shape of
 /// a question over them.
@@ -175,7 +197,7 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	let db = libsql::Builder::new_local(":memory:").build().await.wrap_err("failed to open the roster table")?;
 	let conn = db.connect().wrap_err("failed to connect to the roster table")?;
 	conn.execute(
-		"CREATE TABLE members (handle TEXT PRIMARY KEY, display TEXT NOT NULL, joined TEXT, lat REAL, lon REAL, zone TEXT, posts INTEGER NOT NULL, first_post TEXT, last_post TEXT)",
+		"CREATE TABLE members (handle TEXT PRIMARY KEY, display TEXT NOT NULL, joined TEXT, lat REAL, lon REAL, zone TEXT, place TEXT, bio TEXT, posts INTEGER NOT NULL, first_post TEXT, last_post TEXT)",
 		(),
 	)
 	.await?;
@@ -183,7 +205,7 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	for member in members {
 		let of_theirs: Vec<&Line> = lines.iter().filter(|line| line.handle == member.handle).collect();
 		conn.execute(
-			"INSERT INTO members VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+			"INSERT INTO members VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
 			libsql::params![
 				member.handle.clone(),
 				member.display.clone(),
@@ -191,6 +213,8 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 				member.lat,
 				member.lon,
 				member.zone.clone(),
+				member.place.clone(),
+				member.bio.clone(),
 				of_theirs.len() as i64,
 				of_theirs.iter().map(|l| l.at).min().map(|t| t.to_string()),
 				of_theirs.iter().map(|l| l.at).max().map(|t| t.to_string()),
@@ -202,7 +226,7 @@ pub async fn select(members: &[Member], lines: &[Line], predicate: &str) -> Resu
 	let mut rows = conn
 		.query(&format!("SELECT handle FROM members WHERE {predicate}"), ())
 		.await
-		.wrap_err_with(|| format!("`{predicate}` is not a WHERE clause over (handle, display, joined, lat, lon, zone, posts, first_post, last_post)"))?;
+		.wrap_err_with(|| format!("`{predicate}` is not a WHERE clause over (handle, display, joined, lat, lon, zone, place, bio, posts, first_post, last_post)"))?;
 	let mut chosen = Vec::new();
 	//LOOP: over a finite result set
 	while let Some(row) = rows.next().await.wrap_err("failed to read a roster row")? {
@@ -251,13 +275,15 @@ pub fn read(dir: &Path, since: Option<Timestamp>) -> Result<Vec<Line>> {
 }
 
 /// Where the last read of this venue stopped. A venue has no backfill — its feed is what the
-/// platform still serves — so a checkpoint and a running tally are the whole of its state.
+/// platform still serves — so a checkpoint and a running tally are the whole of its state, next to
+/// where the last roster walk stopped.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct Meta {
 	newest: Option<String>,
 	last_item: Option<Timestamp>,
 	items: usize,
+	roster_cursor: Option<String>,
 }
 
 fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {

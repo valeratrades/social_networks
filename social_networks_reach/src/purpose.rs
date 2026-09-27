@@ -17,6 +17,12 @@ use crate::{person::Value, venue};
 
 /// Signals every purpose has without declaring them, derived at rank time from the transcripts.
 const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
+/// Where a platform says somebody lives.
+pub const LIVES_IN: &str = "lives_in";
+/// Tags a platform states rather than anybody judging them: `procure` seeds them off a roster row,
+/// and `pull` overwrites them with what a visit found. A purpose opts into one by declaring a tag of
+/// that name, of that type.
+const FACTS: [(&str, TagType); 1] = [(LIVES_IN, TagType::Place)];
 
 /// `purposes` in the config, keyed by the name the CLI addresses a purpose by. Checked whole at load,
 /// so no command ever holds a purpose whose ranking or procurement names what its vocabulary does not.
@@ -64,6 +70,13 @@ impl Purpose {
 		let tags: BTreeMap<String, TagType> = raw.tags.into_iter().map(|(tag, raw)| Ok((tag.clone(), raw.typed(&tag)?))).collect::<Result<_>>()?;
 		if let Some(tag) = tags.keys().find(|tag| BUILTINS.contains(&tag.as_str())) {
 			bail!("`{tag}` is both a tag and a builtin signal");
+		}
+		for (fact, kind) in &FACTS {
+			if let Some(declared) = tags.get(*fact)
+				&& std::mem::discriminant(declared) != std::mem::discriminant(kind)
+			{
+				bail!("`{fact}` is a fact platforms state, which is {kind}, and it is declared {declared}");
+			}
 		}
 		// the backfill cache is keyed by the absolute person directory
 		if !raw.path.is_absolute() {

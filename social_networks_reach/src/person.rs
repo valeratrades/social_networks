@@ -6,6 +6,7 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr, bail};
 use jiff::Timestamp;
 use serde::Deserialize;
+use social_networks_adapters::reach::Place;
 
 use crate::purpose::Purpose;
 
@@ -169,6 +170,12 @@ impl Value {
 			Self::Range { min, max } => format!("{{ min = {min}; max = {max}; }}"),
 			Self::Place { name, lat, lon } => format!("{{ name = {}; lat = {lat}; lon = {lon}; }}", nix_dq(name)),
 		}
+	}
+}
+
+impl From<Place> for Value {
+	fn from(Place { name, lat, lon }: Place) -> Self {
+		Self::Place { name, lat, lon }
 	}
 }
 
