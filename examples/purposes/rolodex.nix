@@ -2,6 +2,7 @@
 {
   path = "/home/v/s/g/rolodex/people";
   tags = {
+    location = [ "new_york" "toronto" "london" "berlin" ]; # a group: matched against the roster's IANA `zone`
     ServiceArb = { type = "bool"; };
     networth = { type = "number"; min = 0; max = 1; about = "estimated net worth: 0 is nothing to speak of, 0.5 comfortably well-off, 1 very wealthy"; };
     intelligence = { type = "number"; min = 0; max = 1; about = "how sharp they are, judged from how they reason and what they have built"; };
@@ -11,8 +12,8 @@
   procure = {
     servicing = {
       venue = "skool:20kmodropservicingblueprint";
-      where = "posts >= 2";
-      tags = { ServiceArb = true; };
+      where = "posts >= 2 AND zone LIKE '%$location%'";
+      tags = { location = "$location"; ServiceArb = true; };
     };
   };
   rank = [

@@ -61,8 +61,8 @@ pub enum PurposeCommand {
 	Pull { pattern: Option<String> },
 	/// Matching people in order, with the score and what each term of the ranking gave it
 	Rank { pattern: Option<String> },
-	/// Put `<name>[=<value>]` on matching people, or print the vocabulary when named nothing. A bare
-	/// name is a bool tag set to true
+	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
+	/// named nothing. A bare name is a bool tag set to true
 	Tag {
 		tag: Option<String>,
 		pattern: Option<String>,
@@ -115,9 +115,10 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 		}
 		return Ok(());
 	};
-	let (typed, raw) = match tag.split_once('=') {
-		Some((name, raw)) => (name, Some(raw)),
-		None => (tag, None),
+	// whichever comes first: a timestamp after `=` carries colons of its own
+	let (typed, raw, grouped) = match tag.find(['=', ':']) {
+		Some(at) => (&tag[..at], Some(&tag[at + 1..]), &tag[at..=at] == ":"),
+		None => (tag, None, false),
 	};
 	// a tag typed rather than configured is the misspelling `load_dir` exists to refuse, caught before
 	// it reaches a file rather than after
@@ -128,6 +129,11 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 			purpose.tags.keys().cloned().collect::<Vec<_>>().join(", ")
 		)
 	})?;
+	match (kind, grouped) {
+		(TagType::Group(_), false) if raw.is_some() => bail!("`{name}` is a group, so it is `{name}:<value>`"),
+		(TagType::Group(_), _) | (_, false) => {}
+		(kind, true) => bail!("`{name}` is {kind}, not a group, so it is `{name}=<value>`"),
+	}
 	let value = match (rm, raw) {
 		(true, Some(_)) => bail!("`--rm` takes `{name}` off whatever it holds, so it takes no value"),
 		(true, None) => None,
@@ -138,6 +144,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 		}
 		(false, None) => match kind {
 			TagType::Bool { .. } => Some(Value::Bool(true)),
+			TagType::Group(_) => bail!("`{name}` is {kind}, so it takes a value: `{name}:<value>`"),
 			kind => bail!("`{name}` is {kind}, so it takes a value: `{name}=<value>`"),
 		},
 	};
@@ -155,6 +162,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 		bail!("nobody in {} matching `{pattern}` to {}", dir.display(), if rm { "untag" } else { "tag" });
 	}
 	let shown = match &value {
+		Some(Value::Word(word)) => format!("{name}:{word}"),
 		Some(value) => format!("{name} = {}", value.nix()),
 		None => name.clone(),
 	};

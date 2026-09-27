@@ -2,14 +2,18 @@
 //! them, and how they are ordered. The store, the transcripts and the outreach are the same for every
 //! purpose; this is the whole of what differs. See `social_networks/src/purpose/README.md`.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	ops::Range,
+	path::PathBuf,
+};
 
 use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
 use jiff::Timestamp;
 use serde::Deserialize;
 use social_networks_adapters::reach::VenueRef;
 
-use crate::person::Value;
+use crate::{person::Value, venue};
 
 /// Signals every purpose has without declaring them, derived at rank time from the transcripts.
 const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
@@ -113,6 +117,7 @@ impl Purpose {
 			(TagType::Number { min, max, .. }, Value::Number(n)) if (*min..=*max).contains(n) => Ok(()),
 			(TagType::Range { .. }, Value::Range { min, max }) if min.is_finite() && max.is_finite() && min <= max => Ok(()),
 			(TagType::Place, Value::Place { lat, lon, .. }) if (-90.0..=90.0).contains(lat) && (-180.0..=180.0).contains(lon) => Ok(()),
+			(TagType::Group(values), Value::Word(word)) if values.contains(word) => Ok(()),
 			(kind, value) => bail!("`{tag}` is {kind}, and `{}` is not one", value.nix()),
 		}
 	}
@@ -166,6 +171,7 @@ impl Purpose {
 				shape(&["decay"])?;
 				Signal::Timestamp { decay: rate()? }
 			}
+			(Some(TagType::Group(_)), _) => bail!("rank term `{of}` reads a group, which carries no order to rank by"),
 			(None, "interactions") => shape(&[]).map(|()| Signal::Interactions)?,
 			(None, "last_interaction") => {
 				shape(&["decay"])?;
@@ -181,15 +187,66 @@ impl Purpose {
 	}
 
 	fn strategy(&self, raw: RawStrategy) -> Result<Strategy> {
-		let at: VenueRef = raw.venue.parse()?;
-		for (tag, value) in &raw.tags {
-			self.check(tag, Some(value))?;
+		let mut strategy = Strategy::from(raw.venue.parse::<VenueRef>()?);
+		if let Some(predicate) = raw.predicate {
+			strategy = self.narrow(&strategy, &predicate)?;
 		}
-		Ok(Strategy::Venue {
-			at,
-			predicate: raw.predicate,
-			tags: raw.tags,
-		})
+		for (tag, value) in raw.tags {
+			let value = match value {
+				Value::Word(word) if word.starts_with('$') => {
+					let over = self.over(&word)?;
+					let (group, values) = over
+						.first_key_value()
+						.filter(|_| over.len() == 1 && placeholders(&word)[0].0 == (0..word.len()))
+						.ok_or_else(|| eyre!("tag `{tag}` is `{word}`, and a placeholder stands for a tag's whole value"))?;
+					for value in values {
+						self.check(&tag, Some(&Value::Word(value.clone())))
+							.wrap_err_with(|| format!("`{tag} = {word}` with ${group} = {value}"))?;
+					}
+					let group = group.clone();
+					strategy.generic_over.extend(over);
+					StrategyTag::Templated(group)
+				}
+				value => {
+					self.check(&tag, Some(&value))?;
+					StrategyTag::Given(value)
+				}
+			};
+			strategy.tags.insert(tag, value);
+		}
+		Ok(strategy)
+	}
+
+	/// `strategy` with `predicate` — inline SQL or a path to it — ANDed onto its own `where`.
+	pub fn narrow(&self, strategy: &Strategy, predicate: &str) -> Result<Strategy> {
+		let predicate = venue::clause(predicate)?;
+		let mut narrowed = strategy.clone();
+		narrowed.generic_over.extend(self.over(&predicate)?);
+		narrowed.predicate = Some(match &strategy.predicate {
+			Some(own) => format!("({}) AND ({})", own.trim(), predicate.trim()),
+			None => predicate,
+		});
+		Ok(narrowed)
+	}
+
+	/// The groups `text`'s placeholders name, with the values each may be bound to.
+	fn over(&self, text: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
+		placeholders(text)
+			.into_iter()
+			.map(|(_, group)| match self.tags.get(group) {
+				Some(TagType::Group(values)) => Ok((group.to_string(), values.clone())),
+				_ => bail!(
+					"`${group}` names no group of `purposes.{}.tags`, whose groups are {}",
+					self.name,
+					self.tags
+						.iter()
+						.filter(|(_, kind)| matches!(kind, TagType::Group(_)))
+						.map(|(g, _)| g.as_str())
+						.collect::<Vec<_>>()
+						.join(", ")
+				),
+			})
+			.collect()
 	}
 }
 
@@ -208,17 +265,20 @@ pub enum TagType {
 	Place,
 	#[display("a timestamp")]
 	Timestamp,
+	/// One value per person, out of these. What a strategy can be generic over.
+	#[display("one of {}", _0.iter().map(String::as_str).collect::<Vec<_>>().join(", "))]
+	Group(BTreeSet<String>),
 }
 impl TagType {
 	pub fn about(&self) -> Option<&str> {
 		match self {
 			Self::Bool { about } | Self::Number { about, .. } | Self::Range { about } => about.as_deref(),
-			Self::Place | Self::Timestamp => None,
+			Self::Place | Self::Timestamp | Self::Group(_) => None,
 		}
 	}
 
 	/// How a value is typed on the command line: `true`, `0.7`, `25..35`, `Lyon@45.76,4.84`, and a
-	/// timestamp or a bare date.
+	/// timestamp or a bare date, and a group's value as itself.
 	pub fn parse(&self, raw: &str) -> Result<Value> {
 		let number = |s: &str| s.trim().parse::<f64>().wrap_err_with(|| format!("`{s}` is not a number"));
 		Ok(match self {
@@ -249,6 +309,10 @@ impl TagType {
 					.wrap_err("a date at UTC midnight")?
 					.timestamp(),
 			}),
+			Self::Group(values) => match values.contains(raw) {
+				true => Value::Word(raw.to_string()),
+				false => bail!("`{raw}` is not {self}"),
+			},
 		})
 	}
 }
@@ -261,19 +325,115 @@ pub struct Term {
 	pub(crate) weight: f64,
 	pub(crate) signal: Signal,
 }
-
-/// How people get procured into a purpose. One method for now: selection over what `recon` already
-/// wrote, which fetches nothing.
+/// How people get procured into a purpose: selection over what `recon` already wrote, which fetches
+/// nothing. Generic over the groups its `$<group>` placeholders name, and run only once [bound](Self::bind).
 #[derive(Clone, Debug)]
-pub enum Strategy {
-	Venue {
-		at: VenueRef,
-		/// A SQL `WHERE` over the roster table, or a path to a file holding one. `None` is the whole
-		/// roster.
-		predicate: Option<String>,
-		/// Put on everyone it selects, whether it created them or not.
-		tags: BTreeMap<String, Value>,
-	},
+pub struct Strategy {
+	at: VenueRef,
+	/// A SQL `WHERE` over the roster table. `None` is the whole roster.
+	predicate: Option<String>,
+	/// Put on everyone it selects, whether it created them or not.
+	tags: BTreeMap<String, StrategyTag>,
+	generic_over: BTreeMap<String, BTreeSet<String>>,
+}
+impl Strategy {
+	pub fn generic_over(&self) -> impl Iterator<Item = &str> {
+		self.generic_over.keys().map(String::as_str)
+	}
+
+	/// Exactly the groups it is generic over, each to one of its values.
+	pub fn bind(&self, bindings: &BTreeMap<String, String>) -> Result<Bound> {
+		for (group, values) in &self.generic_over {
+			let joined = values.iter().map(String::as_str).collect::<Vec<_>>().join("|");
+			match bindings.get(group) {
+				None => bail!("generic over ${group} — pass --{group} <{joined}>"),
+				Some(value) if !values.contains(value) => bail!("`{value}` is not a {group}: one of {joined}"),
+				Some(_) => {}
+			}
+		}
+		if let Some(group) = bindings.keys().find(|group| !self.generic_over.contains_key(*group)) {
+			bail!("not generic over ${group}");
+		}
+		let bound = |group: &str| bindings.get(group).expect("checked above for every group it is over").clone();
+		Ok(Bound {
+			at: self.at.clone(),
+			predicate: self.predicate.as_ref().map(|predicate| {
+				let mut out = String::new();
+				let mut last = 0;
+				for (span, group) in placeholders(predicate) {
+					out.push_str(&predicate[last..span.start]);
+					out.push_str(&bound(group));
+					last = span.end;
+				}
+				out.push_str(&predicate[last..]);
+				out
+			}),
+			tags: self
+				.tags
+				.iter()
+				.map(|(tag, value)| {
+					let value = match value {
+						StrategyTag::Given(value) => value.clone(),
+						StrategyTag::Templated(group) => Value::Word(bound(group)),
+					};
+					(tag.clone(), value)
+				})
+				.collect(),
+			bindings: bindings.clone(),
+		})
+	}
+}
+
+/// A [`Strategy`] with every placeholder substituted.
+#[derive(Clone, Debug)]
+pub struct Bound {
+	pub at: VenueRef,
+	pub predicate: Option<String>,
+	pub tags: BTreeMap<String, Value>,
+	/// What it was bound with.
+	pub bindings: BTreeMap<String, String>,
+}
+/// Every `$<name>` in `text`: the bytes it spans, and the name.
+fn placeholders(text: &str) -> Vec<(Range<usize>, &str)> {
+	let mut found = Vec::new();
+	let mut from = 0;
+	while let Some(at) = text[from..].find('$').map(|i| from + i) {
+		let name = &text[at + 1..];
+		let name = &name[..name.find(|c: char| !bare_group(c)).unwrap_or(name.len())];
+		if !name.is_empty() {
+			found.push((at..at + 1 + name.len(), name));
+		}
+		from = at + 1 + name.len();
+	}
+	found
+}
+
+/// What a group's name is spelled in, so a placeholder ends where the name does.
+fn bare_group(c: char) -> bool {
+	c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// What a group's value is spelled in: it is spliced into SQL and typed as a flag value.
+fn bare_value(c: char) -> bool {
+	c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+}
+/// A venue ad hoc: the whole roster, tagging nobody.
+impl From<VenueRef> for Strategy {
+	fn from(at: VenueRef) -> Self {
+		Self {
+			at,
+			predicate: None,
+			tags: BTreeMap::new(),
+			generic_over: BTreeMap::new(),
+		}
+	}
+}
+
+#[derive(Clone, Debug)]
+enum StrategyTag {
+	Given(Value),
+	/// The value its group is bound to.
+	Templated(String),
 }
 /// How a term's value is derived; which one is fixed by the type of what it reads.
 #[derive(Clone, Debug)]
@@ -325,16 +485,44 @@ struct RawPurpose {
 	rank: Vec<RawTerm>,
 }
 
+/// A list is a group; anything else is read as [`RawTyped`], afterwards, so its own errors survive.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawTag {
+	Group(Vec<String>),
+	Typed(serde_json::Value),
+}
+impl RawTag {
+	fn typed(self, tag: &str) -> Result<TagType> {
+		match self {
+			Self::Group(values) => {
+				if tag.is_empty() || !tag.chars().all(bare_group) {
+					bail!("group `{tag}` is named outside [A-Za-z0-9_], so no `$` placeholder could name it");
+				}
+				if let Some(bad) = values.iter().find(|v| v.is_empty() || !v.chars().all(bare_value)) {
+					bail!("group `{tag}` has value `{bad}`; a value is a bare word in [a-z0-9_-]");
+				}
+				let set: BTreeSet<String> = values.iter().cloned().collect();
+				if set.is_empty() || set.len() != values.len() {
+					bail!("group `{tag}` lists {values:?}, and a group is a non-empty list of distinct values");
+				}
+				Ok(TagType::Group(set))
+			}
+			Self::Typed(raw) => serde_json::from_value::<RawTyped>(raw).wrap_err_with(|| format!("tag `{tag}`"))?.typed(tag),
+		}
+	}
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawTag {
+struct RawTyped {
 	#[serde(rename = "type")]
 	kind: String,
 	about: Option<String>,
 	min: Option<f64>,
 	max: Option<f64>,
 }
-impl RawTag {
+impl RawTyped {
 	fn typed(self, tag: &str) -> Result<TagType> {
 		let Self { kind, about, min, max } = self;
 		if kind != "number" && (min.is_some() || max.is_some()) {
@@ -374,6 +562,7 @@ struct RawTerm {
 #[serde(deny_unknown_fields)]
 struct RawStrategy {
 	venue: String,
+	/// May carry `$<group>` placeholders, as may a tag's value.
 	#[serde(rename = "where")]
 	predicate: Option<String>,
 	#[serde(default)]

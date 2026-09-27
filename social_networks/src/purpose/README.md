@@ -14,14 +14,15 @@ config.nix
 ├─ venues = "/…/venues"                 shared: a venue feeds any purpose (`recon` writes here)
 └─ purposes.<name>
      ├─ path     folder whose children are person dirs
-     ├─ tags     { <name> = { type = bool | number{min;max} | range | place | timestamp; about?; }; }
-     ├─ procure  { <name> = { venue = "skool:x"; where = "<sql>"; tags = { … }; }; }
+     ├─ tags     { <name> = { type = bool | number{min;max} | range | place | timestamp; about?; };
+     │             <group> = [ "<value>" … ]; }
+     ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      └─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
 ```
 
 The whole purpose is checked at load, and fails by name: a rank term whose shape does not fit what
 it reads, a tag named like a builtin, an `about` on a type extraction cannot fill, a strategy tag of
-the wrong type.
+the wrong type, a `$<name>` that names no group.
 
 ```
                   ┌──────────────────────────────┐        ┌─ extract() ───► log, summary, tags ─┐
@@ -106,7 +107,15 @@ rolodex procure                                  # every strategy in `procure`
 rolodex procure servicing                        # one of them
 rolodex procure skool:20kmodrop --active-since 90d --min-posts 2 --dry-run
 rolodex procure skool:20kmodrop --where 'posts > 5 AND joined > "2026-01-01"'
+rolodex procure servicing --location london      # a strategy generic over the `location` group
 ```
+
+A strategy is generic over every group its `where` or a tag value names as `$<group>`, and runs only
+once each is bound by `--<group> <value>`. The flags exist per purpose, so `procure` takes its
+arguments raw and parses them against a command built from the purpose's groups — `--help` lists
+the values. One `--location` binds every strategy run that is generic over it; one that is not
+ignores it, and a flag nothing run is generic over is refused. A value is a bare word, so it is
+spliced into the SQL as is.
 
 The query language is SQL because the selection *is* relational — a roster joined against its own
 line counts — and any grammar of our own would converge on SQL, worse. `libsql` was already a
@@ -180,16 +189,22 @@ made: a person missing any of them is extracted on the next `pull` whether or no
 surfaced, off their year files and venue lines, which is how a tag added to the vocabulary reaches
 everybody already in it.
 
+A **group** is declared as a list, `location = [ "lyon" "paris" ];`: one value per person out of
+it, lowercase `[a-z0-9_-]`, never judged by the extraction, and what a strategy can be generic over.
+
 ```nix
 tags = { ServiceArb = true; interest = 0.7; age = { min = 25; max = 35; };
-         lives_in = { name = "Lyon"; lat = 45.76; lon = 4.84; }; last_login = "2026-09-01T00:00:00Z"; };
+         lives_in = { name = "Lyon"; lat = 45.76; lon = 4.84; }; last_login = "2026-09-01T00:00:00Z";
+         location = "lyon"; };
 ```
 
 ```
 rolodex tag                              # the vocabulary, its types, and how many people carry each
 rolodex tag ServiceArb <pattern>         # a bare name is a bool set to true; --rm takes a tag off
 purpose reviews tag age=25..35 <pattern> # otherwise `<name>=<value>`: 0.7, 25..35, Lyon@45.76,4.84, 2026-09-01
+rolodex tag location:lyon <pattern>      # a group is `<group>:<value>`
 rolodex cold ServiceArb                  # a pattern matches a true bool tag whole
+rolodex rank location:lyon               # and a `<group>:<value>` whole
 ```
 
 `handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin` and `skool` are what

@@ -73,9 +73,12 @@ impl Person {
 
 	/// Match on the directory name and on every handle, so `pull dev_ardi` finds the person whose
 	/// discord handle that is without anyone having to know what their directory is called. A bool tag
-	/// that is `true` matches whole rather than by substring: a cohort that swallowed a name fragment is
-	/// not a cohort.
+	/// that is `true`, and a `<group>:<value>`, match whole rather than by substring: a cohort that
+	/// swallowed a name fragment is not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
+		if let Some((group, value)) = pattern.split_once(':') {
+			return self.tags.iter().any(|(t, v)| t.eq_ignore_ascii_case(group) && matches!(v, Some(Value::Word(w)) if w == value));
+		}
 		if self.tags.iter().any(|(t, v)| *v == Some(Value::Bool(true)) && t.eq_ignore_ascii_case(pattern)) {
 			return true;
 		}
@@ -144,8 +147,17 @@ pub enum Value {
 	Bool(bool),
 	Number(f64),
 	Timestamp(Timestamp),
-	Range { min: f64, max: f64 },
-	Place { name: String, lat: f64, lon: f64 },
+	/// A group's value. After [`Self::Timestamp`], which no bare word parses as.
+	Word(String),
+	Range {
+		min: f64,
+		max: f64,
+	},
+	Place {
+		name: String,
+		lat: f64,
+		lon: f64,
+	},
 }
 impl Value {
 	pub fn nix(&self) -> String {
@@ -153,6 +165,7 @@ impl Value {
 			Self::Bool(b) => b.to_string(),
 			Self::Number(n) => n.to_string(),
 			Self::Timestamp(at) => nix_dq(&at.to_string()),
+			Self::Word(word) => nix_dq(word),
 			Self::Range { min, max } => format!("{{ min = {min}; max = {max}; }}"),
 			Self::Place { name, lat, lon } => format!("{{ name = {}; lat = {lat}; lon = {lon}; }}", nix_dq(name)),
 		}
@@ -323,7 +336,7 @@ mod tests {
 			let purposes: Purposes = serde_json::from_value(serde_json::json!({ "t": { "path": dir, "tags": tags, "rank": [{ "of": "interactions", "weight": 1 }] } })).unwrap();
 			purposes.get("t").unwrap().clone()
 		};
-		let vocabulary = purpose(serde_json::json!({
+		let tags = serde_json::json!({
 			"ServiceArb": { "type": "bool" },
 			"Rust": { "type": "bool" },
 			"interest": { "type": "number", "min": -1, "max": 1 },
@@ -331,7 +344,9 @@ mod tests {
 			"age": { "type": "range" },
 			"lives_in": { "type": "place" },
 			"last_login": { "type": "timestamp" },
-		}));
+			"location": ["lyon", "paris"],
+		});
+		let vocabulary = purpose(tags.clone());
 		let person = Person {
 			name: "ardi".to_string(),
 			tags: BTreeMap::from([
@@ -349,6 +364,7 @@ mod tests {
 					}),
 				),
 				("last_login".to_string(), Some(Value::Timestamp("2026-09-01T12:30:00Z".parse().unwrap()))),
+				("location".to_string(), Some(Value::Word("lyon".to_string()))),
 			]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
@@ -380,6 +396,10 @@ mod tests {
 		assert!(load_one(&purpose(serde_json::json!({})), &person.path(&dir)).is_err());
 		// and against one that types it differently
 		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "judged": { "type": "number", "min": 0, "max": 1, "about": "x" }, "age": { "type": "range" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
+		// and against one whose group lacks their value
+		let mut elsewhere = tags;
+		elsewhere["location"] = serde_json::json!(["paris", "berlin"]);
+		assert!(load_one(&purpose(elsewhere), &person.path(&dir)).is_err());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

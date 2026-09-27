@@ -231,7 +231,7 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 				TagType::Bool { .. } => "true or false".to_string(),
 				TagType::Number { min, max, .. } => format!("a number from {min} to {max}"),
 				TagType::Range { .. } => "{\"min\": number, \"max\": number}".to_string(),
-				TagType::Place | TagType::Timestamp => unreachable!("a purpose refuses an `about` on a {kind} at load"),
+				TagType::Place | TagType::Timestamp | TagType::Group(_) => unreachable!("a purpose refuses an `about` on a {kind} at load"),
 			};
 			let now = match delta.person.tags.get(*tag) {
 				None => "never judged".to_string(),
@@ -239,7 +239,7 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 				Some(Some(Value::Bool(b))) => b.to_string(),
 				Some(Some(Value::Number(n))) => n.to_string(),
 				Some(Some(Value::Range { min, max })) => format!("{{\"min\": {min}, \"max\": {max}}}"),
-				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
+				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_) | Value::Word(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
 			};
 			p.push_str(&format!("- `{tag}` ({shape}): {about}. Now: {now}\n"));
 		}
