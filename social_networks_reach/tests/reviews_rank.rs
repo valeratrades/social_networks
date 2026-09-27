@@ -103,7 +103,7 @@ fn a_known_value_beats_an_absent_one() {
 		&[
 			lead("unknown", ""),
 			lead("far", r#"lives_in = { name = "Lyon"; lat = 45.764; lon = 4.8357; };"#),
-			lead("aged", "birthday = { min = 1986; max = 1996; };"),
+			lead("aged", "birthday = { min = 2010; max = 2012; };"),
 		],
 	);
 	assert!(score(&ranked, "far") > score(&ranked, "unknown"));
