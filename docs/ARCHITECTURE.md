@@ -59,7 +59,7 @@ social_networks/
     └── src/
         ├── lib.rs
         ├── avif.rs                         # attachment images, kept at an archive's size
-        ├── db.rs                           # SQLite client (libsql): email dedup
+        ├── db.rs                           # SQLite client (libsql): email dedup, twitter_schedule attempts
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
 ```
@@ -172,7 +172,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
 - `TelegramNotifier` (adapters::telegram_notifier): all in-band outbound notifications flow through here.
-- `Database` (utils::db): SQLite (libsql). Email deduplication.
+- `Database` (utils::db): SQLite (libsql). Email deduplication; twitter_schedule attempts, which a restart schedules from.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use color_eyre::eyre::{Result, WrapErr};
+use jiff::Timestamp;
 use libsql::Connection;
 use tracing::info;
 
@@ -30,6 +31,16 @@ impl Database {
 		)
 		.await
 		.wrap_err("failed to create processed_emails table")?;
+		conn.execute(
+			"CREATE TABLE IF NOT EXISTS twitter_schedule_attempts (
+                attempted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                tweet_id     TEXT,
+                error        TEXT
+            )",
+			(),
+		)
+		.await
+		.wrap_err("failed to create twitter_schedule_attempts table")?;
 
 		let this = Self { conn };
 		this.migrate_is_human_to_action().await?;
@@ -109,6 +120,46 @@ impl Database {
 			)
 			.await
 			.wrap_err("failed to execute mark_email_processed")?;
+		Ok(())
+	}
+
+	/// Crash mid-post leaves the row with neither outcome, and it still counts as an attempt.
+	pub async fn last_twitter_schedule_attempt(&self) -> Result<Option<Timestamp>> {
+		let mut rows = self
+			.conn
+			.query("SELECT attempted_at FROM twitter_schedule_attempts ORDER BY rowid DESC LIMIT 1", ())
+			.await
+			.wrap_err("failed to query last twitter_schedule attempt")?;
+		let Some(row) = rows.next().await.wrap_err("failed to read row")? else {
+			return Ok(None);
+		};
+		let at = row.get_str(0).wrap_err("failed to read attempted_at")?;
+		Ok(Some(at.parse().wrap_err_with(|| format!("attempted_at `{at}` is not a timestamp"))?))
+	}
+
+	/// Recorded before the post is sent, so a restart never re-sends one whose outcome was lost.
+	pub async fn begin_twitter_schedule_attempt(&self) -> Result<i64> {
+		self.conn
+			.execute("INSERT INTO twitter_schedule_attempts DEFAULT VALUES", ())
+			.await
+			.wrap_err("failed to record twitter_schedule attempt")?;
+		Ok(self.conn.last_insert_rowid())
+	}
+
+	pub async fn finish_twitter_schedule_attempt(&self, attempt: i64, outcome: Result<&str, &str>) -> Result<()> {
+		let (tweet_id, error) = match outcome {
+			Ok(tweet_id) => (Some(tweet_id), None),
+			Err(error) => (None, Some(error)),
+		};
+		let updated = self
+			.conn
+			.execute(
+				"UPDATE twitter_schedule_attempts SET tweet_id = ?2, error = ?3 WHERE rowid = ?1",
+				libsql::params![attempt, tweet_id, error],
+			)
+			.await
+			.wrap_err("failed to record twitter_schedule outcome")?;
+		assert_eq!(updated, 1, "attempt {attempt} was begun on this db");
 		Ok(())
 	}
 }

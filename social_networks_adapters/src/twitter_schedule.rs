@@ -7,11 +7,14 @@ use std::{
 use clap::Args;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use hmac::{Hmac, KeyInit, Mac};
-use jiff::{Timestamp, fmt::strtime};
+use jiff::Timestamp;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
-use social_networks_utils::utils::{btc_price, format_num_with_thousands};
+use social_networks_utils::{
+	db::Database,
+	utils::{btc_price, format_num_with_thousands},
+};
 use tokio::time;
 use tracing::{error, info, instrument};
 use v_utils::{Timeframe, macros::MyConfigPrimitives};
@@ -25,11 +28,7 @@ const SURFACE: &str = "twitter_schedule";
 type HmacSha1 = Hmac<Sha1>;
 
 #[derive(Args)]
-pub struct TwitterScheduleArgs {
-	/// Skip the first poll posting and go straight to waiting for the next scheduled cycle
-	#[arg(long)]
-	pub skip_first: bool,
-}
+pub struct TwitterScheduleArgs {}
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct TwitterPollConfig {
 	pub text: String,
@@ -41,11 +40,10 @@ pub struct TwitterPollConfig {
 
 pub struct TwitterSchedule {
 	twitter_config: TwitterConfig,
-	skip_first: bool,
 }
 impl TwitterSchedule {
-	pub fn new(twitter_config: TwitterConfig, skip_first: bool) -> Self {
-		Self { twitter_config, skip_first }
+	pub fn new(twitter_config: TwitterConfig) -> Self {
+		Self { twitter_config }
 	}
 }
 
@@ -60,7 +58,7 @@ impl AdapterClient for TwitterSchedule {
 
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		println!("Twitter Schedule: Starting scheduled poll posting...");
-		match schedule_sentiment_poll(&self.twitter_config, self.skip_first).await {
+		match schedule_sentiment_poll(&self.twitter_config).await {
 			Err(ScheduleError::Auth(detail)) => Err(AdapterError::Auth { surface: SURFACE, detail }),
 			Err(ScheduleError::Unhandled(detail)) => Err(AdapterError::Unhandled { surface: SURFACE, detail }),
 		}
@@ -78,54 +76,49 @@ impl<E: Into<color_eyre::eyre::Report>> From<E> for ScheduleError {
 	}
 }
 
-/// Runs a scheduling loop that posts sentiment polls at regular intervals
+/// Posts sentiment polls `schedule_every` after the last attempt on record, so a restart never posts early.
 #[instrument(skip(twitter_config))]
-async fn schedule_sentiment_poll(twitter_config: &TwitterConfig, skip_first: bool) -> Result<Infallible, ScheduleError> {
-	println!("Twitter Schedule: Scheduler initialized");
-
+async fn schedule_sentiment_poll(twitter_config: &TwitterConfig) -> Result<Infallible, ScheduleError> {
 	let poll_config = twitter_config
 		.poll
 		.as_ref()
 		.ok_or_else(|| ScheduleError::Unhandled("twitter.poll config not found".to_string()))?;
+	let db = Database::try_new().await?;
 
-	// Get the schedule interval
 	let schedule_duration = poll_config.schedule_every.duration();
-	info!("schedule_interval={schedule_duration:?} retries={} skip_first={skip_first}", poll_config.num_of_retries);
+	info!("schedule_interval={schedule_duration:?} retries={}", poll_config.num_of_retries);
 	println!("Schedule interval: {schedule_duration:?}");
-
-	if skip_first {
-		let next_time = Timestamp::now()
-			.to_zoned(jiff::tz::TimeZone::UTC)
-			.checked_add(jiff::Span::try_from(schedule_duration).unwrap())
-			.unwrap();
-		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
-
-		info!("skip_first=true next={next_time_str}");
-		println!("Skipping first post, next poll: {next_time_str}");
-
-		time::sleep(schedule_duration).await;
-	}
 
 	//LOOP: daemon - runs until process termination
 	loop {
-		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
-		let time_str = strtime::format("%Y-%m-%d %H:%M:%S", &now).unwrap();
+		if let Some(last) = db.last_twitter_schedule_attempt().await? {
+			let next = last.checked_add(schedule_duration)?;
+			let wait = Timestamp::now().duration_until(next);
+			info!("last_attempt={last} next={next}");
+			println!("Next poll: {next}");
+			if wait.is_positive() {
+				time::sleep(wait.unsigned_abs()).await;
+			}
+		}
 
-		info!("cycle_start time={time_str}");
-		println!("\n[{time_str}] Starting poll posting cycle");
+		info!("cycle_start");
+		println!("\n[{}] Starting poll posting cycle", Timestamp::now());
 
-		// Post the poll with retries
-		let mut success = false;
 		for attempt in 1..=poll_config.num_of_retries {
+			let row = db.begin_twitter_schedule_attempt().await?;
 			match post_poll(twitter_config).await {
-				Ok(()) => {
+				Ok(tweet_id) => {
+					db.finish_twitter_schedule_attempt(row, Ok(&tweet_id)).await?;
 					info!("post_success attempt={attempt}");
 					println!("✓ Poll posted successfully");
-					success = true;
 					break;
 				}
-				Err(ScheduleError::Auth(detail)) => return Err(ScheduleError::Auth(detail)),
+				Err(ScheduleError::Auth(detail)) => {
+					db.finish_twitter_schedule_attempt(row, Err(&detail)).await?;
+					return Err(ScheduleError::Auth(detail));
+				}
 				Err(ScheduleError::Unhandled(e)) => {
+					db.finish_twitter_schedule_attempt(row, Err(&e)).await?;
 					error!("post_failed attempt={attempt}/{} error={e}", poll_config.num_of_retries);
 					if attempt == poll_config.num_of_retries {
 						println!("✗ Failed to post poll: {e}");
@@ -133,23 +126,11 @@ async fn schedule_sentiment_poll(twitter_config: &TwitterConfig, skip_first: boo
 				}
 			}
 		}
-
-		let next_time = Timestamp::now()
-			.to_zoned(jiff::tz::TimeZone::UTC)
-			.checked_add(jiff::Span::try_from(schedule_duration).unwrap())
-			.unwrap();
-		let next_time_str = strtime::format("%Y-%m-%d %H:%M:%S", &next_time).unwrap();
-
-		info!("cycle_complete success={success} next={next_time_str}");
-		println!("Next poll: {next_time_str}");
-
-		// Sleep until next cycle
-		time::sleep(schedule_duration).await;
 	}
 }
 
 #[instrument(skip(twitter_config))]
-async fn post_poll(twitter_config: &TwitterConfig) -> Result<(), ScheduleError> {
+async fn post_poll(twitter_config: &TwitterConfig) -> Result<String, ScheduleError> {
 	let oauth = twitter_config
 		.oauth
 		.as_ref()
@@ -162,15 +143,14 @@ async fn post_poll(twitter_config: &TwitterConfig) -> Result<(), ScheduleError> 
 	info!("account={}", oauth.acc_username);
 	println!("Posting poll from account: {}", oauth.acc_username);
 
-	// Parse poll text and extract options with lazy variable resolution
 	let (tweet_text, poll_options) = parse_poll_text_async(&poll_config.text, poll_config).await?;
 	let duration_minutes = poll_config.duration_hours * 60;
 
 	let request = CreateTweetRequest {
-		text: tweet_text.clone(),
+		text: tweet_text,
 		poll: Some(PollOptions {
 			duration_minutes,
-			options: poll_options.clone(),
+			options: poll_options,
 		}),
 	};
 
@@ -179,7 +159,7 @@ async fn post_poll(twitter_config: &TwitterConfig) -> Result<(), ScheduleError> 
 	info!("posted tweet_id={} text={}", response.data.id, response.data.text);
 	println!("Tweet ID: {}", response.data.id);
 
-	Ok(())
+	Ok(response.data.id)
 }
 
 /// OAuth 1.0a `Authorization` for a POST whose payload is a JSON body — which is therefore not part

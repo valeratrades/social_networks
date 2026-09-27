@@ -21,6 +21,7 @@ grammers-client.workspace = true
 grammers-mtsender.workspace = true
 grammers-session.workspace = true
 image.workspace = true
+jiff.workspace = true
 libsql.workspace = true
 psm.workspace = true
 ravif.workspace = true
