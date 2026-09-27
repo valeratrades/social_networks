@@ -31,6 +31,7 @@
           enable = true;
           lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
           jobs.default = true;
+          jobs.errors.install.packages = [ "mold" ]; # the purpose tests evaluate person files with `nix eval`
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
           containerRelease = { registry = "ghcr.io/valeratrades"; };
           release = {

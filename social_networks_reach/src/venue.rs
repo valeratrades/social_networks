@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Nothing is derived from the markdown that cannot be rebuilt from it. A person's own venue lines
-//! are selected out of it at `pull` time by the prefix the writer put there — [`Line::read`] reads
+//! are selected out of it at `pull` time by the prefix the writer put there — `Line::read` reads
 //! the fixed `- HH:MM:SS [who/platform@slug]` it wrote and the day heading above it, and treats the
 //! rest as text. There is no index, and an index would have this as its input anyway.
 

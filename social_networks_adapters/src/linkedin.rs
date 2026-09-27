@@ -1,7 +1,7 @@
 //! Logged out, so no credentials of any kind — and therefore no messages and no post feed, only the
 //! one fact no other source states: where a person works now. Linkedin authwalls anonymous views
 //! after a handful, so the checkpoint is the date of the last success rather than an item id, and a
-//! profile read inside [`REFRESH_DAYS`] is skipped: the wall turns into a queue that drains over
+//! profile read inside `REFRESH_DAYS` is skipped: the wall turns into a queue that drains over
 //! successive runs instead of a failure to design around.
 //!
 //! Through `curl` rather than an http client, because linkedin answers on the TLS handshake as much

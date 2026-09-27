@@ -262,7 +262,7 @@ impl Skool {
 	}
 
 	/// The search behind the group's member bar. Matches a prefix of any word of a handle or a
-	/// display name, answers at most [`SEARCH_PAGE`], and carries no cursor — so it is a lookup and
+	/// display name, answers at most `SEARCH_PAGE`, and carries no cursor — so it is a lookup and
 	/// not a way to walk a roster.
 	///
 	/// It is the only read here that reaches the members [`Venue::members`] cannot: a member with no
@@ -552,7 +552,7 @@ impl Profiles for Skool {
 
 impl Direct for Skool {
 	/// A handle whose chat was never opened has an empty conversation rather than an unreadable one:
-	/// opening one is [`request_channel`](Skool::request_channel), which is a write.
+	/// opening one is `request_channel`, which is a write.
 	async fn direct(&mut self, handle: &str, window: Window, _assets: &Path) -> Result<Page> {
 		let user = self.user_id(handle).await?;
 		let Some(channel) = self.open_channel(&user).await? else {
@@ -622,7 +622,7 @@ impl Direct for Skool {
 		})
 	}
 
-	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at [`API`]. The
+	/// Skool's chat lives behind the one thing its SSR pages are not: a REST API at `API`. The
 	/// handle is public, the id it resolves to is what every chat route speaks.
 	async fn send(&mut self, handle: &str, text: &str) -> Result<()> {
 		if !SEND {

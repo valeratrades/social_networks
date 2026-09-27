@@ -15,7 +15,7 @@
 //! weighs the same; as it rises the cohort's newest items crowd everything else out.
 //!
 //! A score means nothing on its own and nothing across two calls. The axis is normalised over
-//! whatever cohort [`Span::over`] was handed, so ranking somebody alone would place their oldest
+//! whatever cohort `Span::over` was handed, so ranking somebody alone would place their oldest
 //! line at the same recency as anybody else's newest.
 
 use std::{collections::BTreeSet, path::Path};

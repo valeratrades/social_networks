@@ -256,7 +256,7 @@ pub fn record(person_dir: &Path, mut items: Vec<Item>, meta: &mut Meta) -> Resul
 	meta.save()
 }
 /// `last` is the newest item already in the files, and decides whether the first item here opens a
-/// new day. Items must be [`order`]ed.
+/// new day. Items must be `order`ed.
 pub fn append(dir: &Path, facing: Facing<'_>, items: &[Item], last: Option<Timestamp>) -> Result<()> {
 	if items.is_empty() {
 		return Ok(());
