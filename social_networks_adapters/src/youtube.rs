@@ -187,14 +187,14 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 		match event {
 			Event::Eof => break,
 			Event::Start(e) => {
-				let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+				let tag_name = e.name().as_ref().to_string();
 				if tag_name == "entry" {
 					in_entry = true;
 				}
 				current_tag = tag_name;
 			}
 			Event::Text(e) if in_entry => {
-				let text = e.escape_ascii().to_string();
+				let text = e.xml10_content().into_owned();
 				match current_tag.as_str() {
 					"yt:videoId" => video_id = Some(text),
 					"title" => title = Some(text),
@@ -203,7 +203,7 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 				}
 			}
 			Event::End(e) => {
-				let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+				let tag_name = e.name().as_ref().to_string();
 				if tag_name == "entry"
 					&& video_id.is_some()
 					&& title.is_some()

@@ -39,7 +39,6 @@ jiff.workspace = true
 lettre.workspace = true
 mail-parser.workspace = true
 miette.workspace = true
-mime.workspace = true
 quick-xml.workspace = true
 rand.workspace = true
 regex.workspace = true

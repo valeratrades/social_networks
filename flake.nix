@@ -108,6 +108,16 @@
       in
       {
         apps.publish = { type = "app"; program = "${runPublish}/bin/publish"; };
+        apps.help = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "help" ''
+            cat <<EOF
+            nix run .#publish -- major|minor|patch   release the bin crate (see flake.nix)
+            nix build .#default                      the ${pname} binary; \`${pname} --help\` lists its commands
+            nix develop                              dev shell; regenerates CI workflows and README
+            EOF
+          ''}/bin/help";
+        };
 
         packages = { default = bin; } // containerStd.packages;
 
