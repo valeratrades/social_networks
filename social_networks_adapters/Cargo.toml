@@ -52,6 +52,7 @@ strum.workspace = true
 tg.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 trait-variant.workspace = true

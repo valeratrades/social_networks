@@ -42,7 +42,7 @@ use v_utils::macros::MyConfigPrimitives;
 use crate::{
 	client::{AdapterError, Client},
 	dm_event::DmEvent,
-	reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, VenueSource, Window},
+	reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, VenueSource, Window},
 };
 
 const SURFACE: &str = "skool_dms";
@@ -666,7 +666,7 @@ impl Venue for Skool {
 	/// map covers far more of it and keys on the same user id, and the API turns an id into a handle.
 	/// The union of the two is what a roster can be here, and the warning says how much of the group
 	/// it reached.
-	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>> {
+	async fn members(&mut self, at: &VenueRef, into: &mut impl Roster) -> Result<()> {
 		let (mut roster, total) = self.listed(at).await?;
 		let pins = self.pins(at).await?;
 		info!("skool `{}`: {} on the member page, {} on the map, of {total}", at.slug, roster.len(), pins.len());
@@ -703,7 +703,7 @@ impl Venue for Skool {
 				roster.len()
 			);
 		}
-		Ok(roster.into_values().collect())
+		into.check_in(&roster.into_values().collect::<Vec<_>>(), None).map(|_| ())
 	}
 
 	/// The group feed, page by page, with every post's replies under it. `postTrees` is the same array
@@ -1189,6 +1189,13 @@ fn member(user: &serde_json::Value) -> Result<Member> {
 		lat: None,
 		lon: None,
 		zone: field(user, "timeZone", "time_zone").map(str::to_string),
+		place: None,
+		bio: user
+			.pointer("/metadata/bio")
+			.and_then(|v| v.as_str())
+			.map(str::trim)
+			.filter(|b| !b.is_empty())
+			.map(str::to_string),
 	})
 }
 

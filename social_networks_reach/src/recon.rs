@@ -7,10 +7,11 @@
 //!
 //! ```text
 //! recon venues  <platform>                            what this session can see
-//! recon members <platform>:<slug>                   → members.json
+//! recon members <platform>:<slug>                   → members.json, page by page, resumable
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
 //! recon find    skool:<slug> <term>                   the group's own member search
+//! recon facebook-login                                a window of the burner's chrome, for a human
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use colored::Colorize as _;
 use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::{
+	facebook::{self, FacebookConfig},
 	github::Github,
 	reach::{Venue, VenueRef, VenueSource, Window},
 	skool::{Skool, SkoolCredentials},
@@ -45,6 +47,9 @@ pub struct ReconConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub skool: Option<SkoolCredentials>,
+	#[settings(skip)]
+	#[serde(default)]
+	pub facebook: Option<FacebookConfig>,
 	/// Every venue transcript, shared by every purpose that procures from one
 	#[settings(skip)]
 	#[serde(default)]
@@ -64,7 +69,7 @@ struct Cli {
 enum Command {
 	/// List the venues this session can reach on a platform
 	Venues { platform: VenueSource },
-	/// Write `<platform>:<slug>`'s roster to `members.json`
+	/// Check `<platform>:<slug>`'s roster into `members.json`, resuming where the last walk stopped
 	Members {
 		#[arg(value_parser = venue_ref)]
 		at: VenueRef,
@@ -93,11 +98,14 @@ enum Command {
 		at: VenueRef,
 		term: String,
 	},
+	/// Wait, in a window of the chrome facebook groups and profiles are read on, for a human to log in
+	FacebookLogin,
 }
 impl Command {
 	fn platform(&self) -> VenueSource {
 		match self {
 			Self::Venues { platform } => *platform,
+			Self::FacebookLogin => VenueSource::Facebook,
 			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Find { at, .. } => at.platform,
 		}
 	}
@@ -127,6 +135,11 @@ fn main() -> Result<()> {
 /// One match over [`VenueSource`], so a platform that gains a venue stops the build here rather than
 /// falling through to an arm that reads nothing.
 async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
+	// a read of what is on disk, which no session is opened for
+	let command = match command {
+		Command::Roster { at, predicate, json } => return roster(dir, &at, predicate.as_deref(), json).await,
+		command => command,
+	};
 	match command.platform() {
 		VenueSource::Skool => {
 			let creds = config
@@ -151,6 +164,17 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 		}
 		VenueSource::Github => act(&mut Github::default(), dir, command).await,
 		VenueSource::Telegram => with_telegram(&config.telegram, async |client| act(&mut telegram_dms::Reach { client: &client }, dir, command).await).await,
+		VenueSource::Facebook => {
+			let config = config
+				.facebook
+				.as_ref()
+				.ok_or_else(|| eyre!("facebook is read through a logged-in chrome, so this needs a `facebook` section in the config"))?;
+			match command {
+				Command::FacebookLogin => facebook::login(config).await,
+				Command::Members { at } => facebook::with_session(config, &at, async |client| act(client, dir, Command::Members { at: at.clone() }).await).await,
+				_ => bail!("facebook is read for `members` only: `facebook:city/<page id>` or `facebook:group/<group id>`"),
+			}
+		}
 	}
 }
 
@@ -166,10 +190,9 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			}
 		}
 		Command::Members { at } => {
-			let members = client.members(&at).await?;
-			let store = Store::open(dir, &at)?;
-			store.put_roster(&members)?;
-			println!("   {} {} members → {}", "✓".green(), members.len(), store.dir().join("members.json").display());
+			let mut store = Store::open(dir, &at)?;
+			client.members(&at, &mut store).await?;
+			println!("   {} {} members → {}", "✓".green(), store.roster()?.len(), store.dir().join("members.json").display());
 		}
 		Command::Posts { at, since } => {
 			let mut store = Store::open(dir, &at)?;
@@ -181,22 +204,25 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			let landed = store.record(page)?;
 			println!("   {} +{landed} items → {}", "✓".green(), store.dir().display());
 		}
-		Command::Roster { at, predicate, json } => {
-			let store = Store::open(dir, &at)?;
-			let members = store.roster()?;
-			let chosen = match predicate {
-				None => members,
-				Some(predicate) => venue::select(&members, &store.lines(None)?, &venue::clause(&predicate)?).await?,
-			};
-			match json {
-				true => println!("{}", serde_json::to_string_pretty(&chosen)?),
-				false =>
-					for member in &chosen {
-						println!("{}\t{}\t{}", member.handle, member.display, member.joined.map(|t| t.to_string()).unwrap_or_default());
-					},
-			}
-		}
 		Command::Find { at, .. } => bail!("`{}` has no member search — skool is the only platform that answers one", at.platform.as_ref()),
+		Command::Roster { .. } | Command::FacebookLogin => unreachable!("answered in `run`, without this session"),
+	}
+	Ok(())
+}
+
+async fn roster(dir: &Path, at: &VenueRef, predicate: Option<&str>, json: bool) -> Result<()> {
+	let store = Store::open(dir, at)?;
+	let members = store.roster()?;
+	let chosen = match predicate {
+		None => members,
+		Some(predicate) => venue::select(&members, &store.lines(None)?, &venue::clause(predicate)?).await?,
+	};
+	match json {
+		true => println!("{}", serde_json::to_string_pretty(&chosen)?),
+		false =>
+			for member in &chosen {
+				println!("{}\t{}\t{}", member.handle, member.display, member.joined.map(|t| t.to_string()).unwrap_or_default());
+			},
 	}
 	Ok(())
 }

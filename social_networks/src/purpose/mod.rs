@@ -19,16 +19,17 @@ use grammers_client::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use jiff::Timestamp;
 use social_networks_adapters::{
+	facebook::{self, Facebook},
 	github::Github,
 	linkedin::Linkedin,
-	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Profiles, Source, VenueRef, Window},
+	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Place, Profiles, Source, VenueRef, Window},
 	skool::Skool,
 	telegram_dms::{self, TelegramConfig},
 };
 use social_networks_reach::{
 	history::{self, Cursor},
 	person::{self, Person, Value},
-	purpose::{Purpose, TagType},
+	purpose::{LIVES_IN, Purpose, TagType},
 	rank::{self, Ranked},
 	venue,
 };
@@ -399,7 +400,7 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 				}
 				Source::Skool => skool.direct(handle, Window::probe(), &assets).await,
 				// `has_history` is what put a source in the list
-				Source::Github | Source::Linkedin => unreachable!("{} holds no conversation", source.as_ref()),
+				Source::Github | Source::Linkedin | Source::Facebook => unreachable!("{} holds no conversation", source.as_ref()),
 			};
 			match page {
 				Ok(page) => exclude |= !page.items.is_empty(),
@@ -444,10 +445,20 @@ async fn pull(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Opt
 		}
 	}
 
-	if !people.iter().any(|p| p.handles.contains_key("telegram")) {
-		return pull_all(config, purpose, venues, people, None).await;
+	match people.iter().any(|p| p.handles.contains_key(Source::Telegram.as_ref())) {
+		false => with_facebook(config, purpose, venues, people, None).await,
+		true => with_telegram(&config.telegram, async |client| with_facebook(config, purpose, venues, people, Some(&client)).await).await,
 	}
-	with_telegram(&config.telegram, async |client| pull_all(config, purpose, venues, people, Some(&client)).await).await
+}
+
+/// The burner's chrome is started only when somebody has a facebook handle, and closed with the pull.
+/// Without a `facebook` section it is not started at all, and each facebook handle fails on its own.
+async fn with_facebook(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
+	match &config.facebook {
+		Some(fb) if people.iter().any(|p| p.handles.contains_key(Source::Facebook.as_ref())) =>
+			facebook::with_launched(fb, async |client| pull_all(config, purpose, venues, people, telegram, Some(client)).await).await,
+		_ => pull_all(config, purpose, venues, people, telegram, None).await,
+	}
 }
 
 /// The dialog prefetch inside `connect` takes long enough to look like a hang without the spinner.
@@ -469,9 +480,10 @@ struct Fetched {
 	/// Only from a source that [states it](Source::states_venues) — otherwise `None`, so that silence
 	/// cannot be folded in as "a member of nothing".
 	venues: Option<Vec<VenueRef>>,
+	lives_in: Option<Option<Place>>,
 }
 
-async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>) -> Result<()> {
+async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>, mut facebook: Option<&mut Facebook<'_, '_>>) -> Result<()> {
 	let dir = &purpose.path;
 	let llm_config = config.require_llm("purpose pull")?;
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
@@ -503,6 +515,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		// stays `None` unless a platform that states membership answered, so a skool read that failed
 		// leaves the last known membership standing rather than emptying it
 		let mut member_of: Option<Vec<String>> = None;
+		let mut lives_in: Option<Option<Place>> = None;
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
@@ -521,6 +534,10 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 				Source::Github => stated(&mut github, handle, source, &mut cursor).await,
 				Source::Linkedin => stated(&mut linkedin, handle, source, &mut cursor).await,
 				Source::Skool => converse(&mut skool, handle, source, &mut cursor, &assets).await,
+				Source::Facebook => match facebook.as_deref_mut() {
+					Some(client) => stated(client, handle, source, &mut cursor).await,
+					None => Err(eyre!("a facebook profile is visited from the launched chrome, so this needs a `facebook` section in the config")),
+				},
 			};
 			match result {
 				Ok(fetch) => {
@@ -529,6 +546,9 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 					fetched.extend(fetch.items);
 					if let Some(stated) = fetch.venues {
 						member_of.get_or_insert_default().extend(stated.iter().map(VenueRef::to_string));
+					}
+					if let Some(stated) = fetch.lives_in {
+						lives_in = Some(stated);
 					}
 				}
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
@@ -553,7 +573,23 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
 
-		let moved = person.set_venues(member_of);
+		// a visit outranks whatever placed them before it, a visit that found no city included
+		let placed_before = person.tags.get(LIVES_IN).cloned();
+		if purpose.tags.contains_key(LIVES_IN)
+			&& let Some(stated) = lives_in
+		{
+			match stated {
+				Some(place) => {
+					let value = Value::from(place);
+					purpose.check(LIVES_IN, Some(&value))?;
+					person.tags.insert(LIVES_IN.to_string(), Some(value));
+				}
+				None => {
+					person.tags.remove(LIVES_IN);
+				}
+			}
+		}
+		let moved = person.set_venues(member_of) | (person.tags.get(LIVES_IN) != placed_before.as_ref());
 		let owed = purpose.tags.iter().any(|(tag, kind)| kind.about().is_some() && !person.tags.contains_key(tag));
 		let record = match owed {
 			true => Some(record(&person_dir, venues, &person)?),
@@ -565,7 +601,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			if moved {
 				person.write(dir)?;
 				updated += 1;
-				pb.suspend(|| println!("   {} {name} venues changed{state}", "✓".green()));
+				pb.suspend(|| println!("   {} {name} venues or residence changed{state}", "✓".green()));
 			} else {
 				info!("{}: nothing new", person.name);
 				pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
@@ -641,6 +677,7 @@ async fn stated<C: Profiles>(client: &mut C, handle: &str, source: Source, curso
 		handles: profile.handles,
 		items: profile.activity.items,
 		venues: source.states_venues().then_some(profile.venues),
+		lives_in: profile.lives_in,
 	})
 }
 
@@ -669,6 +706,7 @@ async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, source: So
 		handles: profile.handles,
 		items: page.items,
 		venues: source.states_venues().then_some(profile.venues),
+		lives_in: profile.lives_in,
 	})
 }
 

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use social_networks_adapters::{email::EmailConfig, llm::LlmConfig, skool::SkoolCredentials, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig};
+use social_networks_adapters::{
+	email::EmailConfig, facebook::FacebookConfig, llm::LlmConfig, skool::SkoolCredentials, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
+};
 use social_networks_reach::purpose::Purposes;
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
 
@@ -33,6 +35,10 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub skool: Option<SkoolCredentials>,
+	/// `pull` visits a facebook handle from its launched session
+	#[settings(skip)]
+	#[serde(default)]
+	pub facebook: Option<FacebookConfig>,
 	/// Every venue transcript `recon` writes, shared by every purpose that procures from one
 	#[settings(skip)]
 	#[serde(default)]

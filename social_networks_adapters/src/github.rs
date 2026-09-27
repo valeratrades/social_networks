@@ -10,7 +10,7 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use jiff::Timestamp;
 use tracing::warn;
 
-use crate::reach::{Author, Item, Kind, Member, Page, Profile, Profiles, Source, Venue, VenueRef, Window};
+use crate::reach::{Author, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, Window};
 
 /// The feed only reaches back 300 events / 90 days no matter how it is paged, so one page is the
 /// whole of what a rare read could have recovered anyway.
@@ -123,13 +123,13 @@ impl Venue for Github {
 		Ok(Vec::new())
 	}
 
-	async fn members(&mut self, at: &VenueRef) -> Result<Vec<Member>> {
+	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()> {
 		let url = match at.slug.contains('/') {
 			true => format!("https://api.github.com/repos/{}/contributors?per_page={PAGE}", at.slug),
 			false => format!("https://api.github.com/orgs/{}/public_members?per_page={PAGE}", at.slug),
 		};
 		let people: Vec<serde_json::Value> = self.get(&url).await?;
-		people
+		let members = people
 			.iter()
 			.map(|person| {
 				let handle = person.get("login").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a github member without a login: {person}"))?;
@@ -142,9 +142,12 @@ impl Venue for Github {
 					lat: None,
 					lon: None,
 					zone: None,
+					place: None,
+					bio: None,
 				})
 			})
-			.collect()
+			.collect::<Result<Vec<_>>>()?;
+		roster.check_in(&members, None).map(|_| ())
 	}
 
 	async fn posts(&mut self, at: &VenueRef, window: Window, _assets: &Path) -> Result<Page> {
