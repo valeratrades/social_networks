@@ -95,7 +95,6 @@ struct Field {
 	link: Option<String>,
 }
 
-
 /// `l.facebook.com/l.php?u=<target>&h=<token>` → `<target>`; the token expires, the target does not.
 fn unwrap_redirect(url: &str) -> String {
 	let parsed = reqwest::Url::parse(url).expect("facebook links are absolute");

@@ -84,6 +84,7 @@ impl Drop for Query {
 #[cfg(test)]
 mod tests {
 	use std::path::Path;
+
 	use super::*;
 
 	fn read(dir: &Path, name: &str) -> toml::Table {

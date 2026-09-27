@@ -1,21 +1,126 @@
-//! Poll/info channel forwarding. It rides the `dms` telegram connection rather than holding its own:
-//! telegram answers a second concurrent connection on one auth key with `AUTH_KEY_DUPLICATED`.
+//! Poll/info channel forwarding, on a session of its own: telegram answers a second concurrent
+//! connection on one auth key with `AUTH_KEY_DUPLICATED`, so this is never the key `dms` holds.
 
+use std::convert::Infallible;
+
+use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
+use futures::future::{Either, select};
 use grammers_client::{Client, update::Update};
 use grammers_session::types::{PeerId, PeerRef};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
+use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
+use tokio::time::{self, Duration};
 use tracing::{debug, error, info};
 
-use crate::telegram_dms::{TelegramConfig, TelegramDestination};
+use crate::{
+	client::{AdapterError, Client as AdapterClient},
+	telegram_dms::{TelegramConfig, TelegramDestination, classify_invocation_auth, classify_telegram_auth_error},
+};
+
+const SURFACE: &str = "telegram_channel_watch";
+
+#[derive(Args)]
+pub struct TelegramArgs {}
+
+pub struct TelegramChannelWatch {
+	telegram_config: TelegramConfig,
+}
+
+impl TelegramChannelWatch {
+	pub fn new(telegram_config: TelegramConfig) -> Self {
+		Self { telegram_config }
+	}
+
+	/// One connect+listen cycle: `Ok(())` on a recoverable disconnect, `Err` on an auth-class failure.
+	async fn run_session(&self) -> Result<(), AdapterError> {
+		let auth = |e: &color_eyre::eyre::Report| classify_telegram_auth_error(e).map(|detail| AdapterError::Auth { surface: SURFACE, detail });
+		let TelegramConnection { client, updates, mut runner, .. } = match telegram_utils::connect(ConnectionConfig {
+			username: &self.telegram_config.username,
+			phone: &self.telegram_config.phone,
+			api_id: self.telegram_config.api_id,
+			api_hash: &self.telegram_config.api_hash,
+			session_suffix: "_channel_watch",
+			seed_from: None,
+		})
+		.await
+		{
+			Ok(c) => c,
+			Err(e) => {
+				if let Some(err) = auth(&e) {
+					return Err(err);
+				}
+				error!("Telegram connection error: {e:#}");
+				return Ok(());
+			}
+		};
+		info!("--Telegram Channel Watch-- connected and authorized");
+
+		let mut watch = match select(std::pin::pin!(ChannelWatch::resolve(&client, &self.telegram_config)), runner.as_mut()).await {
+			Either::Left((Ok(watch), _)) => watch,
+			Either::Left((Err(e), _)) => {
+				if let Some(err) = auth(&e) {
+					return Err(err);
+				}
+				error!("Telegram channel watch setup failed: {e:#}, reconnecting...");
+				return Ok(());
+			}
+			Either::Right(((), _)) => {
+				error!("MTProto runner exited unexpectedly, reconnecting...");
+				return Ok(());
+			}
+		};
+
+		let mut updates = Box::new(updates);
+		loop {
+			if telegram_utils::should_reconnect_for_stack() {
+				return Ok(());
+			}
+			let update = match select(std::pin::pin!(updates.next()), runner.as_mut()).await {
+				Either::Left((Ok(update), _)) => update,
+				Either::Left((Err(e), _)) => {
+					let s = format!("{e:#}");
+					if classify_invocation_auth(&s) {
+						return Err(AdapterError::Auth { surface: SURFACE, detail: s });
+					}
+					error!("Error getting next update: {s}, reconnecting...");
+					return Ok(());
+				}
+				Either::Right(((), _)) => {
+					error!("MTProto runner exited unexpectedly, reconnecting...");
+					return Ok(());
+				}
+			};
+			// forwarding is an RPC, which only a driven runner answers
+			if let Either::Right(((), _)) = select(std::pin::pin!(watch.handle(&client, &update)), runner.as_mut()).await {
+				error!("MTProto runner exited unexpectedly, reconnecting...");
+				return Ok(());
+			}
+		}
+	}
+}
+
+impl AdapterClient for TelegramChannelWatch {
+	fn surface(&self) -> &'static str {
+		SURFACE
+	}
+
+	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
+		loop {
+			self.run_session().await?;
+			error!("Telegram channel watch reconnecting in 30s...");
+			time::sleep(Duration::from_secs(30)).await;
+		}
+	}
+}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct StatusDrop {
 	status: String,
 }
 
-pub(crate) struct ChannelWatch {
+struct ChannelWatch {
 	poll: Vec<PeerId>,
 	info: Vec<PeerId>,
 	output: PeerRef,
@@ -25,7 +130,7 @@ pub(crate) struct ChannelWatch {
 
 impl ChannelWatch {
 	/// Every call here is an RPC: the caller drives the runner alongside it.
-	pub(crate) async fn resolve(client: &Client, config: &TelegramConfig) -> Result<Self> {
+	async fn resolve(client: &Client, config: &TelegramConfig) -> Result<Self> {
 		let status_file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file("telegram_status.json")?;
 		let status = match status_file.exists() {
 			true => serde_json::from_str::<StatusDrop>(&std::fs::read_to_string(&status_file)?)?.status,
@@ -69,7 +174,7 @@ impl ChannelWatch {
 	}
 
 	/// Forwarding and the profile status are RPCs: the caller drives the runner alongside this too.
-	pub(crate) async fn handle(&mut self, client: &Client, update: &Update) {
+	async fn handle(&mut self, client: &Client, update: &Update) {
 		if let Update::NewMessage(message) = update
 			&& !message.outgoing()
 		{

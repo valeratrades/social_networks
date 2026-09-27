@@ -24,7 +24,6 @@ use v_utils::macros::MyConfigPrimitives;
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
 	dm_event::DmEvent,
-	telegram_channel_watch::ChannelWatch,
 	reach::{Attachment, Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, VenueSource, Window},
 };
 
@@ -63,7 +62,7 @@ impl TelegramDms {
 			phone: &self.telegram_config.phone,
 			api_id: self.telegram_config.api_id,
 			api_hash: &self.telegram_config.api_hash,
-			session_suffix: "", // the one session this process holds; channel watching rides it (`telegram_channel_watch`)
+			session_suffix: "",
 			seed_from: None,
 		})
 		.await
@@ -90,24 +89,6 @@ impl TelegramDms {
 
 		info!("--Telegram DM Commands-- connected and authorized");
 		println!("Telegram DM Commands: Connected");
-
-		let resolved = match select(std::pin::pin!(ChannelWatch::resolve(&client, &self.telegram_config)), runner.as_mut()).await {
-			Either::Left((resolved, _)) => resolved,
-			Either::Right(((), _)) => {
-				error!("MTProto runner exited unexpectedly, reconnecting...");
-				return Ok(());
-			}
-		};
-		let mut watch = match resolved {
-			Ok(watch) => watch,
-			Err(e) => {
-				if let Some(detail) = classify_telegram_auth_error(&e) {
-					return Err(AdapterError::Auth { surface: SURFACE, detail });
-				}
-				error!("Telegram channel watch setup failed: {e:#}, reconnecting...");
-				return Ok(());
-			}
-		};
 
 		let mut updates = Box::new(updates);
 
@@ -150,10 +131,7 @@ impl TelegramDms {
 					// Resolving a caller costs an RPC, which the runner has to answer: awaiting the
 					// handler on its own hangs the adapter on the first incoming call, forever.
 					Ok(update) => {
-						let handle_fut = std::pin::pin!(async {
-							watch.handle(&client, &update).await;
-							self.handle_update(&client, &session, update).await;
-						});
+						let handle_fut = std::pin::pin!(self.handle_update(&client, &session, update));
 						if let Either::Right(((), _)) = select(handle_fut, runner.as_mut()).await {
 							error!("MTProto runner exited unexpectedly, reconnecting...");
 							return Ok(());

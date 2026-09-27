@@ -115,7 +115,6 @@ struct Listed {
 	bio: Option<String>,
 }
 
-
 fn member(edge: &Value) -> Option<(String, String, Listed)> {
 	let node = edge.get("node")?;
 	if node.get("__typename")?.as_str()? != "User" {

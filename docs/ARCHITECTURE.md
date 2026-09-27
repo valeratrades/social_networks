@@ -35,7 +35,7 @@ social_networks/
 │       ├── behaviour.rs                    # how a paced session spends its time: active hours, bursts, caps, dwell; a banded shuffle
 │       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends
 │       ├── telegram_dms.rs                 # MTProto DM monitoring; peers, dialogs, participants
-│       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering, over the dms connection
+│       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering, on its own session
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
@@ -197,7 +197,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Throttling**: monitored user notifications throttled to 15-minute intervals.
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
-- **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session file counts — gets `AUTH_KEY_DUPLICATED` on both ends. So one process holds the daemon's session (`dms`, channel forwarding included), and no key is shared with another host's process, e.g. the laptop's `tg`.
+- **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session file counts — gets `AUTH_KEY_DUPLICATED` on both ends. So each daemon logs in its own session (`dms` on `<user>.session`, `telegram-channel-watch` on `<user>_channel_watch.session`), and no key is shared with another host's process, e.g. the laptop's `tg`.
 - **Auth = exit**: an auth-class failure on any surface brings the process down non-zero. Nothing retries past it in-process; recovery is a human fixing creds and restarting.
 - **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, a purpose's `pull`), refused when empty.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.

@@ -92,8 +92,7 @@
         # The container is the isolation; chromium's own sandbox needs user
         # namespaces a pod does not get.
         chromium = pkgs.writeShellScriptBin "chromium" ''exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"'';
-        # One image, every daemon: which of them run, and so which subcommand each
-        # pod is given, is the deployment's decision (devops, tenant `personal`).
+        # One image, every daemon (`contract.daemons` below).
         containerStd = v_flakes.container.implement {
           inherit pkgs pname;
           containers."" = {
@@ -123,7 +122,10 @@
 
         packages = { default = bin; } // containerStd.packages;
 
-        containers = containerStd.containers;
+        # Every subcommand that runs forever. Which of them are deployed is the attacher's call.
+        containers = pkgs.lib.recursiveUpdate containerStd.containers {
+          ${pname}.contract.daemons = [ "dms" "email" "telegram-channel-watch" "twitter" "twitter-schedule" "youtube" ];
+        };
 
         devShells.default =
           with pkgs;
