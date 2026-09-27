@@ -81,6 +81,8 @@ pub fn stated(personal: &Section, work: &Section, education: &Section, contact: 
 	] {
 		profile.state(key, Some(&section.texts(kind)));
 	}
+	// facebook prints "September 25, 2002", and "September 25" when the year is hidden
+	profile.born = jiff::civil::Date::strptime("%B %d, %Y", personal.texts("birthday")).ok();
 	// an account is a link with the platform named under it; a website carries no such line
 	for field in &contact.fields {
 		let (Some(link), Some(platform)) = (&field.link, &field.subtitle) else { continue };

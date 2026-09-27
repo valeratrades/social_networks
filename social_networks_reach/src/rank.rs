@@ -126,15 +126,24 @@ fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {
 				})
 			})
 			.collect(),
-		Signal::Range { lo, hi } => tags()
-			.map(|v| {
-				v.map(|v| match v {
-					Value::Range { min, max } if min == max => f64::from(u8::from((lo..=hi).contains(&min))),
-					Value::Range { min, max } => (max.min(*hi) - min.max(*lo)).max(0.0) / (max - min),
-					v => mistyped(v),
+		Signal::Age { lo, hi } => {
+			let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
+			tags()
+				.map(|v| {
+					v.map(|v| match v {
+						Value::Birthday(birthday) => {
+							let (min, max) = birthday.ages(today);
+							let (min, max) = (f64::from(min), f64::from(max));
+							match min == max {
+								true => f64::from(u8::from((lo..=hi).contains(&&min))),
+								false => (max.min(*hi) - min.max(*lo)).max(0.0) / (max - min),
+							}
+						}
+						v => mistyped(v),
+					})
 				})
-			})
-			.collect(),
+				.collect()
+		}
 		Signal::Place(near) => tags()
 			.map(|v| {
 				v.map(|v| match v {

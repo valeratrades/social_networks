@@ -28,8 +28,8 @@ use social_networks_adapters::{
 };
 use social_networks_reach::{
 	history::{self, Cursor},
-	person::{self, Person, Value},
-	purpose::{LIVES_IN, Purpose, TagType},
+	person::{self, Birthday, Person, Value},
+	purpose::{BIRTHDAY, LIVES_IN, Purpose, TagType},
 	rank::{self, Ranked},
 	venue,
 };
@@ -481,6 +481,7 @@ struct Fetched {
 	/// cannot be folded in as "a member of nothing".
 	venues: Option<Vec<VenueRef>>,
 	lives_in: Option<Option<Place>>,
+	born: Option<jiff::civil::Date>,
 }
 
 async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>, mut facebook: Option<&mut Facebook<'_, '_>>) -> Result<()> {
@@ -516,6 +517,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		// leaves the last known membership standing rather than emptying it
 		let mut member_of: Option<Vec<String>> = None;
 		let mut lives_in: Option<Option<Place>> = None;
+		let mut born: Option<jiff::civil::Date> = None;
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
@@ -550,6 +552,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 					if let Some(stated) = fetch.lives_in {
 						lives_in = Some(stated);
 					}
+					born = born.or(fetch.born);
 				}
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
 				// the pull continues
@@ -573,8 +576,8 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
 
+		let facts_before = person.tags.clone();
 		// a visit outranks whatever placed them before it, a visit that found no city included
-		let placed_before = person.tags.get(LIVES_IN).cloned();
 		if purpose.tags.contains_key(LIVES_IN)
 			&& let Some(stated) = lives_in
 		{
@@ -589,7 +592,12 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 				}
 			}
 		}
-		let moved = person.set_venues(member_of) | (person.tags.get(LIVES_IN) != placed_before.as_ref());
+		if purpose.tags.contains_key(BIRTHDAY)
+			&& let Some(date) = born
+		{
+			person.weigh(BIRTHDAY, Some(Value::Birthday(Birthday::Exact(date))));
+		}
+		let moved = person.set_venues(member_of) | (person.tags != facts_before);
 		let owed = purpose.tags.iter().any(|(tag, kind)| kind.about().is_some() && !person.tags.contains_key(tag));
 		let record = match owed {
 			true => Some(record(&person_dir, venues, &person)?),
@@ -601,7 +609,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			if moved {
 				person.write(dir)?;
 				updated += 1;
-				pb.suspend(|| println!("   {} {name} venues or residence changed{state}", "✓".green()));
+				pb.suspend(|| println!("   {} {name} venues or facts changed{state}", "✓".green()));
 			} else {
 				info!("{}: nothing new", person.name);
 				pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
@@ -650,7 +658,9 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			)
 		});
 		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
-		person.tags.extend(extraction.tags);
+		for (tag, value) in extraction.tags {
+			person.weigh(&tag, value);
+		}
 		person.write(dir)?;
 		pb.inc(1);
 	}
@@ -678,6 +688,7 @@ async fn stated<C: Profiles>(client: &mut C, handle: &str, source: Source, curso
 		items: profile.activity.items,
 		venues: source.states_venues().then_some(profile.venues),
 		lives_in: profile.lives_in,
+		born: profile.born,
 	})
 }
 
@@ -707,6 +718,7 @@ async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, source: So
 		items: page.items,
 		venues: source.states_venues().then_some(profile.venues),
 		lives_in: profile.lives_in,
+		born: profile.born,
 	})
 }
 

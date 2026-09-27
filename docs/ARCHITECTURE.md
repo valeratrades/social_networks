@@ -202,7 +202,8 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
 - **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app. `procure` fetches nothing — it selects over what `recon` wrote.
 - **A purpose is checked whole at load**: no command holds a purpose whose ranking, procurement or people disagree with its vocabulary.
-- **A fact outranks its seed**: `lives_in` is a tag platforms state. `procure` seeds it from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
+- **A fact outranks its seed**: `lives_in` and `birthday` are tags platforms state. `procure` seeds `lives_in` from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
+- **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
   - no `Runtime.enable`, which is why the CDP client is hand-rolled rather than chromiumoxide's;
   - nothing is clicked: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch;

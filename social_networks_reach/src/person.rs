@@ -4,7 +4,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, WrapErr, bail};
-use jiff::Timestamp;
+use jiff::{Timestamp, civil::Date};
 use serde::Deserialize;
 use social_networks_adapters::reach::Place;
 
@@ -87,6 +87,18 @@ impl Person {
 		self.name.to_lowercase().contains(&pattern) || self.handles.values().any(|h| h.to_lowercase().contains(&pattern))
 	}
 
+	/// Puts `value` under `tag` unless what is there is better evidence: a birthday moves only to one
+	/// that [supersedes](Birthday::supersedes) it, and a judgement of nothing never erases one.
+	pub fn weigh(&mut self, tag: &str, value: Option<Value>) {
+		match (self.tags.get(tag), &value) {
+			(Some(Some(Value::Birthday(old))), Some(Value::Birthday(new))) if !new.supersedes(old) => {}
+			(Some(Some(Value::Birthday(_))), None) => {}
+			_ => {
+				self.tags.insert(tag.to_string(), value);
+			}
+		}
+	}
+
 	/// Existing handles win: what a human typed outranks what discord's connected accounts guessed.
 	pub fn absorb(&mut self, summary: String, new_log: Vec<LogEntry>, sources: BTreeMap<String, String>, handles: BTreeMap<String, String>) {
 		self.summary = summary;
@@ -148,12 +160,10 @@ pub enum Value {
 	Bool(bool),
 	Number(f64),
 	Timestamp(Timestamp),
-	/// A group's value. After [`Self::Timestamp`], which no bare word parses as.
+	/// After [`Self::Timestamp`], which no bare date parses as.
+	Birthday(Birthday),
+	/// A group's value. After [`Self::Timestamp`] and [`Self::Birthday`], which no bare word parses as.
 	Word(String),
-	Range {
-		min: f64,
-		max: f64,
-	},
 	Place {
 		name: String,
 		lat: f64,
@@ -167,8 +177,67 @@ impl Value {
 			Self::Number(n) => n.to_string(),
 			Self::Timestamp(at) => nix_dq(&at.to_string()),
 			Self::Word(word) => nix_dq(word),
-			Self::Range { min, max } => format!("{{ min = {min}; max = {max}; }}"),
+			Self::Birthday(Birthday::Exact(date)) => nix_dq(&date.to_string()),
+			Self::Birthday(Birthday::Rough { min, max, as_of }) => match as_of {
+				Some(at) => format!("{{ min = {min}; max = {max}; as_of = {}; }}", nix_dq(&at.to_string())),
+				None => format!("{{ min = {min}; max = {max}; }}"),
+			},
 			Self::Place { name, lat, lon } => format!("{{ name = {}; lat = {lat}; lon = {lon}; }}", nix_dq(name)),
+		}
+	}
+}
+
+/// When somebody was born, as precisely as anything has stated it. Stored rather than an age, so it
+/// never goes stale: the age is derived at rank time.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Birthday {
+	/// A platform states the date, year included.
+	Exact(Date),
+	/// Born in one of the years `min..=max` — `34` said in 2026 is `1991..=1992`. `as_of` is when it
+	/// was said; `None` is a text that carries no date of its own, a bio or a note.
+	Rough {
+		min: i16,
+		max: i16,
+		#[serde(default)]
+		as_of: Option<Date>,
+	},
+}
+impl Birthday {
+	/// The ages it puts them at on `today`, youngest first.
+	pub fn ages(&self, today: Date) -> (i16, i16) {
+		match self {
+			Self::Exact(born) => {
+				let age = born.until((jiff::Unit::Year, today)).expect("two civil dates are always a span apart").get_years();
+				(age, age)
+			}
+			Self::Rough { min, max, .. } => (today.year() - max - 1, today.year() - min),
+		}
+	}
+
+	/// An exact date outranks any rough one, and the latest exact date the one before it. Between two
+	/// rough ones the newer statement wins, or the one that narrows the old range; an undated one only
+	/// ever fills a gap.
+	pub fn supersedes(&self, old: &Self) -> bool {
+		match (self, old) {
+			(Self::Exact(_), _) => true,
+			(Self::Rough { .. }, Self::Exact(_)) => false,
+			(
+				Self::Rough { min, max, as_of },
+				Self::Rough {
+					min: old_min,
+					max: old_max,
+					as_of: old_as_of,
+				},
+			) => {
+				let newer = match (as_of, old_as_of) {
+					(Some(new), Some(old)) => new > old,
+					(Some(_), None) => true,
+					(None, _) => false,
+				};
+				let narrower = old_min <= min && max <= old_max && (min, max) != (old_min, old_max);
+				newer || narrower
+			}
 		}
 	}
 }
@@ -348,7 +417,7 @@ mod tests {
 			"Rust": { "type": "bool" },
 			"interest": { "type": "number", "min": -1, "max": 1 },
 			"judged": { "type": "number", "min": 0, "max": 1, "about": "left unjudged" },
-			"age": { "type": "range" },
+			"birthday": { "type": "birthday" }, "born": { "type": "birthday" },
 			"lives_in": { "type": "place" },
 			"last_login": { "type": "timestamp" },
 			"location": ["lyon", "paris"],
@@ -361,7 +430,15 @@ mod tests {
 				("Rust".to_string(), Some(Value::Bool(false))),
 				("interest".to_string(), Some(Value::Number(-0.25))),
 				("judged".to_string(), None),
-				("age".to_string(), Some(Value::Range { min: 25.0, max: 35.5 })),
+				(
+					"birthday".to_string(),
+					Some(Value::Birthday(Birthday::Rough {
+						min: 1990,
+						max: 1991,
+						as_of: Some("2026-03-04".parse().unwrap()),
+					})),
+				),
+				("born".to_string(), Some(Value::Birthday(Birthday::Exact("2002-09-25".parse().unwrap())))),
 				(
 					"lives_in".to_string(),
 					Some(Value::Place {
@@ -402,7 +479,7 @@ mod tests {
 		// what the vocabulary is for: the same file, against a config that never named the tag
 		assert!(load_one(&purpose(serde_json::json!({})), &person.path(&dir)).is_err());
 		// and against one that types it differently
-		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "judged": { "type": "number", "min": 0, "max": 1, "about": "x" }, "age": { "type": "range" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
+		assert!(load_one(&purpose(serde_json::json!({ "ServiceArb": { "type": "bool" }, "Rust": { "type": "bool" }, "interest": { "type": "number", "min": 0, "max": 1 }, "judged": { "type": "number", "min": 0, "max": 1, "about": "x" }, "birthday": { "type": "birthday" }, "born": { "type": "birthday" }, "lives_in": { "type": "place" }, "last_login": { "type": "timestamp" } })), &person.path(&dir)).is_err());
 		// and against one whose group lacks their value
 		let mut elsewhere = tags;
 		elsewhere["location"] = serde_json::json!(["paris", "berlin"]);

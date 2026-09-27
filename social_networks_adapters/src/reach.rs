@@ -199,6 +199,9 @@ pub struct Profile {
 	/// `None`: the platform says nothing about residence. `Some(None)`: asked, it states no current
 	/// city — which outranks a city anything else implied.
 	pub lives_in: Option<Option<Place>>,
+	/// A birth date the platform states with its year. Silence is not an answer here: a hidden year
+	/// says nothing about an age.
+	pub born: Option<jiff::civil::Date>,
 	pub activity: Page,
 }
 impl Profile {
