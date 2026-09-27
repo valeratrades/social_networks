@@ -2,7 +2,7 @@
 //!
 //! Provides structured concurrency patterns for grammers client usage.
 
-use std::{future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, io::IsTerminal as _, path::Path, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
 use futures::future::{Either, select};
@@ -146,6 +146,10 @@ pub fn log_stack(context: &str) {
 	crate::utils::log_stack_usage(context);
 }
 async fn authenticate(client: &Client, phone: &str, api_hash: &str, session_file: &Path) -> Result<()> {
+	// a daemon restarted by its supervisor would otherwise have a code sent to the phone on every restart
+	if !std::io::stdin().is_terminal() {
+		bail!("Sign in failed: {} is not authorized, and there is no terminal to type a login code into", session_file.display());
+	}
 	info!("Not authorized, requesting login code for {phone}");
 	let token = client.request_login_code(phone, api_hash).await?;
 	info!("Login code requested successfully, check your Telegram app");

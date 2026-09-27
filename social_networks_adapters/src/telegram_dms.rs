@@ -63,7 +63,7 @@ impl TelegramDms {
 			api_id: self.telegram_config.api_id,
 			api_hash: &self.telegram_config.api_hash,
 			session_suffix: "_dm",
-			seed_from: None,
+			seed_from: Some(""), // one auth key per host: telegram revokes a key used from two IPs at once, not two files
 		})
 		.await
 	}
