@@ -122,7 +122,7 @@ line counts — and any grammar of our own would converge on SQL, worse. `libsql
 dependency; `select` builds a few hundred rows in memory, runs the `WHERE`, and keeps nothing. A
 strategy's `where`, the flags and `--where` are ANDed into that same clause, so there is one
 evaluator. A clause is inline SQL or a path to a `.sql` file, told apart by asking the filesystem.
-Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `posts`, `first_post`, `last_post`.
+Columns: `handle`, `display`, `joined`, `lat`, `lon`, `zone`, `place`, `bio`, `posts`, `first_post`, `last_post`.
 
 Directory names are `<first>-<last>` off the display name, the handle when there is nothing else,
 and a numeric suffix on collision. `procure` prints what it wrote so one can be `git mv`'d — the
@@ -189,6 +189,13 @@ made: a person missing any of them is extracted on the next `pull` whether or no
 surfaced, off their year files and venue lines, which is how a tag added to the vocabulary reaches
 everybody already in it.
 
+A **fact** is a tag a platform states rather than anybody judging it; `lives_in` (a place) is the
+one there is. A purpose opts in by declaring a tag of that name, and a load refuses it declared as
+any other type. `procure` seeds it off a roster row that places somebody — a facebook City-filter
+hit counts as living there, as is, without a visit — and `pull` overwrites it with what a visit
+found, removing it when the visit found no current city. So the business location is a `near` rank
+term over it, and moving the business costs no visits.
+
 A **group** is declared as a list, `location = [ "lyon" "paris" ];`: one value per person out of
 it, lowercase `[a-z0-9_-]`, never judged by the extraction, and what a strategy can be generic over.
 
@@ -207,8 +214,8 @@ rolodex cold ServiceArb                  # a pattern matches a true bool tag who
 rolodex rank location:lyon               # and a `<group>:<value>` whole
 ```
 
-`handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin` and `skool` are what
-`pull` fetches; the rest are seeded from discord's connected accounts and skool's profile links, and
+`handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin`, `skool` and `facebook`
+are what `pull` fetches; the rest are seeded from discord's connected accounts and skool's profile links, and
 exist for a human to read. A handle that stops resolving takes only itself down — whatever its
 backfill already checked in stands, and the pull continues.
 
@@ -224,6 +231,11 @@ Skool contributes a bio, a location, a display name and the profile's outbound l
 source that never needs credentials: a `[skool]` section only adds the posts of groups it shares with
 them, and their absence reads as no activity rather than as a failure. Its groups are a different
 matter — those are `recon`'s, and they need both credentials and a membership.
+
+Facebook is visited from the burner's headless chrome, started for the pull only when somebody in it
+has a `facebook` handle: the About tab's current city (geocoded into `lives_in`), hometown, birthday,
+work and education, and contact links as handles. A profile visited within `revisit_days` is
+skipped, the way linkedin's is.
 
 `pull` uses its own telegram session file, seeded from the `dms` daemon's on first use: same
 authorization, no write contention with the daemon.
