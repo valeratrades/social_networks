@@ -14,7 +14,7 @@ config.nix
 ├─ venues = "/…/venues"                 shared: a venue feeds any purpose (`recon` writes here)
 └─ purposes.<name>
      ├─ path     folder whose children are person dirs
-     ├─ tags     { <name> = { type = bool | number{min;max} | range | place | timestamp; about?; };
+     ├─ tags     { <name> = { type = bool | number{min;max} | birthday | place | timestamp; about?; };
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      └─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
@@ -142,7 +142,7 @@ person dir ────────┤
 |---|---|---|
 | bool | — | 1 / 0 |
 | number | — | linear within its declared bounds |
-| range | `within = [lo hi]` | fraction of their range inside the target |
+| birthday | `within = [lo hi]` ages | fraction of the ages it allows today inside the target |
 | place | `near = {lat; lon; radius_km; halving_km}` | 1 inside the radius, `0.5^((d−r)/halving)` beyond it |
 | timestamp, `last_interaction` | `decay` | recency over the cohort |
 | `interactions` | — | ÷ cohort max |
@@ -189,9 +189,17 @@ made: a person missing any of them is extracted on the next `pull` whether or no
 surfaced, off their year files and venue lines, which is how a tag added to the vocabulary reaches
 everybody already in it.
 
-A **fact** is a tag a platform states rather than anybody judging it; `lives_in` (a place) is the
-one there is. A purpose opts in by declaring a tag of that name, and a load refuses it declared as
-any other type. `procure` seeds it off a roster row that places somebody — a facebook City-filter
+A **fact** is a tag a platform states rather than anybody judging it: `lives_in` (a place) and
+`birthday`. A purpose opts in by declaring a tag of that name, and a load refuses it declared as
+any other type.
+
+A `birthday` is kept rather than an age, so it never goes stale: the age a `within` term reads is
+derived at rank time. It is either a date a platform states (facebook's "September 25, 2002") or a
+range of birth years off an age somebody stated — `34` said on a day in 2026 is `1991..=1992`, and a
+single year is the range of one. With an `about`, the extraction proposes the newest statement it
+sees, with the day it was said. What is there moves only to better evidence: a date over any range
+and a later date over an earlier one; a newer statement, or a narrower range inside the old one, over
+a range; and an undated statement (a bio, a note) only ever fills a gap. `procure` seeds it off a roster row that places somebody — a facebook City-filter
 hit counts as living there, as is, without a visit — and `pull` overwrites it with what a visit
 found, removing it when the visit found no current city. So the business location is a `near` rank
 term over it, and moving the business costs no visits.
@@ -200,7 +208,7 @@ A **group** is declared as a list, `location = [ "lyon" "paris" ];`: one value p
 it, lowercase `[a-z0-9_-]`, never judged by the extraction, and what a strategy can be generic over.
 
 ```nix
-tags = { ServiceArb = true; interest = 0.7; age = { min = 25; max = 35; };
+tags = { ServiceArb = true; interest = 0.7; birthday = { min = 1990; max = 1991; as_of = "2026-03-04"; };
          lives_in = { name = "Lyon"; lat = 45.76; lon = 4.84; }; last_login = "2026-09-01T00:00:00Z";
          location = "lyon"; };
 ```
@@ -208,7 +216,7 @@ tags = { ServiceArb = true; interest = 0.7; age = { min = 25; max = 35; };
 ```
 rolodex tag                              # the vocabulary, its types, and how many people carry each
 rolodex tag ServiceArb <pattern>         # a bare name is a bool set to true; --rm takes a tag off
-purpose reviews tag age=25..35 <pattern> # otherwise `<name>=<value>`: 0.7, 25..35, Lyon@45.76,4.84, 2026-09-01
+purpose reviews tag birthday=1990 <pattern> # otherwise `<name>=<value>`: 0.7, 1988..1992 or 2002-09-25, Lyon@45.76,4.84, 2026-09-01
 rolodex tag location:lyon <pattern>      # a group is `<group>:<value>`
 rolodex cold ServiceArb                  # a pattern matches a true bool tag whole
 rolodex rank location:lyon               # and a `<group>:<value>` whole

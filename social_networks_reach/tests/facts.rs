@@ -54,3 +54,40 @@ fn a_roster_is_upserted_and_resumes_where_it_stopped() {
 	assert_eq!(social_networks_reach::venue::all(&dir).unwrap(), vec![at]);
 	std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A birthday moves only to better evidence: an exact date over anything, a newer statement or a
+/// narrower range over a rough one — never back to stale words in an undated note.
+#[test]
+fn a_birthday_moves_only_to_better_evidence() {
+	use social_networks_reach::person::{Birthday, Person, Value};
+	let rough = |min: i16, max: i16, as_of: Option<&str>| {
+		Some(Value::Birthday(Birthday::Rough {
+			min,
+			max,
+			as_of: as_of.map(|d| d.parse().unwrap()),
+		}))
+	};
+	let exact = |d: &str| Some(Value::Birthday(Birthday::Exact(d.parse().unwrap())));
+	let mut p = Person::skeleton("x");
+	let mut weigh = |value: Option<Value>| {
+		p.weigh("birthday", value);
+		p.tags["birthday"].clone()
+	};
+
+	assert_eq!(weigh(rough(1990, 1991, None)), rough(1990, 1991, None), "an undated note fills a gap");
+	assert_eq!(weigh(rough(1980, 1981, None)), rough(1990, 1991, None), "and never replaces anything");
+	assert_eq!(
+		weigh(rough(1989, 1990, Some("2025-01-01"))),
+		rough(1989, 1990, Some("2025-01-01")),
+		"a dated statement beats an undated one"
+	);
+	assert_eq!(weigh(rough(1985, 1986, Some("2020-01-01"))), rough(1989, 1990, Some("2025-01-01")), "an older one does not");
+	assert_eq!(
+		weigh(rough(1990, 1990, Some("2020-01-01"))),
+		rough(1990, 1990, Some("2020-01-01")),
+		"a narrower range inside it does"
+	);
+	assert_eq!(weigh(None), rough(1990, 1990, Some("2020-01-01")), "a judgement of nothing erases nothing");
+	assert_eq!(weigh(exact("1990-05-01")), exact("1990-05-01"), "a date beats any range");
+	assert_eq!(weigh(rough(1995, 1995, Some("2030-01-01"))), exact("1990-05-01"), "and no range beats a date");
+}

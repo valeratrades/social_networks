@@ -45,6 +45,7 @@ fn personal_details_keep_current_city_and_hometown_apart() {
 	assert_eq!(stated.sources["facebook:lives_in"], "Kasserine");
 	assert_eq!(stated.sources["facebook:hometown"], "Porto, Portugal");
 	assert_eq!(stated.sources["facebook:birthday"], "September 25, 2002");
+	assert_eq!(stated.born, Some(jiff::civil::date(2002, 9, 25)));
 	assert_eq!(
 		personal.present,
 		["directory_personal_details", "directory_education", "directory_contact_info", "directory_names"]

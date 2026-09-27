@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
 use color_eyre::eyre::{Result, WrapErr, bail};
-use jiff::tz::TimeZone;
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use serde::Deserialize;
 use social_networks_adapters::{
 	llm::LlmConfig,
 	reach::{Author, INITIAL_ITEMS, Item, Kind, Source},
 };
 use social_networks_reach::{
-	person::{LogEntry, Person, Value},
+	person::{Birthday, LogEntry, Person, Value},
 	purpose::{Purpose, TagType},
 };
 use strum::IntoEnumIterator as _;
@@ -57,7 +57,8 @@ impl<'a> Delta<'a> {
 pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
-	/// Every tag carrying an `about`, regenerated whole the way `summary` is. `None` is "nothing
+	/// Every tag carrying an `about`, regenerated whole the way `summary` is — a birthday aside, which
+	/// is a proposal [`Person::weigh`] takes only when it is better evidence. `None` is "nothing
 	/// supports a value", and is kept as such.
 	pub tags: BTreeMap<String, Option<Value>>,
 }
@@ -78,11 +79,23 @@ pub async fn extract(delta: &Delta<'_>, purpose: &Purpose, llm_config: &LlmConfi
 			tags.keys().cloned().collect::<Vec<_>>().join(", ")
 		);
 	}
-	for (tag, value) in &tags {
-		if let Some(value) = value {
-			purpose.check(tag, Some(value)).wrap_err("extraction returned a tag value of the wrong type")?;
-		}
-	}
+	let tags = tags
+		.into_iter()
+		.map(|(tag, raw)| {
+			let value = match raw {
+				None => None,
+				Some(raw) => Some(match asked[tag.as_str()].0 {
+					TagType::Birthday { .. } => serde_json::from_value::<Stated>(raw)?.birthday()?,
+					_ => serde_json::from_value::<Value>(raw)?,
+				}),
+			};
+			if let Some(value) = &value {
+				purpose.check(&tag, Some(value)).wrap_err("extraction returned a tag value of the wrong type")?;
+			}
+			Ok((tag, value))
+		})
+		.collect::<Result<_>>()
+		.wrap_err_with(|| format!("extraction returned tags of the wrong shape:\n{}", response.text))?;
 	Ok(Extraction { summary, new_log_entries, tags })
 }
 /// A handle stated in the conversation is a source nobody is looking for. What it finds is fetched
@@ -113,7 +126,31 @@ pub async fn discover_handles(delta: &Delta<'_>, llm_config: &LlmConfig) -> Resu
 struct Response {
 	summary: String,
 	new_log_entries: Vec<LogEntry>,
-	tags: Option<BTreeMap<String, Option<Value>>>,
+	tags: Option<BTreeMap<String, Option<serde_json::Value>>>,
+}
+
+/// A birthday as the extraction reports it: the age or the birth year somebody stated, and the day
+/// of the message that stated it — `null` for a platform text, which carries no date.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stated {
+	age: Option<i16>,
+	born: Option<i16>,
+	said_on: Option<Date>,
+}
+impl Stated {
+	fn birthday(self) -> Result<Value> {
+		let (min, max) = match (self.age, self.born) {
+			(Some(age), None) => {
+				// an undated text states their age as of when it is read
+				let year = self.said_on.unwrap_or_else(|| Timestamp::now().to_zoned(TimeZone::UTC).date()).year();
+				(year - age - 1, year - age)
+			}
+			(None, Some(born)) => (born, born),
+			_ => bail!("a stated birthday carries exactly one of `age` and `born`"),
+		};
+		Ok(Value::Birthday(Birthday::Rough { min, max, as_of: self.said_on }))
+	}
 }
 fn llm(llm_config: &LlmConfig) -> ask_llm::Client {
 	ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Fast).force_json()
@@ -206,7 +243,10 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 			"Also respond with `tags`: an object holding every tag listed under Tags below, each set to \
 			 its value as of everything you now know, or null when nothing supports one. Like the \
 			 summary, it is rewritten whole — carry a current value forward unless something \
-			 contradicts it, and never guess: a gap costs less than a wrong value.\n\n",
+			 contradicts it, and never guess: a gap costs less than a wrong value. A birthday is the \
+			 exception: it is never carried forward. Report only the newest statement of their age or \
+			 birth year that you see, with `said_on` the date of the message it is in, or null when it \
+			 is in a platform text; null when nothing states one.\n\n",
 		);
 	}
 
@@ -230,7 +270,7 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 			let shape = match kind {
 				TagType::Bool { .. } => "true or false".to_string(),
 				TagType::Number { min, max, .. } => format!("a number from {min} to {max}"),
-				TagType::Range { .. } => "{\"min\": number, \"max\": number}".to_string(),
+				TagType::Birthday { .. } => "{\"age\": number, \"said_on\": \"YYYY-MM-DD\" or null} or {\"born\": year, \"said_on\": …}".to_string(),
 				TagType::Place | TagType::Timestamp | TagType::Group(_) => unreachable!("a purpose refuses an `about` on a {kind} at load"),
 			};
 			let now = match delta.person.tags.get(*tag) {
@@ -238,7 +278,7 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 				Some(None) => "null".to_string(),
 				Some(Some(Value::Bool(b))) => b.to_string(),
 				Some(Some(Value::Number(n))) => n.to_string(),
-				Some(Some(Value::Range { min, max })) => format!("{{\"min\": {min}, \"max\": {max}}}"),
+				Some(Some(v @ Value::Birthday(_))) => v.nix(),
 				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_) | Value::Word(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
 			};
 			p.push_str(&format!("- `{tag}` ({shape}): {about}. Now: {now}\n"));

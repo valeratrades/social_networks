@@ -13,16 +13,20 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use social_networks_adapters::reach::VenueRef;
 
-use crate::{person::Value, venue};
+use crate::{
+	person::{Birthday, Value},
+	venue,
+};
 
 /// Signals every purpose has without declaring them, derived at rank time from the transcripts.
 const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
 /// Where a platform says somebody lives.
 pub const LIVES_IN: &str = "lives_in";
-/// Tags a platform states rather than anybody judging them: `procure` seeds them off a roster row,
-/// and `pull` overwrites them with what a visit found. A purpose opts into one by declaring a tag of
-/// that name, of that type.
-const FACTS: [(&str, TagType); 1] = [(LIVES_IN, TagType::Place)];
+/// When a platform says somebody was born, or what they said their age was.
+pub const BIRTHDAY: &str = "birthday";
+/// Tags a platform states rather than anybody judging them, which `pull` writes from what a platform
+/// answered. A purpose opts into one by declaring a tag of that name, of that type.
+const FACTS: [(&str, TagType); 2] = [(LIVES_IN, TagType::Place), (BIRTHDAY, TagType::Birthday { about: None })];
 
 /// `purposes` in the config, keyed by the name the CLI addresses a purpose by. Checked whole at load,
 /// so no command ever holds a purpose whose ranking or procurement names what its vocabulary does not.
@@ -128,7 +132,8 @@ impl Purpose {
 		match (kind, value) {
 			(TagType::Bool { .. }, Value::Bool(_)) | (TagType::Timestamp, Value::Timestamp(_)) => Ok(()),
 			(TagType::Number { min, max, .. }, Value::Number(n)) if (*min..=*max).contains(n) => Ok(()),
-			(TagType::Range { .. }, Value::Range { min, max }) if min.is_finite() && max.is_finite() && min <= max => Ok(()),
+			(TagType::Birthday { .. }, Value::Birthday(Birthday::Exact(_))) => Ok(()),
+			(TagType::Birthday { .. }, Value::Birthday(Birthday::Rough { min, max, .. })) if min <= max => Ok(()),
 			(TagType::Place, Value::Place { lat, lon, .. }) if (-90.0..=90.0).contains(lat) && (-180.0..=180.0).contains(lon) => Ok(()),
 			(TagType::Group(values), Value::Word(word)) if values.contains(word) => Ok(()),
 			(kind, value) => bail!("`{tag}` is {kind}, and `{}` is not one", value.nix()),
@@ -164,13 +169,13 @@ impl Purpose {
 		let signal = match (self.tags.get(&of), of.as_str()) {
 			(Some(TagType::Bool { .. }), _) => shape(&[]).map(|()| Signal::Bool)?,
 			(Some(TagType::Number { min, max, .. }), _) => shape(&[]).map(|()| Signal::Number { min: *min, max: *max })?,
-			(Some(TagType::Range { .. }), _) => {
+			(Some(TagType::Birthday { .. }), _) => {
 				shape(&["within"])?;
 				let [lo, hi] = within.expect("`shape` required it");
 				if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
-					bail!("rank term `{of}` has within = [{lo} {hi}], which is not a range");
+					bail!("rank term `{of}` has within = [{lo} {hi}], which is not a range of ages");
 				}
-				Signal::Range { lo, hi }
+				Signal::Age { lo, hi }
 			}
 			(Some(TagType::Place), _) => {
 				shape(&["near"])?;
@@ -272,8 +277,10 @@ pub enum TagType {
 	/// Bounded, so it normalises on its own rather than against the cohort.
 	#[display("a number in [{min}, {max}]")]
 	Number { min: f64, max: f64, about: Option<String> },
-	#[display("a range {{min; max}}")]
-	Range { about: Option<String> },
+	/// A date, or a range of years off a stated age. The extraction proposes the latter, and a
+	/// proposal lands only when it [supersedes](Birthday::supersedes) what is there.
+	#[display("a birthday: a date, or {{min; max; as_of}} years")]
+	Birthday { about: Option<String> },
 	#[display("a place {{name; lat; lon}}")]
 	Place,
 	#[display("a timestamp")]
@@ -285,25 +292,34 @@ pub enum TagType {
 impl TagType {
 	pub fn about(&self) -> Option<&str> {
 		match self {
-			Self::Bool { about } | Self::Number { about, .. } | Self::Range { about } => about.as_deref(),
+			Self::Bool { about } | Self::Number { about, .. } | Self::Birthday { about } => about.as_deref(),
 			Self::Place | Self::Timestamp | Self::Group(_) => None,
 		}
 	}
 
-	/// How a value is typed on the command line: `true`, `0.7`, `25..35`, `Lyon@45.76,4.84`, and a
-	/// timestamp or a bare date, and a group's value as itself.
+	/// How a value is typed on the command line: `true`, `0.7`, `Lyon@45.76,4.84`, a timestamp or a
+	/// bare date, a group's value as itself, and a birthday as a date, a year `1990` or years
+	/// `1988..1992` — a range typed today is as of today.
 	pub fn parse(&self, raw: &str) -> Result<Value> {
 		let number = |s: &str| s.trim().parse::<f64>().wrap_err_with(|| format!("`{s}` is not a number"));
 		Ok(match self {
 			Self::Bool { .. } => Value::Bool(raw.parse().wrap_err_with(|| format!("`{raw}` is not true or false"))?),
 			Self::Number { .. } => Value::Number(number(raw)?),
-			Self::Range { .. } => {
-				let (min, max) = raw.split_once("..").ok_or_else(|| eyre!("a range is `<min>..<max>`, got `{raw}`"))?;
-				Value::Range {
-					min: number(min)?,
-					max: number(max)?,
+			Self::Birthday { .. } => Value::Birthday(match raw.parse::<jiff::civil::Date>() {
+				Ok(date) => Birthday::Exact(date),
+				Err(_) => {
+					let year = |s: &str| s.trim().parse::<i16>().wrap_err_with(|| format!("`{s}` is not a year, and `{raw}` is no date"));
+					let (min, max) = match raw.split_once("..") {
+						Some((min, max)) => (year(min)?, year(max)?),
+						None => (year(raw)?, year(raw)?),
+					};
+					Birthday::Rough {
+						min,
+						max,
+						as_of: Some(Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()),
+					}
 				}
-			}
+			}),
 			Self::Place => {
 				let (name, at) = raw.rsplit_once('@').ok_or_else(|| eyre!("a place is `<name>@<lat>,<lon>`, got `{raw}`"))?;
 				let (lat, lon) = at.split_once(',').ok_or_else(|| eyre!("a place is `<name>@<lat>,<lon>`, got `{raw}`"))?;
@@ -456,8 +472,8 @@ pub(crate) enum Signal {
 		min: f64,
 		max: f64,
 	},
-	/// The fraction of their range inside `[lo, hi]`.
-	Range {
+	/// The fraction of the ages their birthday allows that falls inside `[lo, hi]`.
+	Age {
 		lo: f64,
 		hi: f64,
 	},
@@ -552,11 +568,11 @@ impl RawTyped {
 				}
 				TagType::Number { min, max, about }
 			}
-			"range" => TagType::Range { about },
+			"birthday" => TagType::Birthday { about },
 			"place" | "timestamp" if about.is_some() => bail!("tag `{tag}` is a {kind}, which the extraction cannot fill, so it takes no `about`"),
 			"place" => TagType::Place,
 			"timestamp" => TagType::Timestamp,
-			other => bail!("tag `{tag}` has type `{other}`; a type is one of bool, number, range, place, timestamp"),
+			other => bail!("tag `{tag}` has type `{other}`; a type is one of bool, number, birthday, place, timestamp"),
 		})
 	}
 }
