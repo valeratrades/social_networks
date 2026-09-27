@@ -91,7 +91,11 @@
         };
         # The container is the isolation; chromium's own sandbox needs user
         # namespaces a pod does not get.
-        chromium = pkgs.writeShellScriptBin "chromium" ''exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"'';
+        # Skia aborts the browser when fontconfig finds no fonts, and the image has none of its own.
+        chromium = pkgs.writeShellScriptBin "chromium" ''
+          export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
+          exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"
+        '';
         # One image, every daemon (`contract.daemons` below).
         containerStd = v_flakes.container.implement {
           inherit pkgs pname;

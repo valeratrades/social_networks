@@ -26,7 +26,7 @@ use std::{
 };
 
 use chromiumoxide::{Browser, BrowserConfig};
-use color_eyre::eyre::{Result, WrapErr, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail, ensure, eyre};
 use futures::{
 	StreamExt as _,
 	future::{Either, select},
@@ -105,6 +105,8 @@ pub struct Skool {
 	cookie: Option<String>,
 	creds: Option<SkoolConfig>,
 	behaviour: Option<Behaviour>,
+	/// A login that failed fails the same way on retry, and every retry is a chromium launch.
+	mint_failed: bool,
 }
 
 impl Skool {
@@ -130,6 +132,7 @@ impl Skool {
 			cookie,
 			creds,
 			behaviour,
+			mint_failed: false,
 		})
 	}
 
@@ -519,6 +522,8 @@ impl Skool {
 	#[instrument(skip_all)]
 	async fn refresh(&mut self) -> Result<()> {
 		let creds = self.creds.clone().expect("every caller checks for credentials before refreshing");
+		ensure!(!self.mint_failed, "a skool login already failed in this process");
+		self.mint_failed = true;
 		info!("minting a fresh skool cookie");
 		let config = BrowserConfig::builder().build().map_err(|e| eyre!("chromium config: {e}"))?;
 		let (browser, mut handler) = Browser::launch(config).await?;
@@ -535,6 +540,7 @@ impl Skool {
 		let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
 		file.write_all(serde_json::to_string(&Cached { cookie: cookies.clone() })?.as_bytes())?;
 		self.cookie = Some(cookies);
+		self.mint_failed = false;
 		Ok(())
 	}
 }
@@ -921,6 +927,12 @@ impl Client for SkoolDms {
 			match self.poll().await {
 				Ok(()) => self.failures = 0,
 				Err(e) => {
+					if self.session.mint_failed {
+						return Err(AdapterError::Auth {
+							surface: SURFACE,
+							detail: format!("{e:#}"),
+						});
+					}
 					self.failures += 1;
 					warn!("skool dms: poll {} of {POLL_FAILURES} failed: {e:#}", self.failures);
 					if self.failures >= POLL_FAILURES {
