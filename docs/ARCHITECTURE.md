@@ -32,6 +32,7 @@ social_networks/
 │       ├── lib.rs
 │       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`  — the daemon axis
 │       ├── reach.rs                        # `Profiles`/`Direct`/`Venue` + `Item`       — the on-demand axis
+│       ├── behaviour.rs                    # how a paced session spends its time: active hours, bursts, caps, dwell; a banded shuffle
 │       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends
 │       ├── telegram_dms.rs                 # MTProto DM monitoring; peers, dialogs, participants
 │       ├── telegram_channel_watch.rs       # Channel forwarding with keyword filtering
@@ -210,12 +211,14 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
   - `city` never launches a browser, and `group` and profile visits never use the user's;
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;
-  - pacing is per session, from logs that outlive a restart; a browser is opened per command and closed with it, Ctrl-C included.
+  - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
+  - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
+- **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.
 
 ## Cross-Cutting Concerns
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
-- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite, facebook's pacer logs, session drops and the burner's chrome profile under `facebook/{attached,launched}/`. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
+- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite, a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched}/` and `skool/`; facebook's session drops and the burner's chrome profile beside them; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.

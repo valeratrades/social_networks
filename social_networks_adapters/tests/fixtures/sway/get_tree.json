@@ -1,0 +1,23 @@
+{"id": 1, "type": "root", "name": "root", "pid": null, "floating_nodes": [], "nodes": [
+  {"id": 2147483647, "type": "output", "name": "__i3", "floating_nodes": [], "nodes": [
+    {"id": 2147483646, "type": "workspace", "name": "__i3_scratch", "nodes": [], "floating_nodes": [
+      {"id": 26, "type": "floating_con", "name": "~/s", "pid": 806399, "app_id": "Alacritty", "nodes": [], "floating_nodes": []}
+    ]}
+  ]},
+  {"id": 4, "type": "output", "name": "DP-1", "floating_nodes": [], "nodes": [
+    {"id": 8, "type": "workspace", "name": "1", "floating_nodes": [], "nodes": [
+      {"id": 9, "type": "con", "name": "Inbox - Mail - Google Chrome", "pid": 5964, "app_id": "google-chrome", "nodes": [], "floating_nodes": []}
+    ]},
+    {"id": 20, "type": "workspace", "name": "3", "floating_nodes": [], "nodes": [
+      {"id": 22, "type": "con", "name": null, "pid": null, "layout": "splitv", "floating_nodes": [], "nodes": [
+        {"id": 21, "type": "con", "name": "(20+) Facebook - Google Chrome", "pid": 5941, "app_id": "google-chrome", "nodes": [], "floating_nodes": []},
+        {"id": 23, "type": "con", "name": "(20+) Facebook is not a prefix here", "pid": 5942, "app_id": "Alacritty", "nodes": [], "floating_nodes": []}
+      ]}
+    ]}
+  ]},
+  {"id": 3, "type": "output", "name": "eDP-1", "floating_nodes": [], "nodes": [
+    {"id": 19, "type": "workspace", "name": "4", "nodes": [], "floating_nodes": [
+      {"id": 31, "type": "floating_con", "name": "Inbox - Mail - Mozilla Firefox", "pid": 508415, "app_id": "firefox", "nodes": [], "floating_nodes": []}
+    ]}
+  ]}
+]}

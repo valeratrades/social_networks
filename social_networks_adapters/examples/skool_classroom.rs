@@ -8,16 +8,21 @@
 use color_eyre::eyre::{Result, eyre};
 use social_networks_adapters::{
 	reach::{VenueRef, VenueSource},
-	skool::{Skool, SkoolCredentials},
+	skool::{Skool, SkoolConfig},
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
 	tracing_subscriber::fmt().with_env_filter("info").init();
 	let group = std::env::args().nth(1).ok_or_else(|| eyre!("usage: skool_classroom <group>"))?;
-	let creds = SkoolCredentials {
+	let creds = SkoolConfig {
 		email: std::env::var("SKOOL_EMAIL")?,
 		password: std::env::var("SKOOL_PASSWORD")?,
+		behaviour: Some(serde_json::from_value(serde_json::json!({
+			"active_hours": [0, 24], "burst_min": 1e6, "break_min": 1, "noise_share": 0,
+			"load": { "per_hour": 600, "per_day": 5000, "dwell_secs": 0.7, "spread": 0.3 },
+			"scroll": { "per_hour": 1, "per_day": 1, "dwell_secs": 1, "spread": 0, "read_secs_per_item": 0 },
+		}))?),
 	};
 	let mut session = Skool::try_new(Some(creds))?;
 

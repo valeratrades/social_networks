@@ -7,15 +7,16 @@
 use color_eyre::eyre::Result;
 use social_networks_adapters::{
 	Client, DmEvent,
-	skool::{SkoolCredentials, SkoolDms},
+	skool::{SkoolConfig, SkoolDms},
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
 	tracing_subscriber::fmt().with_env_filter("info").init();
-	let creds = SkoolCredentials {
+	let creds = SkoolConfig {
 		email: std::env::var("SKOOL_EMAIL")?,
 		password: std::env::var("SKOOL_PASSWORD")?,
+		behaviour: None,
 	};
 	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 	let mut dms = SkoolDms::try_new(creds, tx)?;

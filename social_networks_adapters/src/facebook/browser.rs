@@ -36,12 +36,13 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
+	io::{AsyncBufReadExt as _, BufReader},
 	net::TcpStream,
 	sync::{mpsc, oneshot},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
-use super::sway::Parked;
+use super::sway::{self, Window};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -54,8 +55,8 @@ pub(super) struct Tab<'a> {
 	headless: bool,
 	/// `sessions.toml` of the account
 	drops: PathBuf,
-	/// where the window went when it was found hidden
-	parked: &'a Mutex<Option<Parked>>,
+	/// the attached window, once a wheel went unacked because nobody could see it
+	window: &'a Mutex<Option<Window>>,
 }
 impl Tab<'_> {
 	async fn call<C: Command>(&self, cmd: C) -> Result<C::Response> {
@@ -180,10 +181,27 @@ impl Tab<'_> {
 		self.eval(r#"[...document.querySelectorAll('script[type="application/json"]')].map(s => s.textContent)"#).await
 	}
 
-	/// Wheel-scrolls once, then feeds each `/api/graphql/` answer to `absorb` until it reports progress
-	/// or 10 s pass; whether it did.
+	/// One wheel gesture, then feeds each `/api/graphql/` answer to `absorb` until it reports progress
+	/// or 10 s pass; whether it did. A gesture is a few notches from one spot in the middle third of
+	/// the viewport, and now and then a notch or two back up.
 	pub(super) async fn scroll(&mut self, mut absorb: impl FnMut(&str) -> Result<bool>) -> Result<bool> {
-		self.wheel(rand::random_range(1500.0..3000.0)).await?;
+		let (w, h): (f64, f64) = self.eval("[innerWidth, innerHeight]").await?;
+		let at = (w * rand::random_range(1. / 3. ..2. / 3.), h * rand::random_range(1. / 3. ..2. / 3.));
+		let down = rand::random_range(3..=8);
+		let up = match rand::random_ratio(1, 15) {
+			true => rand::random_range(1..=2),
+			false => 0,
+		};
+		for tick in 0..down + up {
+			if tick > 0 {
+				tokio::time::sleep(Duration::from_millis(rand::random_range(8..=40))).await;
+			}
+			let notch = rand::random_range(100.0..=120.0);
+			self.wheel(at, if tick < down { notch } else { -notch }).await?;
+		}
+		if let Some(login) = &mut self.login {
+			login.scrolls += 1;
+		}
 		let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 		let mut graphql = HashSet::new();
 		while let Ok(e) = tokio::time::timeout_at(deadline, self.events.recv()).await {
@@ -205,10 +223,10 @@ impl Tab<'_> {
 		Ok(false)
 	}
 
-	/// A real wheel event at the centre of the viewport: `window.scrollTo` does not trigger facebook's pagination.
-	async fn wheel(&mut self, delta_y: f64) -> Result<()> {
-		let (w, h): (f64, f64) = self.eval("[innerWidth, innerHeight]").await?;
-		let mut params = input::DispatchMouseEventParams::new(input::DispatchMouseEventType::MouseWheel, w / 2., h / 2.);
+	/// A real wheel event: `window.scrollTo` does not trigger facebook's pagination. Unacked, the window
+	/// is taken to be hidden and parked where it renders.
+	async fn wheel(&mut self, (x, y): (f64, f64), delta_y: f64) -> Result<()> {
+		let mut params = input::DispatchMouseEventParams::new(input::DispatchMouseEventType::MouseWheel, x, y);
 		params.delta_x = Some(0.);
 		params.delta_y = Some(delta_y);
 		{
@@ -217,20 +235,21 @@ impl Tab<'_> {
 				Ok(r) => r?,
 				Err(_) if self.headless => bail!("headless chrome did not ack a wheel event in 10s"),
 				Err(_) => {
-					ensure!(
-						self.parked.lock().expect("never held across a panic").is_none(),
-						"chrome did not ack a wheel event in 10s with its window on a headless output"
-					);
 					let title: String = self.eval("document.title").await?;
-					*self.parked.lock().expect("never held across a panic") = Some(Parked::park(&title)?);
+					{
+						let mut window = self.window.lock().expect("never held across a panic");
+						let window = match &mut *window {
+							Some(w) => w,
+							None => window.insert(Window::find(&title)?),
+						};
+						ensure!(!window.parked(), "chrome did not ack a wheel event in 10s with its window on a headless output");
+						window.park()?;
+					}
 					tokio::time::timeout(Duration::from_secs(10), &mut ack)
 						.await
 						.wrap_err("chrome did not ack a wheel event in 10s after its window moved to a headless output")??
 				}
 			};
-		}
-		if let Some(login) = &mut self.login {
-			login.scrolls += 1;
 		}
 		Ok(())
 	}
@@ -304,7 +323,7 @@ async fn run<T>(ws: Ws, headless: bool, close: bool, drops: &Path, target: impl 
 	};
 	let (tx, rx) = mpsc::unbounded_channel();
 	let driver = pin!(cdp.drive(stream, tx));
-	let parked = Mutex::new(None);
+	let window = Mutex::new(None);
 	let run = pin!(async {
 		let mut tab = Tab {
 			cdp: &cdp,
@@ -313,7 +332,7 @@ async fn run<T>(ws: Ws, headless: bool, close: bool, drops: &Path, target: impl 
 			login: None,
 			headless,
 			drops: drops.to_path_buf(),
-			parked: &parked,
+			window: &window,
 		};
 		tab.call(page::EnableParams::default()).await?;
 		tab.call(network::EnableParams::default()).await?;
@@ -330,7 +349,26 @@ async fn run<T>(ws: Ws, headless: bool, close: bool, drops: &Path, target: impl 
 		tokio::signal::ctrl_c().await?;
 		bail!("interrupted")
 	});
-	let run = pin!(async { select(run, interrupted).await.factor_first().0 });
+	// the window follows the user home; nobody sees a headless chrome, so there is nothing to follow
+	let follow = pin!(async {
+		if headless {
+			return std::future::pending().await;
+		}
+		let mut sway = sway::subscribe()?;
+		let mut events = BufReader::new(sway.stdout.take().expect("piped")).lines();
+		while let Some(line) = events.next_line().await? {
+			if let Some(w) = window.lock().expect("never held across a panic").as_mut() {
+				w.event(&line)?;
+			}
+		}
+		bail!("sway's event stream ended")
+	});
+	let run = pin!(async {
+		match select(select(run, interrupted), follow).await {
+			Either::Left((r, _)) => r.factor_first().0,
+			Either::Right((e, _)) => e,
+		}
+	});
 	let (r, driver) = match select(run, driver).await {
 		Either::Left(done) => done,
 		Either::Right((r, _)) => {
@@ -338,9 +376,9 @@ async fn run<T>(ws: Ws, headless: bool, close: bool, drops: &Path, target: impl 
 			bail!("chrome closed the CDP connection mid-run");
 		}
 	};
-	let parked = parked.lock().expect("never held across a panic").take();
-	if let Some(p) = parked {
-		p.restore()?;
+	let window = window.lock().expect("never held across a panic").take();
+	if let Some(mut w) = window {
+		w.home()?;
 	}
 	if close {
 		// the answer to `Browser.close` races the connection closing, so either ends it

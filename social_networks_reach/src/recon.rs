@@ -24,7 +24,7 @@ use social_networks_adapters::{
 	facebook::{self, FacebookConfig},
 	github::Github,
 	reach::{Venue, VenueRef, VenueSource, Window},
-	skool::{Skool, SkoolCredentials},
+	skool::{Skool, SkoolConfig},
 	telegram_dms::{self, TelegramConfig},
 };
 use social_networks_reach::{
@@ -46,7 +46,7 @@ pub struct ReconConfig {
 	pub telegram: TelegramConfig,
 	#[settings(skip)]
 	#[serde(default)]
-	pub skool: Option<SkoolCredentials>,
+	pub skool: Option<SkoolConfig>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub facebook: Option<FacebookConfig>,

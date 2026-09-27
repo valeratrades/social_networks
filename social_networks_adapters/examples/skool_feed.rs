@@ -5,15 +5,16 @@
 //! opens the newest post and dumps the shape of whatever hangs under it.
 
 use color_eyre::eyre::{Result, eyre};
-use social_networks_adapters::skool::{Skool, SkoolCredentials};
+use social_networks_adapters::skool::{Skool, SkoolConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
 	tracing_subscriber::fmt().with_env_filter("info").init();
 	let group = std::env::args().nth(1).ok_or_else(|| eyre!("usage: skool_feed <group>"))?;
-	let creds = SkoolCredentials {
+	let creds = SkoolConfig {
 		email: std::env::var("SKOOL_EMAIL")?,
 		password: std::env::var("SKOOL_PASSWORD")?,
+		behaviour: None,
 	};
 	let mut session = Skool::try_new(Some(creds))?;
 
