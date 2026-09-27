@@ -198,7 +198,7 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			let mut store = Store::open(dir, &at)?;
 			let window = match since {
 				Some(tf) => Window::since(Timestamp::now() - SignedDuration::try_from(tf.duration()).wrap_err("a --since is milliseconds")?),
-				None => Window::above(store.cursor().map(str::to_string)),
+				None => Window::above(store.newest().map(str::to_string)),
 			};
 			let page = client.posts(&at, window, &store.dir().join("assets")).await?;
 			let landed = store.record(page)?;
