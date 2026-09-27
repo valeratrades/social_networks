@@ -24,7 +24,7 @@ social_networks/
 │       ├── main.rs                         # CLI entry, command dispatch
 │       ├── config.rs                       # root config + LiveSettings
 │       ├── dms.rs                          # notification rules over the DM event stream
-│       ├── health.rs                       # service/config/disk health checks
+│       ├── health.rs                       # config/disk checks, hand-run
 │       └── purpose/                        # the commands over a purpose; `rolodex` is `purpose rolodex`
 │
 ├── social_networks_adapters/               # how to talk to a platform
@@ -104,7 +104,7 @@ pub trait Client {
 }
 ```
 
-`listen` runs forever in the happy path and only returns on an error class the adapter does not know how to recover from in-process. Recoverable errors (network blips, transient HTTP, known retriable RPC codes) are handled internally with backoff. Anything that escapes is treated as terminal: the binary calls `alert()` (shells out to `v_notify`) and exits non-zero.
+`listen` runs forever in the happy path and only returns on an error class the adapter does not know how to recover from in-process. Recoverable errors (network blips, transient HTTP, known retriable RPC codes) are handled internally with backoff. Anything that escapes is treated as terminal: the binary calls `alert()` and exits non-zero.
 
 `AdapterError` has two variants:
 - `Auth { surface, detail }` — credentials are no longer valid. Retrying cannot help.
@@ -132,7 +132,7 @@ YouTube ──┤                              │
 Gmail ────┘                              └── Output Channel (polls, videos, emails)
 
 When an adapter's `listen()` returns an error:
-  AdapterError ──► v_notify (high-importance Telegram alert) ──► process exits non-zero
+  AdapterError ──► error! (+ OTLP flush) ──► process exits non-zero ──► pod crashloop ──► tenant-health alert
 ```
 
 The email daemon is the one daemon that writes back: a thread its account's `scripts` key opened is
@@ -185,7 +185,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Throttling**: monitored user notifications throttled to 15-minute intervals.
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
-- **Auth = exit**: an auth-class failure on any surface alerts via `v_notify` and brings the process down.
+- **Auth = exit**: an auth-class failure on any surface brings the process down non-zero. Nothing retries past it in-process; recovery is a human fixing creds and restarting.
 - **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, a purpose's `pull`), refused when empty.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
@@ -195,7 +195,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 ## Cross-Cutting Concerns
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
-- **Out-of-band alerting**: `v_notify` (`alert()` in `client.rs`) is the meta channel — used when surfaces themselves die.
+- **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
 - **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
-- **Systemd deployment**: each command runs as an independent systemd user service.
+- **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.

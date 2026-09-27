@@ -33,7 +33,7 @@ enum Commands {
 	Dms(DmsArgs),
 	/// Email operations
 	Email(EmailArgs),
-	/// Show health status of all services, config, and directories
+	/// Show health of config and directories
 	Health,
 	/// Run database migrations
 	MigrateDb,
@@ -73,7 +73,6 @@ fn main() {
 			runtime.block_on(async { Database::try_new().await.map(|_| ()) })
 		}
 		Commands::Dms(_) => run_async("dms", || async {
-			v_utils::clientside!(Some("dms"));
 			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 			let notifier = TelegramNotifier::new(config.telegram.clone());
 			let on = |s: DmSource| config.dms.sources.contains(&s);
@@ -115,7 +114,6 @@ fn main() {
 		Commands::Email(args) => {
 			let llm_config = exit_on_error(config.require_llm("email"));
 			run_async("email", || async {
-				v_utils::clientside!(Some("email"));
 				if config.email.is_empty() {
 					return Err(adapter_from_eyre("email", color_eyre::eyre::eyre!("no `email` accounts in config file")));
 				}
@@ -137,30 +135,21 @@ fn main() {
 				Err::<(), AdapterError>(err)
 			})
 		}
-		Commands::Purpose { name, command } => run_async("purpose", || async {
-			v_utils::clientside!(Some("purpose"));
-			purpose::main(&name, command, config).await
-		}),
-		Commands::Rolodex { command } => run_async("purpose", || async {
-			v_utils::clientside!(Some("purpose"));
-			purpose::main("rolodex", command, config).await
-		}),
+		Commands::Purpose { name, command } => run_async("purpose", || async { purpose::main(&name, command, config).await }),
+		Commands::Rolodex { command } => run_async("purpose", || async { purpose::main("rolodex", command, config).await }),
 		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
-			v_utils::clientside!(Some("telegram_channel_watch"));
 			let mut adapter = TelegramChannelWatch::new(config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::Twitter(_) => run_async("twitter", || async {
-			v_utils::clientside!(Some("twitter"));
 			let mut adapter = TwitterMonitor::new(config.twitter, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::TwitterSchedule(args) => run_async("twitter_schedule", || async {
-			v_utils::clientside!(Some("twitter_schedule"));
 			let mut adapter = TwitterSchedule::new(config.twitter, args.skip_first);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
@@ -169,7 +158,6 @@ fn main() {
 		Commands::Youtube(_) => {
 			let llm_config = exit_on_error(config.require_llm("youtube"));
 			run_async("youtube", || async {
-				v_utils::clientside!(Some("youtube"));
 				let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram, llm_config);
 				let err = adapter.listen().await.unwrap_err();
 				alert(&err).await;
@@ -188,7 +176,8 @@ where
 	F: FnOnce() -> Fut,
 	Fut: std::future::Future<Output = Result<T, E>>,
 	E: Into<color_eyre::eyre::Report>, {
-	install_panic_alert(surface);
+	v_utils::clientside!(Some(surface));
+	install_panic_alert(surface); // after `clientside!`: color_eyre replaces the hook rather than chaining it
 	let runtime = tokio::runtime::Builder::new_multi_thread()
 		.enable_all()
 		.thread_stack_size(8 * 1024 * 1024)

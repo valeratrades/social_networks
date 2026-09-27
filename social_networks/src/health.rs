@@ -6,54 +6,14 @@ use colored::Colorize;
 use crate::config::AppConfig;
 
 const SIZE_THRESHOLD_GB: f64 = 10.0;
-/// All services: (subcommand, display_name)
-const SERVICES: &[(&str, &str)] = &[
-	("dms", "DMs (Discord + Telegram)"),
-	("email", "Email"),
-	("telegram-channel-watch", "Telegram Channel Watch"),
-	("twitter", "Twitter Monitor"),
-	("twitter-schedule", "Twitter Schedule"),
-	("youtube", "YouTube Monitor"),
-];
 pub fn main(config: AppConfig) -> Result<()> {
 	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
 
-	check_services();
 	check_env_vars(&config);
 	check_directories(&config);
 
 	println!();
 	Ok(())
-}
-
-/// Checks if a process with binary ending in `social_networks` and the given subcommand is running.
-/// Scans /proc to work regardless of how the process was launched (cargo run, installed binary, systemd).
-fn is_service_running(subcommand: &str) -> bool {
-	let Ok(entries) = std::fs::read_dir("/proc") else {
-		return false;
-	};
-	let my_pid = std::process::id().to_string();
-	for entry in entries.flatten() {
-		let pid = entry.file_name();
-		let pid_str = pid.to_string_lossy();
-		if !pid_str.chars().all(|c| c.is_ascii_digit()) || pid_str == my_pid {
-			continue;
-		}
-		let cmdline_path = entry.path().join("cmdline");
-		let Ok(cmdline) = std::fs::read(&cmdline_path) else {
-			continue;
-		};
-		let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
-		if args.len() < 2 {
-			continue;
-		}
-		let binary = String::from_utf8_lossy(args[0]);
-		let arg1 = String::from_utf8_lossy(args[1]);
-		if binary.ends_with("social_networks") && arg1 == subcommand {
-			return true;
-		}
-	}
-	false
 }
 
 /// Gets the directory size in bytes
@@ -94,14 +54,6 @@ fn bytes_to_human(bytes: u64) -> String {
 
 fn status_icon(ok: bool) -> colored::ColoredString {
 	if ok { "✓".green() } else { "✗".red() }
-}
-
-fn check_services() {
-	println!("{}", "Services:".bold());
-	for (service_name, display_name) in SERVICES {
-		let running = is_service_running(service_name);
-		println!("  {} {}", status_icon(running), display_name);
-	}
 }
 
 /// Required environment variables for various features
@@ -183,9 +135,6 @@ fn check_directories(config: &AppConfig) {
 			check_directory_size(path, &format!("{}", path.display()));
 		}
 	}
-
-	// journald logs for our services
-	check_journald_size();
 }
 
 fn check_directory_size(path: &PathBuf, name: &str) {
@@ -202,23 +151,6 @@ fn check_directory_size(path: &PathBuf, name: &str) {
 		}
 		Err(_) => {
 			println!("  {} {} (unable to read)", status_icon(true), name);
-		}
-	}
-}
-
-fn check_journald_size() {
-	// Check total journald disk usage for our services
-	let output = std::process::Command::new("journalctl").args(["--disk-usage"]).output();
-
-	if let Ok(output) = output
-		&& output.status.success()
-	{
-		let stdout = String::from_utf8_lossy(&output.stdout);
-		// Parse "Archived and active journals take up X on disk."
-		if let Some(size_part) = stdout.split("take up ").nth(1)
-			&& let Some(size_str) = size_part.split(" on disk").next()
-		{
-			println!("  {} journald total ({})", status_icon(true), size_str.trim());
 		}
 	}
 }
