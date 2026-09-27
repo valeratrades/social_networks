@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Config: `behaviour` replaces facebook's `views_per_hour`, `scrolls_per_hour` and `pause_secs`.** `facebook.{attached,launched}.behaviour` and `skool.behaviour` state active hours, burst and break lengths, a noise share, and per-action caps (hour and day) and log-normal dwell. A skool group sweep refuses to run without `skool.behaviour`; the daemon, which only polls chat, needs none. The city walk shuffles first names within bands of 50, keeps a record per query under `facebook/attached/searched/`, and the attached window follows you to its workspace instead of staying parked until the run ends.
+
 - **`recon classroom` reads a lesson off the lesson's own page.** Skool serves a lesson whole only on the route that selects it, so reading the course route alone dropped the body of every lesson but one per module — the links a lesson writes under its video went with it. Every lesson is now fetched by its own `?md=`, which costs one request per lesson. The output is the course tree rather than a flat list: a course carries its own id, address, body and update time, and its lessons in the order they are served. A lesson also carries its `resources` as the payload's own JSON, unparsed, since no classroom seen so far fills it.
 
 - **`[dms] sources` picks the platforms the daemon listens on.** A list of `telegram`, `discord`, `skool`; all three when the key is absent. Dropping one takes its surface out of circulation while its credentials stay in the config, and a list that leaves nothing to listen on is an error at startup rather than a daemon that idles.

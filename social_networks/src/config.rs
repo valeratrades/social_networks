@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use social_networks_adapters::{
-	email::EmailConfig, facebook::FacebookConfig, llm::LlmConfig, skool::SkoolCredentials, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
+	email::EmailConfig, facebook::FacebookConfig, llm::LlmConfig, skool::SkoolConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
 };
 use social_networks_reach::purpose::Purposes;
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
@@ -34,7 +34,7 @@ pub struct AppConfig {
 	/// is what is public either way
 	#[settings(skip)]
 	#[serde(default)]
-	pub skool: Option<SkoolCredentials>,
+	pub skool: Option<SkoolConfig>,
 	/// `pull` visits a facebook handle from its launched session
 	#[settings(skip)]
 	#[serde(default)]

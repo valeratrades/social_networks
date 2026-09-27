@@ -13,15 +13,14 @@
 mod browser;
 pub mod lead_rate;
 pub mod members;
-mod pacer;
 pub mod profile;
 pub mod search;
+mod searched;
 mod sway;
 
-use std::path::Path;
 use std::{
 	collections::{HashMap, HashSet},
-	path::PathBuf,
+	path::{Path, PathBuf},
 };
 
 use base64::Engine as _;
@@ -31,14 +30,22 @@ use strum::AsRefStr;
 use tracing::info;
 use v_utils::macros::MyConfigPrimitives;
 
-use self::{browser::Tab, members::Listing, pacer::Pacer, profile::Section, search::Results};
+use self::{
+	browser::Tab,
+	members::Listing,
+	profile::Section,
+	search::Results,
+	searched::{Ended, Query},
+};
 use crate::{
+	behaviour::{Action, Behaviour, BehaviourConfig, Order},
 	nominatim::{Coords, Geocoder},
 	reach::{Member, Page, Place, Profile, Profiles, Roster, Venue, VenueRef, Window},
 };
 
 /// INSEE `nat2022`, births since 1945, most frequent first; see `docs/facebook/detection.md`
 const FIRST_NAMES: &str = include_str!("first_names.txt");
+const FEED: &str = "https://www.facebook.com/";
 const ADDRESS: &str = "a facebook venue is `city/<page id>` or `group/<group id>`";
 
 #[derive(Clone, Debug, MyConfigPrimitives)]
@@ -55,38 +62,31 @@ pub struct FacebookConfig {
 pub struct AttachedConfig {
 	pub cdp_port: u16,
 	pub user_id: String,
-	pub views_per_hour: u32,
-	pub scrolls_per_hour: u32,
-	/// `[min, max]` seconds before each view and each scroll
 	#[primitives(skip)]
-	pub pause_secs: [u64; 2],
+	pub behaviour: BehaviourConfig,
 }
 /// Our own chrome on our own profile, logged in once by a human through `recon facebook-login`.
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct LaunchedConfig {
 	pub chrome_executable: PathBuf,
-	pub views_per_hour: u32,
-	pub scrolls_per_hour: u32,
-	/// `[min, max]` seconds before each view and each scroll
 	#[primitives(skip)]
-	pub pause_secs: [u64; 2],
+	pub behaviour: BehaviourConfig,
 }
 
 pub struct Facebook<'t, 'c> {
 	tab: &'t mut Tab<'c>,
 	session: Session,
-	views: Pacer,
-	scrolls: Pacer,
+	behaviour: Behaviour,
 	revisit_days: u32,
 	geocoder: Geocoder,
 	dir: PathBuf,
 }
 impl Facebook<'_, '_> {
 	/// People search for each first name in turn under the City filter; everyone it lists counts as
-	/// living there. One query's list is capped, which is why it walks names. The cursor is the last
-	/// name exhausted.
+	/// living there. One query's list is capped, which is why it walks names, in an [`Order`] kept
+	/// in the session's state. The cursor is the last name exhausted.
 	async fn city(&mut self, id: &str, roster: &mut impl Roster) -> Result<()> {
-		let names: Vec<&str> = FIRST_NAMES.lines().collect();
+		let names = Order::load(FIRST_NAMES.lines(), &self.dir.join("first_names.seed"))?;
 		let mut cursor = roster.cursor().map(str::to_string);
 		let start = match &cursor {
 			None => 0,
@@ -96,10 +96,12 @@ impl Facebook<'_, '_> {
 					.position(|n| n == done)
 					.ok_or_else(|| eyre!("the walk stopped after `{done}`, which is not one of its first names"))?,
 		};
+		let searched = self.dir.join("searched").join(id);
+		std::fs::create_dir_all(&searched).wrap_err_with(|| format!("failed to create {}", searched.display()))?;
 		let mut rate = lead_rate::Tracker::load(self.dir.join("lead_rate.toml"))?;
 		for name in &names[start..] {
-			self.views.wait().await?;
-			self.tab.goto(&search_url(name, id)).await?;
+			let mut query = Query::start(&searched, name)?;
+			self.load(&search_url(name, id), &[FEED, &unfiltered_url(name)]).await?;
 			let mut results = Results::default();
 			for s in self.tab.scripts().await? {
 				results.absorb(&s)?;
@@ -114,9 +116,12 @@ impl Facebook<'_, '_> {
 
 			let mut checked = HashSet::new();
 			let mut fresh = check_in_hits(roster, &results, &mut checked, &city, at, &cursor)?;
+			query.page(results.hits.keys(), fresh, false)?;
+			let mut seen = results.hits.len();
 			let mut idle = 0;
 			while results.more != Some(false) && idle < 3 {
-				self.scrolls.wait().await?;
+				self.behaviour.act(Action::Scroll { seen }).await?;
+				let before = results.hits.len();
 				let progressed = self
 					.tab
 					.scroll(|body| {
@@ -125,11 +130,18 @@ impl Facebook<'_, '_> {
 						Ok(results.hits.len() > before)
 					})
 					.await?;
+				seen = results.hits.len() - before;
 				idle = if progressed { 0 } else { idle + 1 };
-				fresh += check_in_hits(roster, &results, &mut checked, &city, at, &cursor)?;
+				let new = check_in_hits(roster, &results, &mut checked, &city, at, &cursor)?;
+				fresh += new;
+				query.page(results.hits.keys(), new, true)?;
 				eprint!("\r`{name}` in {city}: {} listed, {fresh} new", results.hits.len());
 			}
 			eprintln!();
+			query.end(match results.more {
+				Some(false) => Ended::Exhausted,
+				_ => Ended::Stalled,
+			})?;
 			cursor = Some(name.to_string());
 			roster.check_in(&[], cursor.clone())?;
 			let stalled = match results.more {
@@ -145,8 +157,7 @@ impl Facebook<'_, '_> {
 	/// The member listing, scrolled until facebook says there is no next page or scrolling stops
 	/// producing members. It has no resume point, so a rerun lists from the top.
 	async fn group(&mut self, id: &str, roster: &mut impl Roster) -> Result<()> {
-		self.views.wait().await?;
-		self.tab.goto(&format!("https://www.facebook.com/groups/{id}/members")).await?;
+		self.load(&format!("https://www.facebook.com/groups/{id}/members"), &[FEED]).await?;
 		let mut listing = Listing::default();
 		for s in self.tab.scripts().await? {
 			listing.absorb(&s)?;
@@ -170,9 +181,11 @@ impl Facebook<'_, '_> {
 			Ok(())
 		};
 		check_in(&listing)?;
+		let mut seen = listing.len();
 		let mut idle = 0;
 		while listing.more != Some(false) && idle < 3 {
-			self.scrolls.wait().await?;
+			self.behaviour.act(Action::Scroll { seen }).await?;
+			let before = listing.len();
 			let progressed = self
 				.tab
 				.scroll(|body| {
@@ -181,6 +194,7 @@ impl Facebook<'_, '_> {
 					Ok(listing.len() > before)
 				})
 				.await?;
+			seen = listing.len() - before;
 			idle = if progressed { 0 } else { idle + 1 };
 			check_in(&listing)?;
 			eprint!("\r{} members listed", listing.len());
@@ -197,9 +211,19 @@ impl Facebook<'_, '_> {
 			true => format!("https://www.facebook.com/profile.php?id={handle}&sk={section}"),
 			false => format!("https://www.facebook.com/{handle}/{section}"),
 		};
-		self.views.wait().await?;
-		self.tab.goto(&url).await?;
+		self.load(&url, &[FEED]).await?;
 		Section::parse(&self.tab.scripts().await?.join("\n"))
+	}
+
+	/// `url`, after as many ordinary loads, picked from `ordinary`, as the behaviour's noise asks for.
+	/// Nothing is read from those.
+	async fn load(&mut self, url: &str, ordinary: &[&str]) -> Result<()> {
+		while self.behaviour.noise() {
+			self.behaviour.act(Action::Load).await?;
+			self.tab.goto(ordinary[rand::random_range(..ordinary.len())]).await?;
+		}
+		self.behaviour.act(Action::Load).await?;
+		self.tab.goto(url).await
 	}
 }
 
@@ -214,14 +238,14 @@ pub async fn with_session<T>(config: &FacebookConfig, at: &VenueRef, work: impl 
 /// The burner's chrome, headless. Opened for the one command and closed after it, Ctrl-C included.
 pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
 	let c = &config.launched;
-	let (dir, views, scrolls) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	let dir = state(Session::Launched)?;
+	let behaviour = Behaviour::load(&c.behaviour, &dir)?;
 	let geocoder = Geocoder::try_new()?;
 	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir.join("sessions.toml"), async |tab| {
 		work(&mut Facebook {
 			tab,
 			session: Session::Launched,
-			views,
-			scrolls,
+			behaviour,
 			revisit_days: config.revisit_days,
 			geocoder,
 			dir: dir.clone(),
@@ -234,7 +258,7 @@ pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&m
 /// A window of the burner's chrome, waiting for a human to log in. Credentials are never ours to type.
 pub async fn login(config: &FacebookConfig) -> Result<()> {
 	let c = &config.launched;
-	let (dir, ..) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	let dir = state(Session::Launched)?;
 	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir.join("sessions.toml"), async |tab| {
 		tab.goto("https://www.facebook.com/").await
 	})
@@ -243,14 +267,14 @@ pub async fn login(config: &FacebookConfig) -> Result<()> {
 
 async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
 	let c = &config.attached;
-	let (dir, views, scrolls) = state(Session::Attached, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	let dir = state(Session::Attached)?;
+	let behaviour = Behaviour::load(&c.behaviour, &dir)?;
 	let geocoder = Geocoder::try_new()?;
 	browser::attach(c.cdp_port, &c.user_id, &dir.join("sessions.toml"), async |tab| {
 		work(&mut Facebook {
 			tab,
 			session: Session::Attached,
-			views,
-			scrolls,
+			behaviour,
 			revisit_days: config.revisit_days,
 			geocoder,
 			dir: dir.clone(),
@@ -340,13 +364,9 @@ impl<'a> Slug<'a> {
 	}
 }
 
-/// `$XDG_STATE_HOME/social_networks/facebook/<session>/`, and the session's pacers, whose logs outlive
-/// a restart.
-fn state(session: Session, views_per_hour: u32, scrolls_per_hour: u32, pause_secs: [u64; 2]) -> Result<(PathBuf, Pacer, Pacer)> {
-	let dir = xdg::BaseDirectories::with_prefix("social_networks").create_state_directory(format!("facebook/{}", session.as_ref()))?;
-	let views = Pacer::load(dir.join("views"), "page loads", views_per_hour, pause_secs)?;
-	let scrolls = Pacer::load(dir.join("scrolls"), "scrolls", scrolls_per_hour, pause_secs)?;
-	Ok((dir, views, scrolls))
+/// `$XDG_STATE_HOME/social_networks/facebook/<session>/`
+fn state(session: Session) -> Result<PathBuf> {
+	Ok(xdg::BaseDirectories::with_prefix("social_networks").create_state_directory(format!("facebook/{}", session.as_ref()))?)
 }
 
 /// The hits not yet in `checked`, as rows placed where the filter says; how many the roster lacked.
@@ -370,6 +390,13 @@ fn check_in_hits(roster: &mut impl Roster, results: &Results, checked: &mut Hash
 		true => Ok(0),
 		false => roster.check_in(&rows, cursor.clone()),
 	}
+}
+
+/// The same name without the City filter: a search anybody might make.
+fn unfiltered_url(name: &str) -> String {
+	reqwest::Url::parse_with_params("https://www.facebook.com/search/people/", [("q", name)])
+		.expect("a constant base")
+		.into()
 }
 
 /// `search/people/?q=<name>&filters=base64({"city:0": "{\"name\":\"users_location\",\"args\":\"<city>\"}"})`

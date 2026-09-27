@@ -40,6 +40,7 @@ use tracing::{info, instrument, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
+	behaviour::{Action, Behaviour, BehaviourConfig},
 	client::{AdapterError, Client},
 	dm_event::DmEvent,
 	reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, VenueSource, Window},
@@ -64,11 +65,10 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(90);
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 /// Skool publishes no rate limit, and CloudFront answers a burst with a 403 block page rather than a
 /// status worth classifying — measured: a few hundred calls back to back trips it, and it lifts on
-/// its own a minute or two later. A roster sweep is the only thing here that makes more than a
-/// handful of calls, so it paces itself rather than find out again.
-const PACE: Duration = Duration::from_millis(700);
-/// Doubling from [`PACE`], this waits about two minutes out in total — longer than the block above
-/// was measured to last. A read still refused after it is not being throttled.
+/// its own a minute or two later. Doubling from here, [`READ_RETRIES`] waits about two minutes out
+/// in total — longer than the block was measured to last. A read still refused after it is not
+/// being throttled.
+const BACKOFF: Duration = Duration::from_millis(1400);
 const READ_RETRIES: usize = 7;
 /// The largest `before`/`after` skool's chat answers — past it, `invalid before: <n>`.
 const CHAT_PAGE: usize = 50;
@@ -88,23 +88,29 @@ const LINKS: [(&str, &str); 5] = [
 	("linkFacebook", "facebook"),
 ];
 
-/// The whole of what `[skool]` carries: a session signs in, and nothing here watches anything.
+/// `[skool]`: a session signs in, and nothing here watches anything.
 #[derive(Clone, Debug, MyConfigPrimitives)]
-pub struct SkoolCredentials {
+pub struct SkoolConfig {
 	pub email: String,
 	pub password: String,
+	/// How a group sweep (roster, feed, classroom) paces itself. A sweep refuses to run without it;
+	/// nothing else makes more than a handful of calls.
+	#[primitives(skip)]
+	#[serde(default)]
+	pub behaviour: Option<BehaviourConfig>,
 }
 
 pub struct Skool {
 	http: reqwest::Client,
 	cookie: Option<String>,
-	creds: Option<SkoolCredentials>,
+	creds: Option<SkoolConfig>,
+	behaviour: Option<Behaviour>,
 }
 
 impl Skool {
 	/// Picks up a cached cookie if one was ever minted. Its absence is a real state — the public
 	/// reads work without it.
-	pub fn try_new(creds: Option<SkoolCredentials>) -> Result<Self> {
+	pub fn try_new(creds: Option<SkoolConfig>) -> Result<Self> {
 		let path = cookie_path()?;
 		let cookie = match path.exists() {
 			true => {
@@ -114,12 +120,34 @@ impl Skool {
 			}
 			false => None,
 		};
+		let behaviour = match creds.as_ref().and_then(|c| c.behaviour.as_ref()) {
+			Some(config) => Some(Behaviour::load(config, &xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("skool")?)?),
+			None => None,
+		};
 		Ok(Self {
 			// cloudfront 403s a request without a browser user-agent, cookies or no cookies
 			http: reqwest::Client::builder().user_agent(UA).build()?,
 			cookie,
 			creds,
+			behaviour,
 		})
+	}
+
+	/// Before each load of a sweep over `slug`, after as many loads of the group's own page as the
+	/// behaviour's noise asks for.
+	async fn pace(&mut self, slug: &str) -> Result<()> {
+		loop {
+			let b = self
+				.behaviour
+				.as_mut()
+				.ok_or_else(|| eyre!("a skool group sweep is paced, and `[skool]` states no `behaviour`"))?;
+			let noise = b.noise();
+			b.act(Action::Load).await?;
+			if !noise {
+				return Ok(());
+			}
+			self.fetch(&format!("/{slug}")).await?;
+		}
 	}
 
 	/// The SSR payload skool embeds in every page. `["page"]` is the route it actually served, and
@@ -400,7 +428,7 @@ impl Skool {
 				.get("updatedAt")
 				.and_then(|v| v.as_str())
 				.ok_or_else(|| eyre!("skool course `{name}` without an updatedAt: {course}"))?;
-			time::sleep(PACE).await;
+			self.pace(&at.slug).await?;
 			let payload = self.group_page(&at.slug, &format!("classroom/{name}")).await?;
 			let mut found = Vec::new();
 			lessons_of(payload.pointer("/props/pageProps/course/children"), title, &mut found)?;
@@ -408,7 +436,7 @@ impl Skool {
 
 			let mut lessons = Vec::new();
 			for (id, module) in found {
-				time::sleep(PACE).await;
+				self.pace(&at.slug).await?;
 				let payload = self.group_page(&at.slug, &format!("classroom/{name}?md={id}")).await?;
 				let node = node_of(payload.pointer("/props/pageProps/course/children"), &id).ok_or_else(|| eyre!("skool lesson {id} is not in the course tree its own route serves"))?;
 				let (mut lesson, hosted) = lesson_of(&node, &at.slug, name, module)?;
@@ -443,7 +471,7 @@ impl Skool {
 		}
 		// A GET is idempotent, so a refusal is worth waiting out; a write is not, and one that lands
 		// twice is worse than one that fails.
-		let mut backoff = PACE * 2;
+		let mut backoff = BACKOFF;
 		//LOOP: bounded by `READ_RETRIES`
 		for _ in 0..READ_RETRIES {
 			if response.status().is_success() || method != Method::GET {
@@ -674,7 +702,7 @@ impl Venue for Skool {
 		let mut refused = 0usize;
 		for (id, (lat, lon)) in &pins {
 			if !roster.contains_key(id) {
-				time::sleep(PACE).await;
+				self.pace(&at.slug).await?;
 				// one pin skool will not resolve costs that pin: a member without a handle is one
 				// nothing downstream could address anyway, and the rest of the sweep is worth keeping
 				match self.user(id).await {
@@ -782,7 +810,7 @@ impl Venue for Skool {
 				}
 				let group = post.get("groupId").and_then(|v| v.as_str()).ok_or_else(|| eyre!("skool post {id} without a groupId"))?;
 				let permalink = item.permalink.clone().ok_or_else(|| eyre!("skool post {id} was built without a permalink"))?;
-				time::sleep(PACE).await;
+				self.pace(&at.slug).await?;
 				replies.extend(self.replies(id, group, &permalink).await?);
 			}
 			info!("skool `{}`: page {p}, {} posts, {} replies", at.slug, page.items.len(), replies.len());
@@ -795,7 +823,7 @@ impl Venue for Skool {
 				warn!("skool `{}`: stopping at {} items, the rest comes on the next read", at.slug, out.items.len());
 				break;
 			}
-			time::sleep(PACE).await;
+			self.pace(&at.slug).await?;
 		}
 		// a page is oldest-first and the feed is walked newest-page-first, so neither order survives
 		// the concatenation on its own
@@ -821,7 +849,7 @@ pub struct SkoolDms {
 }
 
 impl SkoolDms {
-	pub fn try_new(creds: SkoolCredentials, tx: UnboundedSender<DmEvent>) -> Result<Self> {
+	pub fn try_new(creds: SkoolConfig, tx: UnboundedSender<DmEvent>) -> Result<Self> {
 		Ok(Self {
 			session: Skool::try_new(Some(creds))?,
 			tx,
@@ -1286,7 +1314,7 @@ struct Cached {
 
 /// Closing over CDP would end the handler stream this is selected against, so the browser is left to
 /// `Drop`, which kills the child.
-async fn login(browser: &Browser, creds: &SkoolCredentials) -> Result<String> {
+async fn login(browser: &Browser, creds: &SkoolConfig) -> Result<String> {
 	let page = browser.new_page(format!("{BASE}/login")).await?;
 	page.find_element("input#email").await?.click().await?.type_str(&creds.email).await?;
 	page.find_element("input#password")
