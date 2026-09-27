@@ -71,7 +71,13 @@
           ];
           nativeBuildInputs = with pkgs; [ pkg-config ];
           RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
-          preCheck = "export HOME=$TMPDIR"; # the rolodex history tests write under ~/.cache
+          # HOME: the rolodex history tests write under ~/.cache. nix: the purpose tests evaluate
+          # person files, and a sandbox has no daemon, so the evaluator gets a store it never writes to.
+          nativeCheckInputs = [ pkgs.nix ];
+          preCheck = ''
+            export HOME=$TMPDIR NIX_STATE_DIR=$TMPDIR/nix
+            export NIX_CONFIG=$'experimental-features = nix-command\nstore = dummy://'
+          '';
 
           cargoLock.lockFile = ./Cargo.lock;
           src = pkgs.lib.cleanSource ./.;
