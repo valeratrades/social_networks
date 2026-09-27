@@ -1,15 +1,16 @@
 {
   inputs = {
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
+    claude_code_nix.url = "github:sadjow/claude-code-nix"; # a newer model needs a newer CLI, and nixpkgs trails the releases
   };
-  outputs = { self, v_flakes }:
+  outputs = { self, v_flakes, claude_code_nix }:
     let
       inherit (v_flakes) flake-utils pre-commit-hooks;
     in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import v_flakes.default_nixpkgs { inherit system; config.allowUnfree = true; }; # claude-code
+        pkgs = import v_flakes.default_nixpkgs { inherit system; };
         rust = v_flakes.rs.default_nightly system;
         pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
         manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
@@ -100,7 +101,7 @@
             healthPath = null;
             criticality = "normal";
             entrypoint = [ "${bin}/bin/${pname}" ];
-            contents = [ chromium pkgs.claude-code pkgs.coreutils ];
+            contents = [ chromium claude_code_nix.packages.${system}.default pkgs.coreutils ];
             mounts = [ "/data" ];
             workingDir = "/data";
             imageEnv = [ "HOME=/data" "PATH=/bin" ];

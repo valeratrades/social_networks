@@ -4,13 +4,12 @@ Fill in `~/.config/social_networks.nix`. Follow [examples/config.nix](../../exam
 
 | Command | Description |
 |---------|-------------|
-| `dms` | DM monitoring (ping, monitored users) on Discord, Telegram and Skool. `[dms] sources` selects which of them. |
+| `dms` | DM monitoring (ping, monitored users) on Discord, Telegram and Skool, and Telegram channel forwarding over the same session. `[dms] sources` selects which of them. |
 | `email` | Email monitoring with LLM-based filtering (forwards human emails to Telegram) |
 | `health` | Show health of config and directories (daemon liveness is in devops Grafana) |
 | `migrate-db` | Run database migrations |
 | `purpose <name>` | Per-person records for one purpose, from Discord, Telegram, GitHub, LinkedIn and Skool |
 | `rolodex` | The same as `purpose rolodex` |
-| `telegram-channel-watch` | Telegram channel watching (poll/info forwarding) |
 | `twitter` | Twitter operations |
 | `twitter-schedule` | Twitter scheduled posting |
 | `youtube` | YouTube operations |

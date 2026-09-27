@@ -11,8 +11,8 @@ use config::{AppConfig, LiveSettings, SettingsFlags};
 use dms::{DmSource, DmsArgs};
 use purpose::PurposeCommand;
 use social_networks_adapters::{
-	AdapterError, Client, DiscordDms, EmailMonitor, SkoolDms, TelegramChannelWatch, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
-	install_panic_alert, telegram_channel_watch::TelegramArgs, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
+	AdapterError, Client, DiscordDms, EmailMonitor, SkoolDms, TelegramDms, TwitterMonitor, TwitterSchedule, YoutubeMonitor, alert, email::EmailArgs,
+	install_panic_alert, telegram_notifier::TelegramNotifier, twitter::TwitterArgs, twitter_schedule::TwitterScheduleArgs, youtube::YoutubeArgs,
 };
 use social_networks_utils::db::Database;
 use tracing::info;
@@ -48,8 +48,6 @@ enum Commands {
 		#[command(subcommand)]
 		command: PurposeCommand,
 	},
-	/// Telegram channel watching (poll/info forwarding)
-	TelegramChannelWatch(TelegramArgs),
 	/// Twitter operations
 	Twitter(TwitterArgs),
 	/// Twitter scheduled posting
@@ -137,12 +135,6 @@ fn main() {
 		}
 		Commands::Purpose { name, command } => run_async("purpose", || async { purpose::main(&name, command, config).await }),
 		Commands::Rolodex { command } => run_async("purpose", || async { purpose::main("rolodex", command, config).await }),
-		Commands::TelegramChannelWatch(_) => run_async("telegram_channel_watch", || async {
-			let mut adapter = TelegramChannelWatch::new(config.telegram);
-			let err = adapter.listen().await.unwrap_err();
-			alert(&err).await;
-			Err::<(), AdapterError>(err)
-		}),
 		Commands::Twitter(_) => run_async("twitter", || async {
 			let mut adapter = TwitterMonitor::new(config.twitter, config.telegram);
 			let err = adapter.listen().await.unwrap_err();

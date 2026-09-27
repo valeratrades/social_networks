@@ -1,262 +1,99 @@
-use std::convert::Infallible;
+//! Poll/info channel forwarding. It rides the `dms` telegram connection rather than holding its own:
+//! telegram answers a second concurrent connection on one auth key with `AUTH_KEY_DUPLICATED`.
 
-use clap::Args;
-use color_eyre::eyre::Result;
-use futures::future::{Either, select};
+use color_eyre::eyre::{Result, eyre};
 use grammers_client::{Client, update::Update};
-use grammers_session::types::PeerRef;
+use grammers_session::types::{PeerId, PeerRef};
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
-use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
-use tokio::time::{self, Duration};
 use tracing::{debug, error, info};
 
-use crate::{
-	client::{AdapterError, Client as AdapterClient},
-	telegram_dms::{TelegramConfig, TelegramDestination, classify_invocation_auth, classify_telegram_auth_error},
-};
-
-const SURFACE: &str = "telegram_channel_watch";
-#[derive(Args)]
-pub struct TelegramArgs {}
-
-pub struct TelegramChannelWatch {
-	telegram_config: TelegramConfig,
-}
-
-impl TelegramChannelWatch {
-	pub fn new(telegram_config: TelegramConfig) -> Self {
-		Self { telegram_config }
-	}
-}
-
-impl AdapterClient for TelegramChannelWatch {
-	fn surface(&self) -> &'static str {
-		SURFACE
-	}
-
-	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
-		println!("Starting Telegram Channel Watch...");
-		let mut attempt: u32 = 0;
-		loop {
-			match run_telegram_monitor(&self.telegram_config).await {
-				Err(ChannelWatchError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
-				Err(ChannelWatchError::Recoverable(e)) => {
-					let delay = reconnect_delay(attempt);
-					error!("Telegram monitor error: {e:#}\nReconnecting in {:.1}s...", delay.as_secs_f64());
-					time::sleep(delay).await;
-					attempt = attempt.saturating_add(1);
-				}
-			}
-		}
-	}
-}
-
-enum ChannelWatchError {
-	Auth(String),
-	Recoverable(color_eyre::eyre::Report),
-}
-
-impl<E: Into<color_eyre::eyre::Report>> From<E> for ChannelWatchError {
-	fn from(e: E) -> Self {
-		ChannelWatchError::Recoverable(e.into())
-	}
-}
+use crate::telegram_dms::{TelegramConfig, TelegramDestination};
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct StatusDrop {
 	status: String,
 }
 
-fn reconnect_delay(attempt: u32) -> Duration {
-	let delay_secs = std::f64::consts::E.powi(attempt as i32).min(600.0);
-	Duration::from_secs_f64(delay_secs)
+pub(crate) struct ChannelWatch {
+	poll: Vec<PeerId>,
+	info: Vec<PeerId>,
+	output: PeerRef,
+	status: String,
+	last_status_update: Timestamp,
 }
 
-async fn run_telegram_monitor(telegram_config: &TelegramConfig) -> Result<Infallible, ChannelWatchError> {
-	let status_file = xdg::BaseDirectories::with_prefix("social_networks")
-		.place_state_file("telegram_status.json")
-		.map_err(color_eyre::eyre::Report::from)?;
-	let status_drop: StatusDrop = if status_file.exists() {
-		let content = std::fs::read_to_string(&status_file).map_err(color_eyre::eyre::Report::from)?;
-		let status: StatusDrop = serde_json::from_str(&content).map_err(color_eyre::eyre::Report::from)?;
-		info!("Loaded status from file: {}", status.status);
-		status
-	} else {
-		info!("No status file found, using empty status");
-		StatusDrop::default()
-	};
-
-	let TelegramConnection {
-		client, mut updates, mut runner, ..
-	} = telegram_utils::connect(ConnectionConfig {
-		username: &telegram_config.username,
-		phone: &telegram_config.phone,
-		api_id: telegram_config.api_id,
-		api_hash: &telegram_config.api_hash,
-		session_suffix: "",
-		seed_from: None,
-	})
-	.await
-	.map_err(|e| {
-		if let Some(detail) = classify_telegram_auth_error(&e) {
-			ChannelWatchError::Auth(detail)
-		} else {
-			ChannelWatchError::Recoverable(e)
-		}
-	})?;
-
-	println!("Telegram started");
-	info!("--Telegram-- connected and authorized");
-
-	info!("Resolving {} poll channels", telegram_config.poll_channels.len());
-	let mut poll_peer_ids = Vec::new();
-	for channel in &telegram_config.poll_channels {
-		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
-			Some(peer) => {
-				poll_peer_ids.push(peer.id());
-				info!(
-					"Resolved poll channel: {channel} -> {}",
-					peer.id().bot_api_dialog_id().expect("resolve_username never returns self")
-				);
-			}
-			None => {
-				error!("Could not resolve poll channel: {channel}");
-			}
-		}
-	}
-
-	info!("Resolving {} info channels", telegram_config.info_channels.len());
-	let mut info_peer_ids = Vec::new();
-	for channel in &telegram_config.info_channels {
-		match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
-			Some(peer) => {
-				info_peer_ids.push(peer.id());
-				info!(
-					"Resolved info channel: {channel} -> {}",
-					peer.id().bot_api_dialog_id().expect("resolve_username never returns self")
-				);
-			}
-			None => {
-				error!("Could not resolve info channel: {channel}");
-			}
-		}
-	}
-
-	let output_username = match &telegram_config.channel_output {
-		TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
-		_ => {
-			return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!(
-				"channel_output must be a username for grammers client forwarding"
-			)));
-		}
-	};
-
-	info!("Resolving output channel: {output_username}");
-	let watch_chat = match client.resolve_username(output_username).await? {
-		Some(peer) => {
-			info!("Output channel resolved: {}", peer.id().bot_api_dialog_id().expect("resolve_username never returns self"));
-			match peer.to_ref().await.map_err(|e| color_eyre::eyre::eyre!(e))? {
-				Some(r) => r,
-				None =>
-					return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!(
-						"Output channel peer has no access hash: {output_username}"
-					))),
-			}
-		}
-		None => {
-			error!("Could not resolve output channel: {output_username}");
-			return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("Could not resolve output channel: {output_username}")));
-		}
-	};
-
-	eprintln!("Listening for channel messages...");
-	info!("Starting main event loop");
-
-	let mut message_counter = 0u64;
-	let mut last_status_update = Timestamp::default();
-
-	//LOOP: daemon - runs until process termination
-	loop {
-		if telegram_utils::should_reconnect_for_stack() {
-			return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("Stack usage critical, forcing reconnect")));
-		}
-
-		telegram_utils::log_stack("telegram_channel_watch loop start");
-
-		enum Event {
-			Update(Box<Result<Update, grammers_client::InvocationError>>),
-			RunnerExited,
-		}
-
-		let event = {
-			let update_fut = std::pin::pin!(updates.next());
-			let runner_fut = runner.as_mut();
-			match select(update_fut, runner_fut).await {
-				Either::Left((result, _)) => Event::Update(Box::new(result)),
-				Either::Right(((), _)) => Event::RunnerExited,
-			}
+impl ChannelWatch {
+	/// Every call here is an RPC: the caller drives the runner alongside it.
+	pub(crate) async fn resolve(client: &Client, config: &TelegramConfig) -> Result<Self> {
+		let status_file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file("telegram_status.json")?;
+		let status = match status_file.exists() {
+			true => serde_json::from_str::<StatusDrop>(&std::fs::read_to_string(&status_file)?)?.status,
+			false => String::new(),
 		};
 
-		telegram_utils::log_stack("telegram_channel_watch after select");
-
-		match event {
-			Event::RunnerExited => {
-				return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("MTProto runner exited unexpectedly")));
+		let resolve = async |channels: &[String]| -> Result<Vec<PeerId>> {
+			let mut ids = Vec::with_capacity(channels.len());
+			for channel in channels {
+				match client.resolve_username(channel.trim_start_matches("https://t.me/")).await? {
+					Some(peer) => ids.push(peer.id()),
+					None => error!("Could not resolve channel: {channel}"),
+				}
 			}
-			Event::Update(result) => match *result {
-				Err(e) => {
-					let s = format!("{e:#}");
-					if classify_invocation_auth(&s) {
-						return Err(ChannelWatchError::Auth(s));
-					}
-					error!("Error getting next update: {s}");
-					continue;
+			Ok(ids)
+		};
+		let poll = resolve(&config.poll_channels).await?;
+		let info = resolve(&config.info_channels).await?;
+
+		let output_username = match &config.channel_output {
+			TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
+			_ => return Err(eyre!("channel_output must be a username for grammers client forwarding")),
+		};
+		let output = client
+			.resolve_username(output_username)
+			.await?
+			.ok_or_else(|| eyre!("Could not resolve output channel: {output_username}"))?
+			.to_ref()
+			.await
+			.map_err(|e| eyre!(e))?
+			.ok_or_else(|| eyre!("Output channel peer has no access hash: {output_username}"))?;
+		info!("Channel watch: {} poll, {} info channels -> {output_username}", poll.len(), info.len());
+
+		Ok(Self {
+			poll,
+			info,
+			output,
+			status,
+			last_status_update: Timestamp::default(),
+		})
+	}
+
+	/// Forwarding and the profile status are RPCs: the caller drives the runner alongside this too.
+	pub(crate) async fn handle(&mut self, client: &Client, update: &Update) {
+		if let Update::NewMessage(message) = update
+			&& !message.outgoing()
+		{
+			// `peer()` only sees the update batch's own users/chats vector, which the short-update
+			// forms omit entirely. `peer_id()` reads the raw message.
+			let peer_id = message.peer_id();
+			if self.poll.contains(&peer_id) {
+				if let Err(e) = handle_poll_message(client, message, self.output).await {
+					error!("Error handling poll message: {e}");
 				}
-				Ok(update) => {
-					message_counter += 1;
+			} else if self.info.contains(&peer_id)
+				&& let Err(e) = handle_info_message(client, message, self.output).await
+			{
+				error!("Error handling info message: {e}");
+			}
+		}
 
-					// Forwarding and profile updates are RPCs the runner has to answer; awaiting them
-					// on their own hangs the watcher on the first matching message.
-					let work = async {
-						{
-							match update {
-								Update::NewMessage(message) if !message.outgoing() => {
-									// `peer()` only sees the update batch's own users/chats vector, which the
-									// short-update forms omit entirely. `peer_id()` reads the raw message.
-									let peer_id = message.peer_id();
-
-									if poll_peer_ids.contains(&peer_id) {
-										if let Err(e) = handle_poll_message(&client, &message, watch_chat).await {
-											error!("Error handling poll message: {e}");
-										}
-									} else if info_peer_ids.contains(&peer_id)
-										&& let Err(e) = handle_info_message(&client, &message, watch_chat).await
-									{
-										error!("Error handling info message: {e}");
-									}
-								}
-								_ => {}
-							}
-
-							let now = Timestamp::now();
-							if now.duration_since(last_status_update) > SignedDuration::from_secs(4 * 60) {
-								if !status_drop.status.is_empty() {
-									if let Err(e) = update_profile(&client, &status_drop.status).await {
-										error!("Error updating profile: {e}");
-									} else {
-										debug!("Profile status updated; message counter: {message_counter}");
-									}
-								}
-								last_status_update = now;
-							}
-						}
-					};
-					if let Either::Right(((), _)) = select(std::pin::pin!(work), runner.as_mut()).await {
-						return Err(ChannelWatchError::Recoverable(color_eyre::eyre::eyre!("MTProto runner exited unexpectedly")));
-					}
-				}
-			},
+		let now = Timestamp::now();
+		if !self.status.is_empty() && now.duration_since(self.last_status_update) > SignedDuration::from_secs(4 * 60) {
+			match update_profile(client, &self.status).await {
+				Ok(()) => debug!("Profile status updated"),
+				Err(e) => error!("Error updating profile: {e}"),
+			}
+			self.last_status_update = now;
 		}
 	}
 }
