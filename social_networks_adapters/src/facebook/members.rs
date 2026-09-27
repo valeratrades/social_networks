@@ -16,21 +16,6 @@ pub struct Listing {
 	/// `has_next_page` of the full member list, as last seen
 	pub(super) more: Option<bool>,
 }
-
-#[derive(Clone)]
-struct Listed {
-	name: String,
-	/// e.g. "Joined 59 minutes ago", relative to when the list was read
-	joined: Option<String>,
-	bio: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct GroupRef {
-	pub id: String,
-	pub name: String,
-}
-
 impl Listing {
 	/// Takes an embedded `application/json` script or a `/api/graphql/` body, which streams several documents.
 	pub fn absorb(&mut self, text: &str) -> Result<()> {
@@ -116,6 +101,20 @@ impl Listing {
 		};
 	}
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupRef {
+	pub id: String,
+	pub name: String,
+}
+#[derive(Clone)]
+struct Listed {
+	name: String,
+	/// e.g. "Joined 59 minutes ago", relative to when the list was read
+	joined: Option<String>,
+	bio: Option<String>,
+}
+
 
 fn member(edge: &Value) -> Option<(String, String, Listed)> {
 	let node = edge.get("node")?;

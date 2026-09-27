@@ -18,12 +18,12 @@ use crate::{
 	venue,
 };
 
-/// Signals every purpose has without declaring them, derived at rank time from the transcripts.
-const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
 /// Where a platform says somebody lives.
 pub const LIVES_IN: &str = "lives_in";
 /// When a platform says somebody was born, or what they said their age was.
 pub const BIRTHDAY: &str = "birthday";
+/// Signals every purpose has without declaring them, derived at rank time from the transcripts.
+const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
 /// Tags a platform states rather than anybody judging them, which `pull` writes from what a platform
 /// answered. A purpose opts into one by declaring a tag of that name, of that type.
 const FACTS: [(&str, TagType); 2] = [(LIVES_IN, TagType::Place), (BIRTHDAY, TagType::Birthday { about: None })];

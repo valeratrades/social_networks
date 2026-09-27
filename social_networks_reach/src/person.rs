@@ -12,8 +12,8 @@ use crate::purpose::Purpose;
 
 const MAIN: &str = "__main__.nix";
 
-/// What a person's directory states about them, next to the conversation itself. [`MAIN`] is a
-/// rendered view of this struct — [`render`] regenerates it whole, so comments and hand formatting
+/// What a person's directory states about them, next to the conversation itself. `MAIN` is a
+/// rendered view of this struct — `render` regenerates it whole, so comments and hand formatting
 /// do not survive a `pull`.
 ///
 /// `deny_unknown_fields` because the alternative is a misspelled or unwrapped attribute reading as
@@ -63,7 +63,7 @@ impl Person {
 		}
 	}
 
-	/// Their whole directory: [`MAIN`] and the conversation `history` keeps next to it.
+	/// Their whole directory: `MAIN` and the conversation `history` keeps next to it.
 	pub fn dir(&self, root: &Path) -> PathBuf {
 		root.join(&self.name)
 	}
@@ -248,7 +248,7 @@ impl From<Place> for Value {
 	}
 }
 
-/// Evaluate every `<name>/`[`MAIN`] under the purpose's path in one nix process, keyed by directory
+/// Evaluate every `<name>/``MAIN` under the purpose's path in one nix process, keyed by directory
 /// name. Holding that file is what makes a directory a person's, so a stray one in there costs nothing.
 ///
 /// A tag the purpose does not name, or a value of the wrong type, is refused here rather than read as

@@ -18,6 +18,7 @@ pub mod profile;
 pub mod search;
 mod sway;
 
+use std::path::Path;
 use std::{
 	collections::{HashMap, HashSet},
 	path::PathBuf,
@@ -80,122 +81,6 @@ pub struct Facebook<'t, 'c> {
 	geocoder: Geocoder,
 	dir: PathBuf,
 }
-
-/// The session `at` is read from: a city search in the user's own chrome, a group in the burner's.
-pub async fn with_session<T>(config: &FacebookConfig, at: &VenueRef, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
-	match Slug::of(at)? {
-		Slug::City(_) => with_attached(config, work).await,
-		Slug::Group(_) => with_launched(config, work).await,
-	}
-}
-
-/// The burner's chrome, headless. Opened for the one command and closed after it, Ctrl-C included.
-pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
-	let c = &config.launched;
-	let (dir, views, scrolls) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
-	let geocoder = Geocoder::try_new()?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir.join("sessions.toml"), async |tab| {
-		work(&mut Facebook {
-			tab,
-			session: Session::Launched,
-			views,
-			scrolls,
-			revisit_days: config.revisit_days,
-			geocoder,
-			dir: dir.clone(),
-		})
-		.await
-	})
-	.await
-}
-
-/// A window of the burner's chrome, waiting for a human to log in. Credentials are never ours to type.
-pub async fn login(config: &FacebookConfig) -> Result<()> {
-	let c = &config.launched;
-	let (dir, ..) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir.join("sessions.toml"), async |tab| {
-		tab.goto("https://www.facebook.com/").await
-	})
-	.await
-}
-
-async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
-	let c = &config.attached;
-	let (dir, views, scrolls) = state(Session::Attached, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
-	let geocoder = Geocoder::try_new()?;
-	browser::attach(c.cdp_port, &c.user_id, &dir.join("sessions.toml"), async |tab| {
-		work(&mut Facebook {
-			tab,
-			session: Session::Attached,
-			views,
-			scrolls,
-			revisit_days: config.revisit_days,
-			geocoder,
-			dir: dir.clone(),
-		})
-		.await
-	})
-	.await
-}
-
-impl Venue for Facebook<'_, '_> {
-	async fn venues(&mut self) -> Result<Vec<VenueRef>> {
-		bail!("facebook lists no venues; {ADDRESS}")
-	}
-
-	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()> {
-		match (Slug::of(at)?, self.session) {
-			(Slug::City(id), Session::Attached) => self.city(id, roster).await,
-			(Slug::Group(id), Session::Launched) => self.group(id, roster).await,
-			(_, session) => bail!("{at} is not read on the {} session", session.as_ref()),
-		}
-	}
-
-	async fn posts(&mut self, at: &VenueRef, _window: Window, _assets: &std::path::Path) -> Result<Page> {
-		bail!("{at}: facebook posts are not read")
-	}
-}
-
-impl Profiles for Facebook<'_, '_> {
-	/// Where they live, their work and education, and the accounts they link. The checkpoint is the
-	/// day of the visit, as linkedin's is: a profile visited inside `revisit_days` is not visited again.
-	async fn profile(&mut self, handle: &str, window: Window) -> Result<Profile> {
-		ensure!(self.session == Session::Launched, "a profile is visited from the launched session only");
-		let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-		if let Window::Above { after: Some(last), .. } = &window {
-			let last: jiff::civil::Date = last.parse().wrap_err("a facebook checkpoint is a date")?;
-			// leaving `activity.newest` unset is what keeps the checkpoint where it is
-			if last.until((jiff::Unit::Day, today))?.get_days() < self.revisit_days as i32 {
-				return Ok(Profile::default());
-			}
-		}
-
-		let personal = self.section(handle, "directory_personal_details").await?;
-		let mut others = Vec::new();
-		for name in ["directory_work", "directory_education", "directory_contact_info"] {
-			others.push(match personal.present.iter().any(|s| s == name) {
-				true => self.section(handle, name).await?,
-				false => Section::default(),
-			});
-		}
-		let [work, education, contact] = &others[..] else { unreachable!("three names") };
-		let mut profile = profile::stated(&personal, work, education, contact);
-		profile.lives_in = Some(match profile.sources.get("facebook:lives_in").cloned() {
-			Some(name) => {
-				let at = self
-					.geocoder
-					.point(&name)
-					.await?
-					.ok_or_else(|| eyre!("facebook says {handle} lives in `{name}`, which Nominatim does not know"))?;
-				Some(Place { name, lat: at.lat, lon: at.lon })
-			}
-			None => None,
-		});
-		profile.activity.newest = Some(today.to_string());
-		Ok(profile)
-	}
-}
-
 impl Facebook<'_, '_> {
 	/// People search for each first name in turn under the City filter; everyone it lists counts as
 	/// living there. One query's list is capped, which is why it walks names. The cursor is the last
@@ -315,6 +200,121 @@ impl Facebook<'_, '_> {
 		self.views.wait().await?;
 		self.tab.goto(&url).await?;
 		Section::parse(&self.tab.scripts().await?.join("\n"))
+	}
+}
+
+/// The session `at` is read from: a city search in the user's own chrome, a group in the burner's.
+pub async fn with_session<T>(config: &FacebookConfig, at: &VenueRef, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
+	match Slug::of(at)? {
+		Slug::City(_) => with_attached(config, work).await,
+		Slug::Group(_) => with_launched(config, work).await,
+	}
+}
+
+/// The burner's chrome, headless. Opened for the one command and closed after it, Ctrl-C included.
+pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
+	let c = &config.launched;
+	let (dir, views, scrolls) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	let geocoder = Geocoder::try_new()?;
+	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir.join("sessions.toml"), async |tab| {
+		work(&mut Facebook {
+			tab,
+			session: Session::Launched,
+			views,
+			scrolls,
+			revisit_days: config.revisit_days,
+			geocoder,
+			dir: dir.clone(),
+		})
+		.await
+	})
+	.await
+}
+
+/// A window of the burner's chrome, waiting for a human to log in. Credentials are never ours to type.
+pub async fn login(config: &FacebookConfig) -> Result<()> {
+	let c = &config.launched;
+	let (dir, ..) = state(Session::Launched, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir.join("sessions.toml"), async |tab| {
+		tab.goto("https://www.facebook.com/").await
+	})
+	.await
+}
+
+async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
+	let c = &config.attached;
+	let (dir, views, scrolls) = state(Session::Attached, c.views_per_hour, c.scrolls_per_hour, c.pause_secs)?;
+	let geocoder = Geocoder::try_new()?;
+	browser::attach(c.cdp_port, &c.user_id, &dir.join("sessions.toml"), async |tab| {
+		work(&mut Facebook {
+			tab,
+			session: Session::Attached,
+			views,
+			scrolls,
+			revisit_days: config.revisit_days,
+			geocoder,
+			dir: dir.clone(),
+		})
+		.await
+	})
+	.await
+}
+
+impl Venue for Facebook<'_, '_> {
+	async fn venues(&mut self) -> Result<Vec<VenueRef>> {
+		bail!("facebook lists no venues; {ADDRESS}")
+	}
+
+	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()> {
+		match (Slug::of(at)?, self.session) {
+			(Slug::City(id), Session::Attached) => self.city(id, roster).await,
+			(Slug::Group(id), Session::Launched) => self.group(id, roster).await,
+			(_, session) => bail!("{at} is not read on the {} session", session.as_ref()),
+		}
+	}
+
+	async fn posts(&mut self, at: &VenueRef, _window: Window, _assets: &Path) -> Result<Page> {
+		bail!("{at}: facebook posts are not read")
+	}
+}
+
+impl Profiles for Facebook<'_, '_> {
+	/// Where they live, their work and education, and the accounts they link. The checkpoint is the
+	/// day of the visit, as linkedin's is: a profile visited inside `revisit_days` is not visited again.
+	async fn profile(&mut self, handle: &str, window: Window) -> Result<Profile> {
+		ensure!(self.session == Session::Launched, "a profile is visited from the launched session only");
+		let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
+		if let Window::Above { after: Some(last), .. } = &window {
+			let last: jiff::civil::Date = last.parse().wrap_err("a facebook checkpoint is a date")?;
+			// leaving `activity.newest` unset is what keeps the checkpoint where it is
+			if last.until((jiff::Unit::Day, today))?.get_days() < self.revisit_days as i32 {
+				return Ok(Profile::default());
+			}
+		}
+
+		let personal = self.section(handle, "directory_personal_details").await?;
+		let mut others = Vec::new();
+		for name in ["directory_work", "directory_education", "directory_contact_info"] {
+			others.push(match personal.present.iter().any(|s| s == name) {
+				true => self.section(handle, name).await?,
+				false => Section::default(),
+			});
+		}
+		let [work, education, contact] = &others[..] else { unreachable!("three names") };
+		let mut profile = profile::stated(&personal, work, education, contact);
+		profile.lives_in = Some(match profile.sources.get("facebook:lives_in").cloned() {
+			Some(name) => {
+				let at = self
+					.geocoder
+					.point(&name)
+					.await?
+					.ok_or_else(|| eyre!("facebook says {handle} lives in `{name}`, which Nominatim does not know"))?;
+				Some(Place { name, lat: at.lat, lon: at.lon })
+			}
+			None => None,
+		});
+		profile.activity.newest = Some(today.to_string());
+		Ok(profile)
 	}
 }
 

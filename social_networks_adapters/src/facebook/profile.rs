@@ -57,17 +57,6 @@ impl Section {
 	}
 }
 
-/// One `profile_field`.
-#[derive(Clone, Debug, PartialEq)]
-struct Field {
-	/// facebook's `field_type`, e.g. `current_city`
-	kind: String,
-	text: String,
-	/// the line under it, e.g. "Instagram" for a `screenname`
-	subtitle: Option<String>,
-	link: Option<String>,
-}
-
 /// What the sections state, `lives_in` aside: that one is a place, which takes a geocoder. Current city
 /// and hometown are kept apart, since only the former says where someone lives.
 pub fn stated(personal: &Section, work: &Section, education: &Section, contact: &Section) -> Profile {
@@ -95,6 +84,17 @@ pub fn stated(personal: &Section, work: &Section, education: &Section, contact: 
 	}
 	profile
 }
+/// One `profile_field`.
+#[derive(Clone, Debug, PartialEq)]
+struct Field {
+	/// facebook's `field_type`, e.g. `current_city`
+	kind: String,
+	text: String,
+	/// the line under it, e.g. "Instagram" for a `screenname`
+	subtitle: Option<String>,
+	link: Option<String>,
+}
+
 
 /// `l.facebook.com/l.php?u=<target>&h=<token>` → `<target>`; the token expires, the target does not.
 fn unwrap_redirect(url: &str) -> String {
