@@ -1,7 +1,7 @@
 //! Poll/info channel forwarding. It rides the `dms` telegram connection rather than holding its own:
 //! telegram answers a second concurrent connection on one auth key with `AUTH_KEY_DUPLICATED`.
 
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use grammers_client::{Client, update::Update};
 use grammers_session::types::{PeerId, PeerRef};
 use jiff::{SignedDuration, Timestamp};
@@ -47,7 +47,7 @@ impl ChannelWatch {
 
 		let output_username = match &config.channel_output {
 			TelegramDestination::Channel(tg::TopLevelId::AtName(name)) | TelegramDestination::Group(tg::TopLevelId::AtName(name)) => name.trim_start_matches('@'),
-			_ => return Err(eyre!("channel_output must be a username for grammers client forwarding")),
+			_ => bail!("channel_output must be a username for grammers client forwarding"),
 		};
 		let output = client
 			.resolve_username(output_username)
