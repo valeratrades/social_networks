@@ -17,9 +17,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	convert::Infallible,
-	io::Write as _,
-	os::unix::fs::OpenOptionsExt as _,
-	path::{Path, PathBuf},
+	path::Path,
 	pin::pin,
 	sync::LazyLock,
 	time::{Duration, Instant},
@@ -35,6 +33,7 @@ use jiff::Timestamp;
 use regex::Regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use social_networks_utils::db::Database;
 use tokio::{sync::mpsc::UnboundedSender, time};
 use tracing::{info, instrument, warn};
 use v_utils::macros::MyConfigPrimitives;
@@ -46,6 +45,7 @@ use crate::{
 	reach::{Author, Direct, Item, Kind, Member, Page, Profile, Profiles, Roster, Source, Venue, VenueRef, VenueSource, Window},
 };
 
+pub const COOKIE_KEY: &str = "skool_cookies";
 const SURFACE: &str = "skool_dms";
 /// What a [`DmEvent`] from here calls itself, and what a `{skool = "..."}` monitored user matches on.
 const PLATFORM: &str = "Skool";
@@ -105,6 +105,7 @@ pub struct Skool {
 	cookie: Option<String>,
 	creds: Option<SkoolConfig>,
 	behaviour: Option<Behaviour>,
+	db: Database,
 	/// A login that failed fails the same way on retry, and every retry is a chromium launch.
 	mint_failed: bool,
 }
@@ -112,16 +113,9 @@ pub struct Skool {
 impl Skool {
 	/// Picks up a cached cookie if one was ever minted. Its absence is a real state — the public
 	/// reads work without it.
-	pub fn try_new(creds: Option<SkoolConfig>) -> Result<Self> {
-		let path = cookie_path()?;
-		let cookie = match path.exists() {
-			true => {
-				let cached: Cached = serde_json::from_str(&std::fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?)
-					.wrap_err_with(|| format!("{} is not a cookie cache — delete it to have one re-minted", path.display()))?;
-				Some(cached.cookie)
-			}
-			false => None,
-		};
+	pub async fn try_new(creds: Option<SkoolConfig>) -> Result<Self> {
+		let db = Database::try_new().await?;
+		let cookie = db.state::<Cached>(COOKIE_KEY).await?.map(|c| c.cookie);
 		let behaviour = match creds.as_ref().and_then(|c| c.behaviour.as_ref()) {
 			Some(config) => Some(Behaviour::load(config, &xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("skool")?)?),
 			None => None,
@@ -132,6 +126,7 @@ impl Skool {
 			cookie,
 			creds,
 			behaviour,
+			db,
 			mint_failed: false,
 		})
 	}
@@ -536,9 +531,7 @@ impl Skool {
 			Either::Right(((), _)) => Err(eyre!("the chromium CDP handler exited during login")),
 		}?;
 
-		let path = cookie_path()?;
-		let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
-		file.write_all(serde_json::to_string(&Cached { cookie: cookies.clone() })?.as_bytes())?;
+		self.db.set_state(COOKIE_KEY, &Cached { cookie: cookies.clone() }).await?;
 		self.cookie = Some(cookies);
 		self.mint_failed = false;
 		Ok(())
@@ -855,9 +848,9 @@ pub struct SkoolDms {
 }
 
 impl SkoolDms {
-	pub fn try_new(creds: SkoolConfig, tx: UnboundedSender<DmEvent>) -> Result<Self> {
+	pub async fn try_new(creds: SkoolConfig, tx: UnboundedSender<DmEvent>) -> Result<Self> {
 		Ok(Self {
-			session: Skool::try_new(Some(creds))?,
+			session: Skool::try_new(Some(creds)).await?,
 			tx,
 			cursors: HashMap::new(),
 			seeded: false,
@@ -1318,7 +1311,6 @@ struct Pin {
 	p: [f64; 2],
 }
 
-/// A session cookie is a bearer credential, so the file it lives in is `0600`.
 #[derive(Deserialize, Serialize)]
 struct Cached {
 	cookie: String,
@@ -1367,10 +1359,6 @@ async fn login(browser: &Browser, creds: &SkoolConfig) -> Result<String> {
 		bail!("login navigated to {url} but left no skool.com cookies");
 	}
 	Ok(header)
-}
-
-fn cookie_path() -> Result<PathBuf> {
-	Ok(xdg::BaseDirectories::with_prefix("social_networks").place_state_file("skool_cookies.json")?)
 }
 
 /// Deliberately the HTML rather than `/_next/data/<buildId>/…`: that route needs a `buildId` that

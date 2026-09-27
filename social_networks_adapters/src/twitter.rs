@@ -4,6 +4,7 @@ use clap::Args;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
+use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
 use tracing::{error, info};
 use v_utils::macros::MyConfigPrimitives;
@@ -17,6 +18,7 @@ use crate::{
 };
 
 const SURFACE: &str = "twitter";
+const STATE_KEY: &str = "twitter_parsed";
 #[derive(Args)]
 pub struct TwitterArgs {}
 
@@ -144,16 +146,8 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
-	// Load or create parsed tweets state
-	let state_file = xdg::BaseDirectories::with_prefix("social_networks")
-		.place_state_file("twitter_parsed.json")
-		.map_err(color_eyre::eyre::Report::from)?;
-	let mut parsed_state: ParsedTweets = if state_file.exists() {
-		let content = std::fs::read_to_string(&state_file)?;
-		serde_json::from_str(&content)?
-	} else {
-		ParsedTweets::default()
-	};
+	let db = Database::try_new().await?;
+	let mut parsed_state: ParsedTweets = db.state(STATE_KEY).await?.unwrap_or_default(); // none yet: nothing parsed so far
 
 	info!("--Twitter-- monitor started");
 
@@ -194,9 +188,7 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 			Err(TwitterError::Recoverable(e)) => error!("Error processing sometimes polls list: {e}"),
 		}
 
-		// Save state
-		let state_json = serde_json::to_string(&parsed_state)?;
-		std::fs::write(&state_file, state_json)?;
+		db.set_state(STATE_KEY, &parsed_state).await?;
 
 		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
 		info!("Heartbeat. Time: {}", strtime::format("%m/%d/%y-%H:%M", &now).unwrap());

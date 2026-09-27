@@ -376,7 +376,7 @@ fn sift(dir: &Path, people: Vec<Person>) -> Result<Vec<(Person, Vec<Source>)>> {
 /// leave a transcript no backfill may finish.
 async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<Source>)>, telegram: Option<&Client>) -> Result<Vec<Person>> {
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
-	let mut skool = Skool::try_new(config.skool.clone())?;
+	let mut skool = Skool::try_new(config.skool.clone()).await?;
 	let mut cold = Vec::new();
 	for (person, ask) in candidates {
 		let assets = person.dir(dir).join("assets");
@@ -486,7 +486,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	let mut github = Github::default();
 	let mut linkedin = Linkedin;
 	// credentials only widen what skool answers; without them the public profile is still a whole result
-	let mut skool = Skool::try_new(config.skool.clone())?;
+	let mut skool = Skool::try_new(config.skool.clone()).await?;
 
 	let total = people.len();
 	let width = people.iter().map(|p| p.name.chars().count()).max().expect("`pull` bails on an empty selection");

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use color_eyre::Result;
 use colored::Colorize;
+use jiff::Timestamp;
+use social_networks_utils::db::Database;
 
 use crate::config::AppConfig;
 
@@ -9,7 +11,7 @@ const SIZE_THRESHOLD_GB: f64 = 10.0;
 pub fn main(config: AppConfig) -> Result<()> {
 	println!("{}", "=== Social Networks Health Check ===\n".bold().cyan());
 
-	check_env_vars(&config);
+	check_env_vars(&config)?;
 	check_directories(&config);
 
 	println!();
@@ -57,7 +59,7 @@ fn status_icon(ok: bool) -> colored::ColoredString {
 }
 
 /// Required environment variables for various features
-fn check_env_vars(config: &AppConfig) {
+fn check_env_vars(config: &AppConfig) -> Result<()> {
 	println!("\n{}", "Environment & Config:".bold());
 
 	// Check core telegram config (required for notifications)
@@ -80,23 +82,21 @@ fn check_env_vars(config: &AppConfig) {
 	println!("  {} Email config", status_icon(email_ok));
 
 	// Check SQLite db
-	let db_ok = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("db.sqlite3").is_some();
+	let db_ok = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("db.sqlite3").is_some_and(|p| p.exists());
 	println!("  {} SQLite database", status_icon(db_ok));
 
-	check_skool_cookie();
+	check_skool_cookie()
 }
 
 /// Skool rotates the session about every 3.5 days and only a headless chromium can mint the next
 /// one, so its age is the one number that says whether that path still works.
-fn check_skool_cookie() {
-	let Some(path) = xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME")).get_state_file("skool_cookies.json") else {
-		println!("  {} Skool cookie (never minted)", status_icon(false));
-		return;
-	};
-	match path.metadata().and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default()) {
-		Ok(age) => println!("  {} Skool cookie ({:.1}d old)", status_icon(true), age.as_secs_f64() / 86_400.0),
-		Err(_) => println!("  {} Skool cookie (never minted)", status_icon(false)),
+fn check_skool_cookie() -> Result<()> {
+	let minted = tokio::runtime::Runtime::new()?.block_on(async { Database::try_new().await?.state_updated_at(social_networks_adapters::skool::COOKIE_KEY).await })?;
+	match minted {
+		Some(at) => println!("  {} Skool cookie ({:.1}d old)", status_icon(true), (Timestamp::now() - at).get_seconds() as f64 / 86_400.0),
+		None => println!("  {} Skool cookie (never minted)", status_icon(false)),
 	}
+	Ok(())
 }
 
 fn check_directories(config: &AppConfig) {

@@ -2,14 +2,15 @@
 //!
 //! Provides structured concurrency patterns for grammers client usage.
 
-use std::{future::Future, io::IsTerminal as _, path::Path, pin::Pin, sync::Arc};
+use std::{future::Future, io::IsTerminal as _, pin::Pin, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
 use futures::future::{Either, select};
 use grammers_client::{Client, SignInError, client::UpdatesConfiguration};
 use grammers_mtsender::SenderPool;
-use grammers_session::storages::SqliteSession;
 use tracing::{debug, error, info};
+
+use crate::db::{Database, DbSession};
 
 /// A pinned future representing the MTProto runner.
 /// Store this in your state and poll it alongside other futures using `select`.
@@ -22,7 +23,7 @@ pub struct TelegramConnection {
 	pub runner: RunnerFuture,
 	/// `Client` keeps its session private, but updates that carry a bare peer id can only be
 	/// named by looking that id up in the cache the dialog prefetch below warms.
-	pub session: Arc<SqliteSession>,
+	pub session: Arc<DbSession>,
 }
 
 /// Configuration for establishing a Telegram connection.
@@ -31,56 +32,26 @@ pub struct ConnectionConfig<'a> {
 	pub phone: &'a str,
 	pub api_id: i32,
 	pub api_hash: &'a str,
-	/// Session file suffix (e.g., "_dm" for DM monitor, "" for main)
+	/// Session name suffix (e.g., "_dm" for DM monitor, "" for main)
 	pub session_suffix: &'a str,
 	/// Suffix of the session to copy from when this one does not exist yet. The auth key travels
-	/// with the file, so the copy is authorized without a login code and without registering a new
-	/// device; the separate sqlite file is what keeps it off the 24/7 daemon's write path.
+	/// with the copy, so it is authorized without a login code and without registering a new device.
 	pub seed_from: Option<&'a str>,
 }
 
 /// Establishes a Telegram connection with proper session handling.
 ///
 /// This handles:
-/// - Session file creation/corruption recovery
+/// - Session load from the db (importing or seeding one on first use)
 /// - Authentication (including 2FA)
 /// - Dialog pre-fetching for peer cache warming
 ///
 /// Returns a `TelegramConnection` with the runner as a pinned future for structured concurrency.
 /// The caller should use `select` to poll the runner alongside their main logic.
 pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection> {
-	let session_filename = format!("{}{}.session", config.username, config.session_suffix);
-	let session_file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file(&session_filename)?;
-	info!("Using session file: {}", session_file.display());
-
-	if !session_file.exists()
-		&& let Some(seed) = config.seed_from
-	{
-		let seed_filename = format!("{}{seed}.session", config.username);
-		match xdg::BaseDirectories::with_prefix("social_networks").get_state_file(&seed_filename) {
-			Some(seed_file) => {
-				info!("Seeding {session_filename} from {}", seed_file.display());
-				std::fs::copy(&seed_file, &session_file)?;
-			}
-			None => info!("No {seed_filename} to seed {session_filename} from, will authenticate"),
-		}
-	}
-
-	info!("Opening session database");
-	let session = match SqliteSession::open(&session_file).await {
-		Ok(s) => Arc::new(s),
-		Err(e) => {
-			let err_str = e.to_string();
-			if err_str.contains("not a database") || err_str.contains("code 26") {
-				error!("Session database is corrupted: {e}");
-				info!("Deleting corrupted session file and creating a new one");
-				std::fs::remove_file(&session_file)?;
-				Arc::new(SqliteSession::open(&session_file).await?)
-			} else {
-				return Err(e.into());
-			}
-		}
-	};
+	let name = format!("{}{}", config.username, config.session_suffix);
+	let seed = config.seed_from.map(|seed| format!("{}{seed}", config.username));
+	let session = Arc::new(DbSession::open(Database::try_new().await?, &name, seed.as_deref()).await?);
 
 	info!("Connecting to Telegram with api_id: {}", config.api_id);
 	let pool = SenderPool::new(Arc::clone(&session), config.api_id);
@@ -92,7 +63,7 @@ pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection>
 	// deadlocks unless the runner is driven alongside it.
 	let handshake = async {
 		if !client.is_authorized().await? {
-			authenticate(&client, config.phone, config.api_hash, &session_file).await?;
+			authenticate(&client, config.phone, config.api_hash, &name).await?;
 		}
 		info!("Connected to Telegram");
 
@@ -145,10 +116,10 @@ pub fn should_reconnect_for_stack() -> bool {
 pub fn log_stack(context: &str) {
 	crate::utils::log_stack_usage(context);
 }
-async fn authenticate(client: &Client, phone: &str, api_hash: &str, session_file: &Path) -> Result<()> {
+async fn authenticate(client: &Client, phone: &str, api_hash: &str, session: &str) -> Result<()> {
 	// a daemon restarted by its supervisor would otherwise have a code sent to the phone on every restart
 	if !std::io::stdin().is_terminal() {
-		bail!("Sign in failed: {} is not authorized, and there is no terminal to type a login code into", session_file.display());
+		bail!("Sign in failed: telegram session {session} is not authorized, and there is no terminal to type a login code into");
 	}
 	info!("Not authorized, requesting login code for {phone}");
 	let token = client.request_login_code(phone, api_hash).await?;
@@ -189,6 +160,6 @@ async fn authenticate(client: &Client, phone: &str, api_hash: &str, session_file
 	}
 
 	eprintln!("Session saved successfully");
-	info!("Session saved successfully to {}", session_file.display());
+	info!("Telegram session {session} authorized");
 	Ok(())
 }

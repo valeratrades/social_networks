@@ -5,7 +5,7 @@ use color_eyre::eyre::{Context, Result, eyre};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
-use social_networks_utils::utils::btc_price;
+use social_networks_utils::{db::Database, utils::btc_price};
 use tokio::time::{self, Duration};
 use tracing::{debug, error, info, instrument};
 use v_utils::macros::MyConfigPrimitives;
@@ -23,6 +23,7 @@ mod reads;
 pub use reads::{Chapter, Cue, Listed, Video, download, listing, uploads, video};
 
 const SURFACE: &str = "youtube";
+const STATE_KEY: &str = "youtube_last_uploaded";
 #[derive(Args)]
 pub struct YoutubeArgs {}
 
@@ -103,15 +104,8 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
-	let state_file = xdg::BaseDirectories::with_prefix("social_networks")
-		.place_state_file("youtube_last_uploaded.json")
-		.map_err(color_eyre::eyre::Report::from)?;
-	let mut last_uploaded: LastUploadedTitles = if state_file.exists() {
-		let content = std::fs::read_to_string(&state_file)?;
-		serde_json::from_str(&content)?
-	} else {
-		LastUploadedTitles::default()
-	};
+	let db = Database::try_new().await?;
+	let mut last_uploaded: LastUploadedTitles = db.state(STATE_KEY).await?.unwrap_or_default(); // none yet: nothing announced so far
 
 	info!("--YouTube-- monitor started");
 
@@ -125,8 +119,7 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 			}
 		}
 
-		let state_json = serde_json::to_string(&last_uploaded)?;
-		std::fs::write(&state_file, state_json)?;
+		db.set_state(STATE_KEY, &last_uploaded).await?;
 
 		time::sleep(Duration::from_secs(60)).await;
 	}

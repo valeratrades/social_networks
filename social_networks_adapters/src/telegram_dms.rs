@@ -9,10 +9,13 @@ use grammers_client::{
 	session::types::PeerRef,
 	update::Update,
 };
-use grammers_session::{Session as _, storages::SqliteSession};
+use grammers_session::Session as _;
 use grammers_tl_types as tl;
 use jiff::Timestamp;
-use social_networks_utils::telegram_utils::{self, ConnectionConfig, TelegramConnection};
+use social_networks_utils::{
+	db::DbSession,
+	telegram_utils::{self, ConnectionConfig, TelegramConnection},
+};
 pub use tg::TelegramDestination;
 use tokio::{
 	sync::mpsc::UnboundedSender,
@@ -142,7 +145,7 @@ impl TelegramDms {
 		}
 	}
 
-	async fn handle_update(&mut self, client: &grammers_client::Client, session: &SqliteSession, update: Update) {
+	async fn handle_update(&mut self, client: &grammers_client::Client, session: &DbSession, update: Update) {
 		match update {
 			Update::NewMessage(message) if !message.outgoing() => {
 				// `peer()`/`sender()` only see the users vector of the update batch, and a plain DM
@@ -303,7 +306,7 @@ impl Reach<'_> {
 /// Resolving it to the same username the full-update path reports is what lets the consumer collapse
 /// the two into one alert. Losing the name is not worth losing the event, so every failure degrades
 /// to the bare id rather than dropping it.
-async fn resolve_username(client: &grammers_client::Client, session: &SqliteSession, peer_id: grammers_session::types::PeerId) -> String {
+async fn resolve_username(client: &grammers_client::Client, session: &DbSession, peer_id: grammers_session::types::PeerId) -> String {
 	let bare = peer_id.bare_id_unchecked();
 	let peer_ref = match session.peer_ref(peer_id).await {
 		Ok(Some(r)) => r,

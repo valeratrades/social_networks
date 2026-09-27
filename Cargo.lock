@@ -2161,6 +2161,8 @@ dependencies = [
  "grammers-tl-types",
  "libsql",
  "log",
+ "serde",
+ "serde_with",
  "tokio",
 ]
 
@@ -5538,6 +5540,9 @@ dependencies = [
  "libsql",
  "psm",
  "ravif",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "xdg",
 ]

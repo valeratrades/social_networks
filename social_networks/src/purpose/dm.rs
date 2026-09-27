@@ -83,7 +83,7 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
-			Skool::try_new(Some(credentials.clone()))?.send(handle, text).await
+			Skool::try_new(Some(credentials.clone())).await?.send(handle, text).await
 		}
 		Messenger::Telegram => with_telegram(&config.telegram, async |client| telegram_dms::Reach { client: &client }.send(handle, text).await).await,
 		Messenger::Twitter => twitter::Reach(&config.twitter).send(handle, text).await,

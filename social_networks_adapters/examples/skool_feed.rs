@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
 		password: std::env::var("SKOOL_PASSWORD")?,
 		behaviour: None,
 	};
-	let mut session = Skool::try_new(Some(creds))?;
+	let mut session = Skool::try_new(Some(creds)).await?;
 
 	let mut first_of_page = Vec::new();
 	for p in 1..=4 {

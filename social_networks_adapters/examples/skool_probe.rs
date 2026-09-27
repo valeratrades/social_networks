@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 		behaviour: None,
 	};
 
-	let mut session = Skool::try_new(Some(creds))?;
+	let mut session = Skool::try_new(Some(creds)).await?;
 	let path = match &route {
 		Some(route) => format!("/{group}/{route}"),
 		None => format!("/{group}"),

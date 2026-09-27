@@ -23,12 +23,15 @@ futures.workspace = true
 glass_pumpkin.workspace = true # grammers-crypto 0.10.0 breaks on 2.0.0-rc1
 grammers-client.workspace = true
 grammers-mtsender.workspace = true
-grammers-session.workspace = true
+grammers-session = { workspace = true, features = ["serde"] }
 image.workspace = true
 jiff.workspace = true
 libsql.workspace = true
 psm.workspace = true
 ravif.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 xdg.workspace = true
 

@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
 		behaviour: None,
 	};
 	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-	let mut dms = SkoolDms::try_new(creds, tx)?;
+	let mut dms = SkoolDms::try_new(creds, tx).await?;
 
 	let drain = async {
 		while let Some(DmEvent::Message { sender, text, chat_id, .. }) = rx.recv().await {

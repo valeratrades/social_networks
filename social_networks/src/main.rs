@@ -81,7 +81,7 @@ fn main() {
 			// needs none, but the chat listing is behind a session
 			let mut skool = match (on(DmSource::Skool), config.skool.clone()) {
 				(false, _) => None,
-				(true, Some(creds)) => Some(SkoolDms::try_new(creds, tx.clone()).map_err(|e| adapter_from_eyre("skool_dms", e))?),
+				(true, Some(creds)) => Some(SkoolDms::try_new(creds, tx.clone()).await.map_err(|e| adapter_from_eyre("skool_dms", e))?),
 				(true, None) => {
 					info!("no `[skool]` credentials, so skool chats are not watched");
 					None

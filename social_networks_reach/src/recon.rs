@@ -146,7 +146,7 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("a skool group is only readable by a member of it, so this needs a `[skool]` section in the config"))?;
-			let mut skool = Skool::try_new(Some(creds.clone()))?;
+			let mut skool = Skool::try_new(Some(creds.clone())).await?;
 			// `find` hangs off skool itself rather than off [`Venue`], so it cannot go through `act`
 			match command {
 				Command::Find { at, term } => {

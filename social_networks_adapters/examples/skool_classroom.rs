@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 			"scroll": { "per_hour": 1, "per_day": 1, "dwell_secs": 1, "spread": 0, "read_secs_per_item": 0 },
 		}))?),
 	};
-	let mut session = Skool::try_new(Some(creds))?;
+	let mut session = Skool::try_new(Some(creds)).await?;
 
 	let payload = session.page(&format!("/{group}/classroom")).await?;
 	println!("route: {}", payload.get("page").unwrap_or(&serde_json::Value::Null));

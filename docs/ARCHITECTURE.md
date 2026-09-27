@@ -62,7 +62,7 @@ social_networks/
     └── src/
         ├── lib.rs
         ├── avif.rs                         # attachment images, kept at an archive's size
-        ├── db.rs                           # SQLite client (libsql): email dedup, twitter_schedule attempts
+        ├── db.rs                           # SQLite client (libsql): email dedup, twitter_schedule attempts, daemon state, telegram sessions
         ├── telegram_utils.rs               # shared MTProto connect helpers
         └── utils.rs                        # BTC price fetch, number formatting
 ```
@@ -184,7 +184,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.
 - `TelegramNotifier` (adapters::telegram_notifier): all in-band outbound notifications flow through here.
-- `Database` (utils::db): SQLite (libsql). Email deduplication; twitter_schedule attempts, which a restart schedules from.
+- `Database` (utils::db): SQLite (libsql). Email deduplication; twitter_schedule attempts, which a restart schedules from; the daemons' cursors and caches; telegram sessions, through `DbSession`.
 - `Client` / `AdapterError` (adapters::client): the contract every long-running surface implements.
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
@@ -197,7 +197,8 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Throttling**: monitored user notifications throttled to 15-minute intervals.
 - **Deduplication**: all surfaces track processed items to prevent duplicate notifications.
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
-- **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session file counts — gets `AUTH_KEY_DUPLICATED` on both ends. So each daemon logs in its own session (`dms` on `<user>.session`, `telegram-channel-watch` on `<user>_channel_watch.session`), and no key is shared with another host's process, e.g. the laptop's `tg`.
+- **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session counts — gets `AUTH_KEY_DUPLICATED` on both ends. So each daemon logs in its own session (`dms` on `<user>`, `telegram-channel-watch` on `<user>_channel_watch`), and no key is shared with another host's process, e.g. the laptop's `tg`.
+- **A daemon's state is the db**: sessions, cursors and caches are rows of `db.sqlite3`, the one file the cluster replicates (litestream, devops). A daemon writing a file of its own beside it loses that state on every failover.
 - **Auth = exit**: an auth-class failure on any surface brings the process down non-zero. Nothing retries past it in-process; recovery is a human fixing creds and restarting.
 - **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, a purpose's `pull`), refused when empty.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
@@ -220,6 +221,6 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
-- **State persistence**: JSON files in `~/.local/state/social_networks/`, Telegram sessions in SQLite, a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched}/` and `skool/`; facebook's session drops and the burner's chrome profile beside them; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
+- **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` or `<name>.session` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched}/` and `skool/`; facebook's session drops and the burner's chrome profile beside them; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.
