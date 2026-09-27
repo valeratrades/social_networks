@@ -28,7 +28,7 @@ jobs:
         \ → Actions (repo-level, or org-level with 'All repositories' visibility —\
         \ org secrets reach public repos on any plan).\"\n  fi\n  exit 1\nfi\n"
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         fetch-depth: 1
     - id: claude
