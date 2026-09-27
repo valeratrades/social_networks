@@ -82,7 +82,7 @@ impl Store {
 	}
 
 	/// The checkpoint the next read resumes above.
-	pub fn cursor(&self) -> Option<&str> {
+	pub fn newest(&self) -> Option<&str> {
 		self.meta.newest.as_deref()
 	}
 
@@ -402,7 +402,7 @@ mod tests {
 		let mut store = Store::open(&root, &at).unwrap();
 		assert_eq!(store.record(page()).unwrap(), 0, "the same window carries nothing new");
 		assert_eq!(std::fs::read_to_string(store.dir().join("2026.md")).unwrap(), first);
-		assert_eq!(store.cursor(), Some("b"));
+		assert_eq!(store.newest(), Some("b"));
 		assert_eq!(all(&root).unwrap(), vec![at]);
 
 		std::fs::remove_dir_all(&root).unwrap();
