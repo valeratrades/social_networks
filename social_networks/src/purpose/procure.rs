@@ -46,12 +46,15 @@ pub async fn main(purpose: &Purpose, venues: &Path, args: ProcureArgs) -> Result
 		})
 		.collect();
 	for (group, values) in &groups {
-		if command.get_arguments().any(|arg| arg.get_long() == Some(group.as_str())) {
+		let flag = group.replace('_', "-");
+		if command.get_arguments().any(|arg| arg.get_long() == Some(flag.as_str())) {
 			bail!("group `{group}` of `purposes.{}.tags` is named like a flag of `procure`", purpose.name);
 		}
+		let spellings: Vec<String> = [group.to_string()].into_iter().filter(|s| *s != flag).collect();
 		command = command.arg(
 			Arg::new(group.to_string())
-				.long(group.to_string())
+				.long(flag)
+				.aliases(spellings)
 				.value_name(group.to_uppercase())
 				.value_parser(PossibleValuesParser::new(values.iter().cloned()))
 				.help(format!("What ${group} is bound to")),

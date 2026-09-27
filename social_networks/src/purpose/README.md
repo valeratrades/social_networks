@@ -204,21 +204,25 @@ hit counts as living there, as is, without a visit — and `pull` overwrites it 
 found, removing it when the visit found no current city. So the business location is a `near` rank
 term over it, and moving the business costs no visits.
 
+A tag is one name however it is spelled — `ServiceArb`, `service-arb` and `service_arb` are the same
+tag in the vocabulary, a person file, a rank term, a `$placeholder`, the command line and a pattern —
+and it is kept and shown snake_case. Two spellings of one name side by side fail the load.
+
 A **group** is declared as a list, `location = [ "lyon" "paris" ];`: one value per person out of
 it, lowercase `[a-z0-9_-]`, never judged by the extraction, and what a strategy can be generic over.
 
 ```nix
-tags = { ServiceArb = true; interest = 0.7; birthday = { min = 1990; max = 1991; as_of = "2026-03-04"; };
+tags = { service_arb = true; interest = 0.7; birthday = { min = 1990; max = 1991; as_of = "2026-03-04"; };
          lives_in = { name = "Lyon"; lat = 45.76; lon = 4.84; }; last_login = "2026-09-01T00:00:00Z";
          location = "lyon"; };
 ```
 
 ```
 rolodex tag                              # the vocabulary, its types, and how many people carry each
-rolodex tag ServiceArb <pattern>         # a bare name is a bool set to true; --rm takes a tag off
+rolodex tag service_arb <pattern>        # a bare name is a bool set to true; --rm takes a tag off
 purpose reviews tag birthday=1990 <pattern> # otherwise `<name>=<value>`: 0.7, 1988..1992 or 2002-09-25, Lyon@45.76,4.84, 2026-09-01
 rolodex tag location:lyon <pattern>      # a group is `<group>:<value>`
-rolodex cold ServiceArb                  # a pattern matches a true bool tag whole
+rolodex cold ServiceArb                  # any spelling of a name is that name; a pattern matches a true bool tag whole
 rolodex rank location:lyon               # and a `<group>:<value>` whole
 ```
 

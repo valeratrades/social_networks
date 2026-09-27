@@ -26,6 +26,7 @@ colored.workspace = true
 derive_more.workspace = true
 futures.workspace = true
 grammers-client.workspace = true
+heck.workspace = true
 jiff.workspace = true
 libsql.workspace = true
 serde.workspace = true

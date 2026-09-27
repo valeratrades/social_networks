@@ -10,7 +10,7 @@ use std::{
 
 use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
 use jiff::Timestamp;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use social_networks_adapters::reach::VenueRef;
 
 use crate::{
@@ -116,13 +116,7 @@ impl Purpose {
 	/// load, the `tag` command, a procurement strategy and the extraction. `None` — judged, nothing
 	/// supports a value — is only ever the extraction's to write.
 	pub fn check(&self, tag: &str, value: Option<&Value>) -> Result<()> {
-		let kind = self.tags.get(tag).ok_or_else(|| {
-			eyre!(
-				"`{tag}` is not in `purposes.{}.tags`, which names {}",
-				self.name,
-				self.tags.keys().cloned().collect::<Vec<_>>().join(", ")
-			)
-		})?;
+		let (tag, kind) = self.tag(tag)?;
 		let Some(value) = value else {
 			return match kind.about() {
 				Some(_) => Ok(()),
@@ -140,8 +134,22 @@ impl Purpose {
 		}
 	}
 
+	/// The tag `name` spells, however it is spelled, under the name it is shown by.
+	pub fn tag(&self, name: &str) -> Result<(String, &TagType)> {
+		let name = snake(name);
+		let kind = self.tags.get(&name).ok_or_else(|| {
+			eyre!(
+				"`{name}` is not in `purposes.{}.tags`, which names {}",
+				self.name,
+				self.tags.keys().cloned().collect::<Vec<_>>().join(", ")
+			)
+		})?;
+		Ok((name, kind))
+	}
+
 	fn term(&self, raw: RawTerm) -> Result<Term> {
 		let RawTerm { of, weight, within, near, decay } = raw;
+		let of = snake(&of);
 		if !(weight.is_finite() && weight > 0.0) {
 			bail!("rank term `{of}` has weight {weight}; a weight is a positive share of the score");
 		}
@@ -251,8 +259,8 @@ impl Purpose {
 	fn over(&self, text: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
 		placeholders(text)
 			.into_iter()
-			.map(|(_, group)| match self.tags.get(group) {
-				Some(TagType::Group(values)) => Ok((group.to_string(), values.clone())),
+			.map(|(_, group)| match self.tags.get(&snake(group)) {
+				Some(TagType::Group(values)) => Ok((snake(group), values.clone())),
 				_ => bail!(
 					"`${group}` names no group of `purposes.{}.tags`, whose groups are {}",
 					self.name,
@@ -383,7 +391,7 @@ impl Strategy {
 		if let Some(group) = bindings.keys().find(|group| !self.generic_over.contains_key(*group)) {
 			bail!("not generic over ${group}");
 		}
-		let bound = |group: &str| bindings.get(group).expect("checked above for every group it is over").clone();
+		let bound = |group: &str| bindings.get(&snake(group)).expect("checked above for every group it is over").clone();
 		Ok(Bound {
 			at: self.at.clone(),
 			predicate: self.predicate.as_ref().map(|predicate| {
@@ -435,6 +443,25 @@ fn placeholders(text: &str) -> Vec<(Range<usize>, &str)> {
 		from = at + 1 + name.len();
 	}
 	found
+}
+
+/// The one spelling a tag name is kept and shown in: `ServiceArb`, `service-arb` and `service_arb`
+/// are one tag.
+pub(crate) fn snake(name: &str) -> String {
+	heck::ToSnakeCase::to_snake_case(name)
+}
+
+/// A map keyed by tag names, each [snake]d; two spellings of one name are refused rather than one
+/// silently winning.
+pub(crate) fn snake_keys<'de, D: Deserializer<'de>, V: Deserialize<'de>>(d: D) -> std::result::Result<BTreeMap<String, V>, D::Error> {
+	let mut out = BTreeMap::new();
+	for (key, value) in BTreeMap::<String, V>::deserialize(d)? {
+		let name = snake(&key);
+		if out.insert(name.clone(), value).is_some() {
+			return Err(D::Error::custom(format!("`{key}` is another spelling of the tag `{name}`, which is already named")));
+		}
+	}
+	Ok(out)
 }
 
 /// What a group's name is spelled in, so a placeholder ends where the name does.
@@ -507,7 +534,7 @@ pub(crate) struct Near {
 #[serde(deny_unknown_fields)]
 struct RawPurpose {
 	path: PathBuf,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "snake_keys")]
 	tags: BTreeMap<String, RawTag>,
 	#[serde(default)]
 	procure: BTreeMap<String, RawStrategy>,
@@ -594,6 +621,6 @@ struct RawStrategy {
 	/// May carry `$<group>` placeholders, as may a tag's value.
 	#[serde(rename = "where")]
 	predicate: Option<String>,
-	#[serde(default)]
+	#[serde(default, deserialize_with = "snake_keys")]
 	tags: BTreeMap<String, Value>,
 }

@@ -8,7 +8,7 @@ use jiff::{Timestamp, civil::Date};
 use serde::Deserialize;
 use social_networks_adapters::reach::Place;
 
-use crate::purpose::Purpose;
+use crate::purpose::{Purpose, snake, snake_keys};
 
 const MAIN: &str = "__main__.nix";
 
@@ -27,7 +27,7 @@ pub struct Person {
 	/// What is said about them rather than what a platform says, typed by the purpose's vocabulary —
 	/// a load refuses a tag it does not name, or a value of the wrong type. `None` is a judgement the
 	/// extraction made and found nothing to support, which is not the same as one never asked for.
-	#[serde(default)]
+	#[serde(default, deserialize_with = "snake_keys")]
 	pub tags: BTreeMap<String, Option<Value>>,
 	/// Platform → handle. `discord`, `telegram`, `github` and `linkedin` are what `pull` knows how to
 	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
@@ -78,9 +78,9 @@ impl Person {
 	/// swallowed a name fragment is not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
 		if let Some((group, value)) = pattern.split_once(':') {
-			return self.tags.iter().any(|(t, v)| t.eq_ignore_ascii_case(group) && matches!(v, Some(Value::Word(w)) if w == value));
+			return matches!(self.tags.get(&snake(group)), Some(Some(Value::Word(w))) if w == value);
 		}
-		if self.tags.iter().any(|(t, v)| *v == Some(Value::Bool(true)) && t.eq_ignore_ascii_case(pattern)) {
+		if self.tags.get(&snake(pattern)) == Some(&Some(Value::Bool(true))) {
 			return true;
 		}
 		let pattern = pattern.to_lowercase();
@@ -426,8 +426,8 @@ mod tests {
 		let person = Person {
 			name: "ardi".to_string(),
 			tags: BTreeMap::from([
-				("ServiceArb".to_string(), Some(Value::Bool(true))),
-				("Rust".to_string(), Some(Value::Bool(false))),
+				("service_arb".to_string(), Some(Value::Bool(true))),
+				("rust".to_string(), Some(Value::Bool(false))),
 				("interest".to_string(), Some(Value::Number(-0.25))),
 				("judged".to_string(), None),
 				(

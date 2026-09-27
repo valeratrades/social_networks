@@ -123,13 +123,8 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 	};
 	// a tag typed rather than configured is the misspelling `load_dir` exists to refuse, caught before
 	// it reaches a file rather than after
-	let (name, kind) = purpose.tags.iter().find(|(known, _)| known.eq_ignore_ascii_case(typed)).ok_or_else(|| {
-		eyre!(
-			"`{typed}` is not in `purposes.{}.tags`: {}",
-			purpose.name,
-			purpose.tags.keys().cloned().collect::<Vec<_>>().join(", ")
-		)
-	})?;
+	let (name, kind) = purpose.tag(typed)?;
+	let name = &name;
 	match (kind, grouped) {
 		(TagType::Group(_), false) if raw.is_some() => bail!("`{name}` is a group, so it is `{name}:<value>`"),
 		(TagType::Group(_), _) | (_, false) => {}

@@ -5507,6 +5507,7 @@ dependencies = [
  "derive_more",
  "futures",
  "grammers-client",
+ "heck 0.5.0",
  "jiff",
  "libsql",
  "serde",
