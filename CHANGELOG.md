@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Browsers go through `browser_manipulation`.** Facebook and the skool login drive Chrome through its patchright driver instead of chromiumoxide and a hand-rolled CDP client. Running needs the driver: `PLAYWRIGHT_CLI_JS` and `PLAYWRIGHT_NODE_EXE`, which the devShell and the container image set. Failed browser actions leave a screenshot and the page's HTML under `facebook/{attached,launched}/browser_captures/`, kept 14 days.
+
 - **The daemons' state lives in the db.** Telegram sessions, the twitter and youtube cursors and the skool cookie are rows of `db.sqlite3` now, not files beside it, so replicating that one file carries all of it across a failover. On first start each daemon imports its own legacy `<name>.session` / `<key>.json` and deletes it; an imported session keeps its auth key (no new login) but not its peer cache, which the dialog prefetch refills on connect. The db runs in WAL with a 30s busy timeout, since every daemon writes it.
 
 - **Config: `behaviour` replaces facebook's `views_per_hour`, `scrolls_per_hour` and `pause_secs`.** `facebook.{attached,launched}.behaviour` and `skool.behaviour` state active hours, burst and break lengths, a noise share, and per-action caps (hour and day) and log-normal dwell. A skool group sweep refuses to run without `skool.behaviour`; the daemon, which only polls chat, needs none. The city walk shuffles first names within bands of 50, keeps a record per query under `facebook/attached/searched/`, and the attached window follows you to its workspace instead of staying parked until the run ends.

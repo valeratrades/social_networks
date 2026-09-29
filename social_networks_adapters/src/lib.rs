@@ -29,3 +29,13 @@ pub use telegram_dms::TelegramDms;
 pub use twitter::TwitterMonitor;
 pub use twitter_schedule::TwitterSchedule;
 pub use youtube::YoutubeMonitor;
+
+/// With the capture's paths, which `browser_manipulation` keeps in the diagnostic's help rather than the message.
+fn browser_failure(e: browser_manipulation::Error) -> color_eyre::Report {
+	let help = miette::Diagnostic::help(&e).map(|h| h.to_string());
+	let report = color_eyre::Report::new(e);
+	match help {
+		Some(help) => color_eyre::Section::note(report, help),
+		None => report,
+	}
+}

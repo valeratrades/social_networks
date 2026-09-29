@@ -7,7 +7,7 @@
 //!                                       profile(<id>)    the About tab, for where somebody lives
 //! ```
 //!
-//! The invariants are in `docs/ARCHITECTURE.md`; why the CDP client is hand-rolled is in
+//! The invariants are in `docs/ARCHITECTURE.md`; why the driver must never send `Runtime.enable` is in
 //! `docs/facebook/session_drop.md`.
 
 mod browser;
@@ -254,7 +254,7 @@ pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&m
 	let dir = state(Session::Launched)?;
 	let behaviour = Behaviour::load(&c.behaviour, &dir)?;
 	let geocoder = Geocoder::try_new()?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir.join("sessions.toml"), async |tab| {
+	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir, async |tab| {
 		work(&mut Facebook {
 			tab,
 			session: Session::Launched,
@@ -271,10 +271,7 @@ pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&m
 pub async fn login(config: &FacebookConfig) -> Result<()> {
 	let c = &config.launched;
 	let dir = state(Session::Launched)?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir.join("sessions.toml"), async |tab| {
-		tab.goto("https://www.facebook.com/").await
-	})
-	.await
+	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir, async |tab| tab.goto("https://www.facebook.com/").await).await
 }
 
 async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
@@ -282,7 +279,7 @@ async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut F
 	let dir = state(Session::Attached)?;
 	let behaviour = Behaviour::load(&c.behaviour, &dir)?;
 	let geocoder = Geocoder::try_new()?;
-	browser::attach(c.cdp_port, &c.user_id, &dir.join("sessions.toml"), async |tab| {
+	browser::attach(c.cdp_port, &c.user_id, &dir, async |tab| {
 		work(&mut Facebook {
 			tab,
 			session: Session::Attached,

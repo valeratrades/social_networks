@@ -39,7 +39,7 @@ social_networks/
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
-│       ├── facebook/                       # a hand-rolled CDP client over a logged-in chrome: City-filter search, group listings, About-tab visits
+│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits
 │       ├── nominatim.rs                    # place name → point, ≤1 req/s, cached on disk forever
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
@@ -208,9 +208,9 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **A fact outranks its seed**: `lives_in` and `birthday` are tags platforms state. `procure` seeds `lives_in` from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
-  - no `Runtime.enable`, which is why the CDP client is hand-rolled rather than chromiumoxide's;
+  - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
   - nothing is clicked: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch;
-  - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (CDP `Fetch`), and nothing else;
+  - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
   - `city` never launches a browser, and `group` and profile visits never use the user's;
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;

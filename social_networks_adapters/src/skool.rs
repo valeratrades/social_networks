@@ -18,17 +18,12 @@ use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	convert::Infallible,
 	path::Path,
-	pin::pin,
 	sync::LazyLock,
 	time::{Duration, Instant},
 };
 
-use chromiumoxide::{Browser, BrowserConfig};
+use browser_manipulation::{Browser, Launch, Robot};
 use color_eyre::eyre::{Result, WrapErr, bail, ensure, eyre};
-use futures::{
-	StreamExt as _,
-	future::{Either, select},
-};
 use jiff::Timestamp;
 use regex::Regex;
 use reqwest::Method;
@@ -520,16 +515,23 @@ impl Skool {
 		ensure!(!self.mint_failed, "a skool login already failed in this process");
 		self.mint_failed = true;
 		info!("minting a fresh skool cookie");
-		let config = BrowserConfig::builder().build().map_err(|e| eyre!("chromium config: {e}"))?;
-		let (browser, mut handler) = Browser::launch(config).await?;
-
-		// nothing on `browser` resolves unless the CDP stream is drained alongside it
-		let login = pin!(login(&browser, &creds));
-		let drain = pin!(async { while handler.next().await.is_some() {} });
-		let cookies = match select(login, drain).await {
-			Either::Left((cookies, _)) => cookies,
-			Either::Right(((), _)) => Err(eyre!("the chromium CDP handler exited during login")),
-		}?;
+		let chromium = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) // no PATH finds no chromium, which is the error below
+			.map(|dir| dir.join("chromium"))
+			.find(|p| p.is_file())
+			.ok_or_else(|| eyre!("no `chromium` on PATH, which minting a skool cookie drives"))?;
+		let profile = std::env::temp_dir().join(format!("social_networks-skool-{}", std::process::id()));
+		let launch = Launch::Owned {
+			profile: profile.clone(),
+			executable: chromium,
+			headless: true,
+			viewport: None,
+		};
+		let browser = Browser::launch(launch, Robot, None).await.map_err(crate::browser_failure)?;
+		let cookies = login(&browser, &creds).await;
+		let closed = browser.close().await;
+		std::fs::remove_dir_all(&profile).wrap_err_with(|| format!("failed to remove {}", profile.display()))?;
+		let cookies = cookies?;
+		closed.map_err(crate::browser_failure)?;
 
 		self.db.set_state(COOKIE_KEY, &Cached { cookie: cookies.clone() }).await?;
 		self.cookie = Some(cookies);
@@ -1316,40 +1318,38 @@ struct Cached {
 	cookie: String,
 }
 
-/// Closing over CDP would end the handler stream this is selected against, so the browser is left to
-/// `Drop`, which kills the child.
-async fn login(browser: &Browser, creds: &SkoolConfig) -> Result<String> {
-	let page = browser.new_page(format!("{BASE}/login")).await?;
-	page.find_element("input#email").await?.click().await?.type_str(&creds.email).await?;
-	page.find_element("input#password")
-		.await?
-		.click()
-		.await?
-		.type_str(&creds.password)
-		.await?
-		.press_key("Enter")
-		.await?;
+async fn login(browser: &Browser<Robot>, creds: &SkoolConfig) -> Result<String> {
+	let mut tab = browser.tab().await.map_err(crate::browser_failure)?;
+	tab.set_timeout(LOGIN_TIMEOUT).await;
+	async {
+		tab.goto(&format!("{BASE}/login")).await?;
+		tab.fill("input#email", &creds.email).await?;
+		tab.fill("input#password", &creds.password).await?;
+		tab.press("input#password", "Enter").await
+	}
+	.await
+	.map_err(crate::browser_failure)?;
 
 	// the form navigates away on success and re-renders in place on a rejected password, so the URL is
 	// the only signal that separates the two
 	let deadline = Instant::now() + LOGIN_TIMEOUT;
-	//LOOP: polls until the frame commits a navigation, bounded by `deadline`
+	//LOOP: polls until the page leaves the login form, bounded by `deadline`
 	let url = loop {
-		// `None` is a frame that has not committed a navigation yet, which is not somewhere to be
-		match page.url().await? {
-			Some(url) if !url.contains("/login") => break url,
-			url =>
-				if Instant::now() >= deadline {
-					bail!("still on {url:?} {LOGIN_TIMEOUT:?} after submitting the login form");
-				},
+		let url = tab.url();
+		if !url.contains("/login") {
+			break url;
+		}
+		if Instant::now() >= deadline {
+			bail!("still on {url} {LOGIN_TIMEOUT:?} after submitting the login form");
 		}
 		time::sleep(Duration::from_millis(500)).await;
 	};
 	info!("skool login landed on {url}");
 
-	let header = page
-		.get_cookies()
-		.await?
+	let header = tab
+		.cookies()
+		.await
+		.map_err(crate::browser_failure)?
 		.iter()
 		.filter(|c| c.domain.contains("skool.com"))
 		.map(|c| format!("{}={}", c.name, c.value))
