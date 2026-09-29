@@ -126,11 +126,16 @@ fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], t
 		Refresh::Reasoning => f.reasoned_at,
 		Refresh::Never => None,
 	};
-	// ponytail: O(n²) per term, fine for a folder of people
-	let cohorts: Vec<Vec<f64>> = columns
+	// sorted, with running sums, so `Σ_c |v − c|` is a binary search rather than a pass over the cohort
+	let cohorts: Vec<(Vec<f64>, Vec<f64>)> = columns
 		.iter()
 		.zip(&refresh)
-		.map(|(column, by)| column.iter().zip(facts).filter(|(_, f)| synced(f, *by).is_some()).map(|(v, _)| v.unwrap_or(0.0)).collect())
+		.map(|(column, by)| {
+			let mut sorted: Vec<f64> = column.iter().zip(facts).filter(|(_, f)| synced(f, *by).is_some()).map(|(v, _)| v.unwrap_or(0.0)).collect();
+			sorted.sort_by(f64::total_cmp);
+			let sums = std::iter::once(0.0).chain(sorted.iter().scan(0.0, |sum, v| Some(*sum + v))).collect();
+			(sorted, sums)
+		})
 		.collect();
 	(0..facts.len())
 		.map(|i| {
@@ -140,7 +145,7 @@ fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], t
 				.zip(&refresh)
 				.zip(columns.iter().zip(&cohorts))
 				.filter(|((_, by), _)| **by != Refresh::Never)
-				.map(|((term, by), (column, cohort))| {
+				.map(|((term, by), (column, (sorted, sums)))| {
 					let changed = match synced(&facts[i], *by) {
 						None => 1.0,
 						Some(at) => {
@@ -150,7 +155,10 @@ fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], t
 						}
 					};
 					let v = column[i].unwrap_or(0.0);
-					let far = (cohort.iter().map(|c| (v - c).abs()).sum::<f64>() + v * v - v + 0.5) / (cohort.len() + 1) as f64;
+					let (k, m) = (sorted.partition_point(|c| *c < v), sorted.len());
+					let (below, all) = (sums[k], sums[m]);
+					let apart = v * k as f64 - below + (all - below) - v * (m - k) as f64;
+					let far = (apart + v * v - v + 0.5) / (m + 1) as f64;
 					term.weight / total * changed * far
 				})
 				.sum::<f64>();
