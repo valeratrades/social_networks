@@ -14,10 +14,12 @@ struct Lead {
 	tags: &'static str,
 	/// `(day, time)` of each of their lines to me.
 	lines: &'static [(&'static str, &'static str)],
+	/// `(day, time)` of each of my lines to them.
+	ours: &'static [(&'static str, &'static str)],
 }
 
 const fn lead(name: &'static str, tags: &'static str) -> Lead {
-	Lead { name, tags, lines: &[] }
+	Lead { name, tags, lines: &[], ours: &[] }
 }
 
 /// Best first, with the score each got.
@@ -29,10 +31,20 @@ fn check(cohort: &str, leads: &[Lead]) -> Vec<(String, f64)> {
 		let person = people.join(lead.name);
 		std::fs::create_dir_all(&person).unwrap();
 		std::fs::write(person.join("__main__.nix"), format!("{{ tags = {{ {} }}; }}\n", lead.tags)).unwrap();
-		if !lead.lines.is_empty() {
+		let mut lines: Vec<(&str, &str, &str)> = lead
+			.lines
+			.iter()
+			.map(|&(day, time)| (day, time, lead.name))
+			.chain(lead.ours.iter().map(|&(day, time)| (day, time, "me")))
+			.collect();
+		if !lines.is_empty() {
+			lines.sort();
 			let mut body = format!("# {} — 2026 (times UTC)\n", lead.name);
-			for (day, time) in lead.lines {
-				body.push_str(&format!("\n## {day}\n\n- {time} [{}/skool] hi\n", lead.name));
+			for (i, (day, time, by)) in lines.iter().enumerate() {
+				if i == 0 || lines[i - 1].0 != *day {
+					body.push_str(&format!("\n## {day}\n\n"));
+				}
+				body.push_str(&format!("- {time} [{by}/skool] hi\n"));
 			}
 			std::fs::write(person.join("2026.md"), body).unwrap();
 		}
@@ -121,13 +133,74 @@ fn more_days_of_interaction_beat_fewer() {
 				name: "seldom",
 				tags: "",
 				lines: &[("2026-03-05", "10:00:00")],
+				ours: &[],
 			},
 			Lead {
 				name: "zealous",
 				tags: "",
 				lines: &[("2026-03-01", "10:00:00"), ("2026-03-03", "10:00:00"), ("2026-03-05", "10:00:00")],
+				ours: &[],
 			},
 		],
 	);
 	assert_eq!(order(&ranked), ["zealous", "seldom"]);
+}
+
+/// Outreach writes to everybody, so an answer is what sets a lead apart, however little else is known
+/// about them and however much is known about whoever never answered.
+#[test]
+fn one_reply_outranks_an_owner_who_never_answered() {
+	let ranked = check(
+		"replied",
+		&[
+			Lead {
+				name: "chatty",
+				tags: "",
+				lines: &[
+					("2026-01-01", "10:00:00"),
+					("2026-01-02", "10:00:00"),
+					("2026-01-03", "10:00:00"),
+					("2026-01-04", "10:00:00"),
+					("2026-01-05", "10:00:00"),
+					("2026-01-06", "10:00:00"),
+					("2026-01-07", "10:00:00"),
+					("2026-01-08", "10:00:00"),
+					("2026-01-09", "10:00:00"),
+					("2026-01-10", "10:00:00"),
+				],
+				ours: &[("2026-01-01", "09:00:00")],
+			},
+			Lead {
+				name: "answered",
+				tags: "",
+				lines: &[("2026-03-01", "10:00:00")],
+				ours: &[("2026-03-01", "09:00:00")],
+			},
+			Lead {
+				name: "owner",
+				tags: "business = true; birthday = { min = 2004; max = 2004; };",
+				lines: &[],
+				ours: &[("2026-09-01", "09:00:00")],
+			},
+		],
+	);
+	assert!(score(&ranked, "answered") > score(&ranked, "owner"), "{ranked:?}");
+}
+
+/// A line of ours says nothing about them: sent to everybody, it would make everybody equally recent.
+#[test]
+fn only_our_line_is_no_interaction() {
+	let ranked = check(
+		"ours",
+		&[
+			lead("untouched", ""),
+			Lead {
+				name: "written_to",
+				tags: "",
+				lines: &[],
+				ours: &[("2026-09-01", "09:00:00")],
+			},
+		],
+	);
+	assert_eq!(score(&ranked, "written_to"), score(&ranked, "untouched"), "{ranked:?}");
 }

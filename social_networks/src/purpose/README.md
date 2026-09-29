@@ -135,7 +135,7 @@ name is not load-bearing, since a pattern searches handles too.
 ```
                    ┌── tags (typed, checked against the vocabulary at load)
 person dir ────────┤
-                   └── year files ──► builtins: interactions, last_interaction, venue_activity
+                   └── year files ──► builtins: replied, interactions, last_interaction, venue_activity
                                   │
    rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w
 ```
@@ -147,13 +147,15 @@ person dir ────────┤
 | birthday | `within = [lo hi]` ages | fraction of the ages it allows today inside the target |
 | place | `near = {lat; lon; radius_km; halving_km}` | 1 inside the radius, `0.5^((d−r)/halving)` beyond it |
 | timestamp, `last_interaction` | `decay` | recency over the cohort |
+| `replied` | — | 1 once any line is theirs |
 | `interactions` | — | ÷ cohort max |
 | `venue_activity` | `decay` | activity over the cohort ÷ cohort max |
 
 Absent means no credit, so every term is a bonus: a penalty for distance is a lost closeness bonus,
 which orders the same. The builtins are derived from the transcripts at rank time and never stored —
-`interactions` is the distinct days with a line by them in their year files, `last_interaction` their
-newest year-file line in either direction, `venue_activity` their lines across every venue
+`replied` is whether any year-file line is theirs, `interactions` the distinct days with a line by them
+in their year files, `last_interaction` their newest year-file line (ours say nothing about them, and
+outreach writes to everybody), `venue_activity` their lines across every venue
 transcript. Recency is `ln(age)` over the cohort, as [`rank`](../../../social_networks_reach/src/rank.rs)
 explains, so a score means nothing outside the cohort it was ranked in. A person still backfilling has
 no year files yet, and is marked rather than read as having none.

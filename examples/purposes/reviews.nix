@@ -5,16 +5,17 @@
   tags = {
     business = { type = "bool"; about = "runs a business of their own"; };
     last_login = { type = "timestamp"; };
-    interest = { type = "number"; min = 0; max = 1; about = "degree of interest shown"; };
+    interest = { type = "number"; min = 0; max = 1; about = "how willing they are, judged from their replies to us, to follow through on leaving the review we asked for: 0 refused, 1 agreed or already did"; };
     birthday = { type = "birthday"; about = "when they were born, off an age or a birth year they stated"; };
     lives_in = { type = "place"; };
   };
   rank = [
-    { of = "business"; weight = 7; }
+    { of = "replied"; weight = 10; }
+    { of = "interest"; weight = 8; }
+    { of = "last_interaction"; decay = 3; weight = 7; }
     { of = "interactions"; weight = 6; }
-    { of = "last_interaction"; decay = 3; weight = 5; }
-    { of = "last_login"; decay = 3; weight = 4; }
-    { of = "interest"; weight = 3; }
+    { of = "business"; weight = 5; }
+    { of = "last_login"; decay = 3; weight = 3; }
     { of = "birthday"; within = [ 12 26 ]; weight = 2; }
     # the business location
     { of = "lives_in"; near = { lat = 48.8566; lon = 2.3522; radius_km = 30; halving_km = 50; }; weight = 1; }

@@ -113,8 +113,8 @@ that you keep a handle for. It uses the messages that `pull` kept. If `pull` rea
 platform, `cold` asks that platform for one message. It keeps no message that it gets.
 
 `rank` gives each person a score from 0 to 100. Each term of the ranking reads one tag, or one value
-from the messages: `interactions` (the days they wrote to you), `last_interaction` (the last message),
-or `venue_activity` (their lines in the groups). A term gives 0 if the person has no value for it. A
+from the messages: `replied` (they wrote to you at all), `interactions` (the days they wrote to you),
+`last_interaction` (the last message they wrote), or `venue_activity` (their lines in the groups). A term gives 0 if the person has no value for it. A
 `decay` on a term sets how much it decreases the weight of an old line. With `decay = 0`, each line
 has the same weight.
 

@@ -24,7 +24,7 @@ pub const LIVES_IN: &str = "lives_in";
 /// When a platform says somebody was born, or what they said their age was.
 pub const BIRTHDAY: &str = "birthday";
 /// Signals every purpose has without declaring them, derived at rank time from the transcripts.
-const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
+const BUILTINS: [&str; 4] = ["replied", "interactions", "last_interaction", "venue_activity"];
 /// Tags a platform states rather than anybody judging them, which `pull` writes from what a platform
 /// answered. A purpose opts into one by declaring a tag of that name, of that type.
 const FACTS: [(&str, TagType); 2] = [(LIVES_IN, TagType::Place), (BIRTHDAY, TagType::Birthday { about: None })];
@@ -206,6 +206,7 @@ impl Purpose {
 				Signal::Timestamp { decay: rate()? }
 			}
 			(Some(TagType::Group(_)), _) => bail!("rank term `{of}` reads a group, which carries no order to rank by"),
+			(None, "replied") => shape(&[]).map(|()| Signal::Replied)?,
 			(None, "interactions") => shape(&[]).map(|()| Signal::Interactions)?,
 			(None, "last_interaction") => {
 				shape(&["decay"])?;
@@ -531,9 +532,11 @@ pub(crate) enum Signal {
 	Timestamp {
 		decay: f64,
 	},
+	/// Whether any year-file line is theirs.
+	Replied,
 	/// Distinct days with a line by them in their year files.
 	Interactions,
-	/// Their newest year-file line, in either direction.
+	/// Their newest year-file line.
 	LastInteraction {
 		decay: f64,
 	},

@@ -47,7 +47,7 @@ pub struct Ranked {
 /// differently among different people.
 pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec<Ranked>> {
 	let reads = |f: fn(&Signal) -> bool| purpose.rank.iter().any(|term| f(&term.signal));
-	let transcript = reads(|s| matches!(s, Signal::Interactions | Signal::LastInteraction { .. }));
+	let transcript = reads(|s| matches!(s, Signal::Replied | Signal::Interactions | Signal::LastInteraction { .. }));
 	let in_venues = reads(|s| matches!(s, Signal::VenueActivity { .. }));
 
 	let mut facts = Vec::with_capacity(people.len());
@@ -62,14 +62,10 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 			true => venue::lines_by(venues, person, None)?.into_iter().map(|(_, line)| line.at).collect(),
 			false => Vec::new(),
 		};
+		let theirs = || lines.iter().filter(|line| line.handle != ME);
 		facts.push(Facts {
-			days: lines
-				.iter()
-				.filter(|line| line.handle != ME)
-				.map(|line| line.at.to_zoned(TimeZone::UTC).date())
-				.collect::<BTreeSet<_>>()
-				.len(),
-			last: lines.iter().map(|line| line.at).max(),
+			days: theirs().map(|line| line.at.to_zoned(TimeZone::UTC).date()).collect::<BTreeSet<_>>().len(),
+			last: theirs().map(|line| line.at).max(),
 			spoke,
 			backfilling: meta.backfill_status().is_some(),
 			fetched_at: meta.fetched_at,
@@ -107,7 +103,7 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 struct Facts {
 	/// Distinct days with a line by them in their year files.
 	days: usize,
-	/// Their newest year-file line, in either direction.
+	/// Their newest year-file line; ours say nothing about them.
 	last: Option<Timestamp>,
 	/// When they wrote each of their venue lines.
 	spoke: Vec<Timestamp>,
@@ -226,6 +222,7 @@ fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {
 			*decay,
 		),
 		Signal::LastInteraction { decay } => recency(facts.iter().map(|f| f.last.filter(|_| !f.backfilling)).collect(), *decay),
+		Signal::Replied => facts.iter().map(|f| (f.days > 0 && !f.backfilling).then_some(1.0)).collect(),
 		Signal::Interactions => {
 			let top = facts.iter().map(|f| f.days).max().unwrap_or(0);
 			facts.iter().map(|f| (f.days > 0 && !f.backfilling).then(|| f.days as f64 / top as f64)).collect()
