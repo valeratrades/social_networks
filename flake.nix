@@ -121,6 +121,7 @@
             entrypoint = [ "${bin}/bin/${pname}" ];
             contents = [ chromium claude_code_nix.packages.${system}.default pkgs.coreutils pkgs.nodejs patchright ];
             mounts = [ "/data" ];
+            sqlite = [ "/data/.local/state/social_networks/db.sqlite3" ]; # xdg state dir under imageEnv's HOME
             workingDir = "/data";
             imageEnv = [ "HOME=/data" "PATH=/bin" ] ++ pkgs.lib.mapAttrsToList (k: v: "${k}=${v}") driverEnv;
           };
