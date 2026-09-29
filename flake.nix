@@ -3,7 +3,7 @@
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
     claude_code_nix.url = "github:sadjow/claude-code-nix"; # a newer model needs a newer CLI, and nixpkgs trails the releases
     browser_manipulation = {
-      url = "github:valeratrades/browser_manipulation?ref=v0.2.1"; # the same tag as the cargo dep: its driver is pinned to it
+      url = "github:valeratrades/browser_manipulation?ref=v0.3.0"; # the same tag as the cargo dep: its driver is pinned to it
       inputs.v_flakes.follows = "v_flakes";
     };
   };
@@ -93,7 +93,7 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            outputHashes."browser_manipulation-0.2.1" = "sha256-3Je1LiU6dYg0+Vpw2N+rHN/K47oKMfEf12JAncHc5eM=";
+            outputHashes."browser_manipulation-0.3.0" = "sha256-FCTGZIbAXeq26EuHwa8Rw6yfOKF4NUFdvQ5rSmpoD/4=";
           };
           src = pkgs.lib.cleanSource ./.;
         };

@@ -569,8 +569,8 @@ dependencies = [
 
 [[package]]
 name = "browser_manipulation"
-version = "0.2.1"
-source = "git+https://github.com/valeratrades/browser_manipulation?tag=v0.2.1#0464f6116d58f1b23d8fe6d43c42e7280ca9954b"
+version = "0.3.0"
+source = "git+https://github.com/valeratrades/browser_manipulation?tag=v0.3.0#4d58ff9b92aa1b0ab01628bfae20b9d46d7890f9"
 dependencies = [
  "bon",
  "crc32fast",
