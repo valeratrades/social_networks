@@ -215,6 +215,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;
   - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
+  - the user's sway focus is never moved: no `Page.bringToFront`, and a window that must render is moved to a headless output, never to the user;
   - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
 - **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.
 

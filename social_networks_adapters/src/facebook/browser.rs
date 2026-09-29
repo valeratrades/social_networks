@@ -19,7 +19,7 @@ use chromiumoxide::{
 		browser_protocol::{
 			browser, emulation, fetch, input,
 			network::{self, GetResponseBodyParams},
-			page::{self, BringToFrontParams, NavigateParams},
+			page::{self, NavigateParams},
 			target::{AttachToTargetParams, CreateTargetParams, DetachFromTargetParams, GetTargetsParams, TargetId},
 		},
 		js_protocol::runtime::EvaluateParams,
@@ -156,7 +156,6 @@ impl Tab<'_> {
 		if !landed.contains("/login") {
 			self.navigate("https://www.facebook.com/login").await?;
 		}
-		self.call(BringToFrontParams::default()).await?;
 		notify("facebook: session ended — log in in the scraped tab")?;
 		eprintln!("waiting for a facebook login in the scraped tab");
 		while self.logged_in_at().await?.is_none() {
@@ -379,7 +378,6 @@ async fn run<T>(ws: Ws, headless: bool, close: bool, drops: &Path, target: impl 
 			assert!(ua.contains("HeadlessChrome/"), "a headless chrome says so in its UA: {ua}");
 			tab.call(emulation::SetUserAgentOverrideParams::new(ua.replace("HeadlessChrome/", "Chrome/"))).await?;
 		}
-		tab.call(BringToFrontParams::default()).await?;
 		work(&mut tab).await
 	});
 	// SIGINT ends the work here rather than the process, so the window goes back and a launched chrome closes
