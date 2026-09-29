@@ -1,7 +1,7 @@
 //! Conversations the daemon holds on its own: a thread opened by a message a script's key matches is
 //! answered toward that script's goal, and handed to a human once the goal is reached.
 
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr, sync::LazyLock};
 
 use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
 use miette::{Diagnostic, GraphicalReportHandler, GraphicalTheme};
@@ -17,9 +17,11 @@ pub struct Scripts(Vec<Script>);
 impl Scripts {
 	pub(super) fn find(&self, thread: &[EmailMessage]) -> Result<Option<&Script>> {
 		let root = thread.first().expect("a thread holds at least the message it was fetched for");
+		let forward = is_forward(root);
 		let mut hits = self
 			.0
 			.iter()
+			.filter(|s| s.match_forwards || !forward)
 			.filter(|s| s.key.is_match(&root.from) || s.key.is_match(&root.subject) || s.key.is_match(&root.body));
 		let hit = hits.next();
 		if let (Some(a), Some(b)) = (hit, hits.next()) {
@@ -47,11 +49,20 @@ impl TryFrom<BTreeMap<String, RawScript>> for Scripts {
 	}
 }
 
+// ponytail: subject prefix and the Gmail/Apple Mail body markers; other clients' forwards pass as originals
+fn is_forward(message: &EmailMessage) -> bool {
+	static SUBJECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\s*(fwd?|tr)\s*:").expect("literal"));
+	SUBJECT.is_match(&message.subject) || message.body.contains("---------- Forwarded message ---------") || message.body.contains("Begin forwarded message:")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawScript {
 	goal: Option<String>,
 	methods: Option<String>,
+	/// A forwarded message quotes someone else's From/Subject/body, which the key would otherwise match
+	#[serde(default)]
+	match_forwards: bool,
 }
 
 #[derive(Debug, Diagnostic, thiserror::Error)]
@@ -76,6 +87,7 @@ pub(super) struct Script {
 	key: Regex,
 	goal: String,
 	methods: String,
+	match_forwards: bool,
 }
 impl Script {
 	fn try_new(name: String, raw: RawScript) -> std::result::Result<Self, ScriptError> {
@@ -88,7 +100,12 @@ impl Script {
 			}
 		};
 		let key = Regex::new(&name).map_err(|source| ScriptError::Key { name, source })?;
-		Ok(Self { key, goal, methods })
+		Ok(Self {
+			key,
+			goal,
+			methods,
+			match_forwards: raw.match_forwards,
+		})
 	}
 
 	pub(super) fn name(&self) -> &str {
@@ -99,6 +116,9 @@ impl Script {
 		let thread = thread.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n\n---\n\n");
 		format!(
 			r#"You write email as {account}, carrying on the thread below toward a goal.
+
+Always:
+- Keep it as concise as the task allows. Shorter is better: cut every sentence that doesn't move toward the goal.
 
 Goal:
 {goal}
@@ -255,6 +275,20 @@ mod tests {
 		let thread = thread();
 		assert_eq!(scripts.find(&thread).unwrap().map(Script::name), Some("stuck in verification"));
 		assert!(scripts.find(&thread[1..]).unwrap().is_none());
+	}
+
+	#[test]
+	fn forwards_are_matched_only_by_scripts_that_opt_in() {
+		let forward = EmailMessage::parse(
+			"me@gmail.com/0".into(),
+			"From: Client <client@gmail.com>\r\nTo: me@gmail.com\r\nSubject: Fwd: Action requise\r\nMessage-ID: <f@client>\r\n\r\n---------- Forwarded message ---------\r\nDe : Google Business Profile <businessprofile-noreply@google.com>\r\n\r\nVotre validation n'a pas été approuvée.\r\n"
+				.as_bytes(),
+		)
+		.unwrap();
+		let by_default: Scripts = serde_json::from_str(r#"{ "Google Business Profile": { "goal": "a call", "methods": "ask" } }"#).unwrap();
+		assert!(by_default.find(&[forward.clone()]).unwrap().is_none());
+		let opted_in: Scripts = serde_json::from_str(r#"{ "Google Business Profile": { "goal": "a call", "methods": "ask", "match_forwards": true } }"#).unwrap();
+		assert!(opted_in.find(&[forward]).unwrap().is_some());
 	}
 
 	#[test]
