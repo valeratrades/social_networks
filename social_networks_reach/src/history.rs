@@ -58,14 +58,12 @@ pub struct Meta {
 	venues_through: Option<Timestamp>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	unreasoned: Option<Unreasoned>,
-}
-/// What a pull fetched and no model has read yet, because none answered. The labels are made of it
-/// by the next pull that reaches one; until then the platform-stated sources wait here rather than in
-/// the person file, which holds only what the labels were made of.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Unreasoned {
-	pub items: Vec<Item>,
-	pub sources: BTreeMap<String, String>,
+	/// The last pull every handle of theirs answered.
+	#[serde(default)]
+	pub(crate) fetched_at: Option<Timestamp>,
+	/// The last complete fetch their labels were made of.
+	#[serde(default)]
+	pub(crate) reasoned_at: Option<Timestamp>,
 }
 impl Meta {
 	pub fn load(person_dir: &Path) -> Result<Self> {
@@ -153,6 +151,17 @@ impl Meta {
 		self.save()
 	}
 
+	/// Called once every handle of theirs answered, and what it said is written. `labelled` when their
+	/// labels are made of all of it too.
+	pub fn fetched(&mut self, labelled: bool) -> Result<()> {
+		let now = Timestamp::now();
+		self.fetched_at = Some(now);
+		if labelled {
+			self.reasoned_at = Some(now);
+		}
+		self.save()
+	}
+
 	/// Replaces what was waiting: `unreasoned` is built on top of it.
 	pub fn defer(&mut self, unreasoned: Unreasoned) -> Result<()> {
 		self.unreasoned = Some(unreasoned);
@@ -184,6 +193,15 @@ impl Meta {
 			}
 		}
 	}
+}
+
+/// What a pull fetched and no model has read yet, because none answered. The labels are made of it
+/// by the next pull that reaches one; until then the platform-stated sources wait here rather than in
+/// the person file, which holds only what the labels were made of.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Unreasoned {
+	pub items: Vec<Item>,
+	pub sources: BTreeMap<String, String>,
 }
 
 /// The half of [`Meta`] a fetch touches: where to resume, and where to put a page so the next run

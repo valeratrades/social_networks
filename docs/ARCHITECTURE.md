@@ -189,7 +189,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
 - `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
-- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it.
 
 ## Invariants
 

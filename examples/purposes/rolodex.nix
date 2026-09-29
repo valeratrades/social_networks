@@ -1,6 +1,7 @@
 # My own connections.
 {
   path = "/home/v/s/g/rolodex/people";
+  half_life = "30d";
   tags = {
     location = [ "new_york" "toronto" "london" "berlin" ]; # a group: matched against the roster's IANA `zone`
     service_arb = { type = "bool"; };

@@ -9,6 +9,7 @@ fn purpose(lives_in: serde_json::Value) -> Result<Purposes, String> {
 		"path": "/nonexistent",
 		"tags": { "lives_in": lives_in },
 		"rank": [{ "of": "interactions", "weight": 1 }],
+		"half_life": "30d",
 	}}))
 	.map_err(|e| e.to_string())
 }

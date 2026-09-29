@@ -26,7 +26,7 @@ use jiff::{Timestamp, tz::TimeZone};
 use crate::{
 	history::{self, ME},
 	person::{Person, Value},
-	purpose::{Near, Purpose, Signal, Term},
+	purpose::{Near, Purpose, Refresh, Signal, Term},
 	venue,
 };
 
@@ -39,6 +39,8 @@ pub struct Ranked {
 	pub terms: Vec<Option<f64>>,
 	/// No year files yet, so the transcript terms read nothing rather than a true zero.
 	pub backfilling: bool,
+	/// What the score stands to be off by for want of a pull, in `[0, 1]`: see `purpose/README.md`.
+	pub stale: f64,
 }
 
 /// Best first. Every cohort-relative term is relative to `people`, so the same person ranks
@@ -55,6 +57,7 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 			true => venue::read(&dir, None)?,
 			false => Vec::new(),
 		};
+		let meta = history::Meta::load(&dir)?;
 		let spoke = match in_venues {
 			true => venue::lines_by(venues, person, None)?.into_iter().map(|(_, line)| line.at).collect(),
 			false => Vec::new(),
@@ -68,17 +71,21 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 				.len(),
 			last: lines.iter().map(|line| line.at).max(),
 			spoke,
-			backfilling: history::Meta::load(&dir)?.backfill_status().is_some(),
+			backfilling: meta.backfill_status().is_some(),
+			fetched_at: meta.fetched_at,
+			reasoned_at: meta.reasoned_at,
 		});
 	}
 
 	let columns: Vec<Vec<Option<f64>>> = purpose.rank.iter().map(|term| column(term, &people, &facts)).collect();
 	let total: f64 = purpose.rank.iter().map(|term| term.weight).sum();
+	let stale = staleness(purpose, &columns, &facts, total);
 	let mut ranked: Vec<Ranked> = people
 		.into_iter()
 		.zip(facts)
+		.zip(stale)
 		.enumerate()
-		.map(|(i, (person, facts))| {
+		.map(|(i, ((person, facts), stale))| {
 			let terms: Vec<Option<f64>> = columns.iter().map(|column| column[i]).collect();
 			// absent is no credit, which makes every term a bonus
 			let score = purpose.rank.iter().zip(&terms).map(|(term, v)| term.weight * v.unwrap_or(0.0)).sum::<f64>() / total;
@@ -88,6 +95,7 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 				score,
 				terms,
 				backfilling: facts.backfilling,
+				stale,
 			}
 		})
 		.collect();
@@ -104,6 +112,52 @@ struct Facts {
 	/// When they wrote each of their venue lines.
 	spoke: Vec<Timestamp>,
 	backfilling: bool,
+	fetched_at: Option<Timestamp>,
+	reasoned_at: Option<Timestamp>,
+}
+
+/// Per person, `Σ_t share_t · P(changed since the pull that refreshes t) · E|v_t − V_t|`, `V_t` being the
+/// values of those that pull already reached plus one uniform draw, so an empty cohort still spreads.
+fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], total: f64) -> Vec<f64> {
+	let now = Timestamp::now();
+	let refresh: Vec<Refresh> = purpose.rank.iter().map(|term| purpose.refreshed_by(term)).collect();
+	let synced = |f: &Facts, by: Refresh| match by {
+		Refresh::Fetch => f.fetched_at,
+		Refresh::Reasoning => f.reasoned_at,
+		Refresh::Never => None,
+	};
+	// ponytail: O(n²) per term, fine for a folder of people
+	let cohorts: Vec<Vec<f64>> = columns
+		.iter()
+		.zip(&refresh)
+		.map(|(column, by)| column.iter().zip(facts).filter(|(_, f)| synced(f, *by).is_some()).map(|(v, _)| v.unwrap_or(0.0)).collect())
+		.collect();
+	(0..facts.len())
+		.map(|i| {
+			let stale = purpose
+				.rank
+				.iter()
+				.zip(&refresh)
+				.zip(columns.iter().zip(&cohorts))
+				.filter(|((_, by), _)| **by != Refresh::Never)
+				.map(|((term, by), (column, cohort))| {
+					let changed = match synced(&facts[i], *by) {
+						None => 1.0,
+						Some(at) => {
+							let since = now.duration_since(at);
+							assert!(!since.is_negative(), "synced at {at}, which is after now");
+							1.0 - 0.5f64.powf(since.as_secs_f64() / purpose.half_life.as_secs_f64())
+						}
+					};
+					let v = column[i].unwrap_or(0.0);
+					let far = (cohort.iter().map(|c| (v - c).abs()).sum::<f64>() + v * v - v + 0.5) / (cohort.len() + 1) as f64;
+					term.weight / total * changed * far
+				})
+				.sum::<f64>();
+			assert!((0.0..=1.0).contains(&stale), "a weighted mean of values in [0, 1] came out {stale}");
+			stale
+		})
+		.collect()
 }
 
 fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {

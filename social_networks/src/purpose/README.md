@@ -17,7 +17,8 @@ config.nix
      ├─ tags     { <name> = { type = bool | number{min;max} | birthday | place | timestamp; about?; };
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
-     └─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
+     ├─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
+     └─ half_life how fast what a pull refreshes goes out of date, e.g. "60d"
 ```
 
 The whole purpose is checked at load, and fails by name: a rank term whose shape does not fit what
@@ -94,8 +95,9 @@ A year file, times in UTC, continuation lines indented two spaces so the list it
 Images are converted to avif once under a name their own id determines, so a re-download is free and
 an orphan from a failed pull is harmless. Everything else is named and not kept.
 
-`open [pattern]` and `pull [pattern]`. A pattern matches the directory name or any handle, so
-`pull dev_ardi` reaches `orion/`. No pattern means fzf for `open`, everybody for `pull`.
+`open [pattern]` and `pull [pattern] [--top n]`. A pattern matches the directory name or any handle, so
+`pull dev_ardi` reaches `orion/`. No pattern means fzf for `open`, everybody for `pull`. `pull` walks
+them stalest first, and `--top n` stops after the n stalest.
 
 `procure` is the other axis arriving: it reads the roster and transcript `recon` wrote, leaves a
 skeleton for everyone a strategy selects and the purpose lacks, and puts the strategy's `tags` on
@@ -155,6 +157,19 @@ newest year-file line in either direction, `venue_activity` their lines across e
 transcript. Recency is `ln(age)` over the cohort, as [`rank`](../../../social_networks_reach/src/rank.rs)
 explains, so a score means nothing outside the cohort it was ranked in. A person still backfilling has
 no year files yet, and is marked rather than read as having none.
+
+`stale` is what a pull stands to move somebody's score by, in score points:
+
+```
+stale = Σ_t  (w_t / Σw)  ·  (1 − 2^(−Δt / half_life))  ·  E|v_t − V_t|
+             └ share ┘      └ P(changed since synced) ┘    └ how far it would move ┘
+
+Δt   since what refreshes t:  a fact, interactions, last_interaction → the last pull every handle answered
+                              a tag with an `about`                 → the last time a model read all of it
+                              anything else (timestamps, venue_activity, a tag without `about`) → nothing: 0
+     never ⇒ the factor is 1
+V_t  t's values across those already synced, plus one uniform draw on [0,1] — so an empty cohort still spreads
+```
 
 `cold [pattern]` is `rank` restricted to everybody no conversation is on record with, on any platform
 that could hold one. A venue line is not one — it never entered their year files — so a member
@@ -246,8 +261,8 @@ matter — those are `recon`'s, and they need both credentials and a membership.
 
 Facebook is visited from the burner's headless chrome, started for the pull only when somebody in it
 has a `facebook` handle: the About tab's current city (geocoded into `lives_in`), hometown, birthday,
-work and education, and contact links as handles. A profile visited within `revisit_days` is
-skipped, the way linkedin's is.
+work and education, and contact links as handles. Every visit is a visit: who is due one is `stale`'s
+to say, and somebody visited today sinks to the bottom of the order by themselves.
 
 `pull` uses its own telegram session file, seeded from the `dms` daemon's on first use: same
 authorization, no write contention with the daemon.

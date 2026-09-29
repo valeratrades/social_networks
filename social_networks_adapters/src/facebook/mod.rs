@@ -25,7 +25,6 @@ use std::{
 
 use base64::Engine as _;
 use color_eyre::eyre::{Result, WrapErr, bail, ensure, eyre};
-use jiff::{Timestamp, tz::TimeZone};
 use strum::AsRefStr;
 use tracing::info;
 use v_utils::macros::MyConfigPrimitives;
@@ -54,8 +53,6 @@ pub struct FacebookConfig {
 	pub attached: AttachedConfig,
 	#[primitives(skip)]
 	pub launched: LaunchedConfig,
-	/// A profile visited fewer days ago than this is not visited again.
-	pub revisit_days: u32,
 }
 /// The user's own chrome, with exactly one facebook tab logged in as `user_id` (its `c_user` cookie).
 #[derive(Clone, Debug, MyConfigPrimitives)]
@@ -77,7 +74,6 @@ pub struct Facebook<'t, 'c> {
 	tab: &'t mut Tab<'c>,
 	session: Session,
 	behaviour: Behaviour,
-	revisit_days: u32,
 	geocoder: Geocoder,
 	dir: PathBuf,
 }
@@ -263,7 +259,6 @@ pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&m
 			tab,
 			session: Session::Launched,
 			behaviour,
-			revisit_days: config.revisit_days,
 			geocoder,
 			dir: dir.clone(),
 		})
@@ -292,7 +287,6 @@ async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut F
 			tab,
 			session: Session::Attached,
 			behaviour,
-			revisit_days: config.revisit_days,
 			geocoder,
 			dir: dir.clone(),
 		})
@@ -320,18 +314,10 @@ impl Venue for Facebook<'_, '_> {
 }
 
 impl Profiles for Facebook<'_, '_> {
-	/// Where they live, their work and education, and the accounts they link. The checkpoint is the
-	/// day of the visit, as linkedin's is: a profile visited inside `revisit_days` is not visited again.
-	async fn profile(&mut self, handle: &str, window: Window) -> Result<Profile> {
+	/// Where they live, their work and education, and the accounts they link. Every call visits: who
+	/// is due one is the purpose's `half_life`'s to say.
+	async fn profile(&mut self, handle: &str, _: Window) -> Result<Profile> {
 		ensure!(self.session == Session::Launched, "a profile is visited from the launched session only");
-		let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-		if let Window::Above { after: Some(last), .. } = &window {
-			let last: jiff::civil::Date = last.parse().wrap_err("a facebook checkpoint is a date")?;
-			// leaving `activity.newest` unset is what keeps the checkpoint where it is
-			if last.until((jiff::Unit::Day, today))?.get_days() < self.revisit_days as i32 {
-				return Ok(Profile::default());
-			}
-		}
 
 		let personal = self.section(handle, "directory_personal_details").await?;
 		let mut others = Vec::new();
@@ -354,7 +340,6 @@ impl Profiles for Facebook<'_, '_> {
 			}
 			None => None,
 		});
-		profile.activity.newest = Some(today.to_string());
 		Ok(profile)
 	}
 }
@@ -387,7 +372,7 @@ fn state(session: Session) -> Result<PathBuf> {
 }
 
 /// Where a city walk stands: past a name once its query is done, or partway through one.
-#[derive(Clone, Debug, derive_more::Display, PartialEq)]
+#[derive(Clone, Debug, PartialEq, derive_more::Display)]
 enum Walked {
 	#[display("{_0}")]
 	Past(String),

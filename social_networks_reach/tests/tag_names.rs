@@ -12,7 +12,7 @@ use social_networks_reach::{
 };
 
 fn purpose(path: &Path, tags: serde_json::Value) -> Result<Purpose, String> {
-	let raw = serde_json::json!({ "p": { "path": path, "tags": tags, "rank": [{ "of": "Service-Arb", "weight": 1 }] } });
+	let raw = serde_json::json!({ "p": { "path": path, "tags": tags, "rank": [{ "of": "Service-Arb", "weight": 1 }], "half_life": "30d" } });
 	serde_json::from_value::<Purposes>(raw).map(|p| p.get("p").unwrap().clone()).map_err(|e| e.to_string())
 }
 
