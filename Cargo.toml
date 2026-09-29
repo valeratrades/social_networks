@@ -22,7 +22,7 @@ unused_features = "allow"
 [workspace.dependencies]
 ask_llm = "3.6"
 base64 = "=0.23.1"
-browser_manipulation = { git = "https://github.com/valeratrades/browser_manipulation", tag = "v0.2.1" }
+browser_manipulation = { git = "https://github.com/valeratrades/browser_manipulation", tag = "v0.3.0" }
 clap = { version = "=4.6.7", features = ["derive", "string"] }
 color-eyre = "=0.6.5"
 colored = "=3.1.1"

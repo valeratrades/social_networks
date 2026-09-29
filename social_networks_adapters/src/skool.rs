@@ -19,10 +19,10 @@ use std::{
 	convert::Infallible,
 	path::Path,
 	sync::LazyLock,
-	time::{Duration, Instant},
+	time::Duration,
 };
 
-use browser_manipulation::{Browser, Launch, Robot};
+use browser_manipulation::{Artifacts, Browser, Launch, Robot};
 use color_eyre::eyre::{Result, WrapErr, bail, ensure, eyre};
 use jiff::Timestamp;
 use regex::Regex;
@@ -526,7 +526,11 @@ impl Skool {
 			headless: true,
 			viewport: None,
 		};
-		let browser = Browser::launch(launch, Robot, None).await.map_err(crate::browser_failure)?;
+		let captures = Artifacts {
+			dir: xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("skool")?.join("browser_captures"),
+			retention: Duration::from_secs(14 * 24 * 3600),
+		};
+		let browser = Browser::launch(launch, Robot, Some(captures)).await.map_err(crate::browser_failure)?;
 		let cookies = login(&browser, &creds).await;
 		let closed = browser.close().await;
 		std::fs::remove_dir_all(&profile).wrap_err_with(|| format!("failed to remove {}", profile.display()))?;
@@ -1321,44 +1325,25 @@ struct Cached {
 async fn login(browser: &Browser<Robot>, creds: &SkoolConfig) -> Result<String> {
 	let mut tab = browser.tab().await.map_err(crate::browser_failure)?;
 	tab.set_timeout(LOGIN_TIMEOUT).await;
-	async {
+	let cookies = async {
 		tab.goto(&format!("{BASE}/login")).await?;
 		tab.fill("input#email", &creds.email).await?;
 		tab.fill("input#password", &creds.password).await?;
-		tab.press("input#password", "Enter").await
+		tab.press("input#password", "Enter").await?;
+		tab.wait_for_cookie(BASE, "auth_token").await?; // a rejected password re-renders the form and sets none
+		let mut cookies = tab.cookies(API).await?;
+		cookies.extend(tab.cookies(BASE).await?);
+		Ok::<_, browser_manipulation::Error>(cookies)
 	}
 	.await
 	.map_err(crate::browser_failure)?;
-
-	// the form navigates away on success and re-renders in place on a rejected password, so the URL is
-	// the only signal that separates the two
-	let deadline = Instant::now() + LOGIN_TIMEOUT;
-	//LOOP: polls until the page leaves the login form, bounded by `deadline`
-	let url = loop {
-		let url = tab.url();
-		if !url.contains("/login") {
-			break url;
-		}
-		if Instant::now() >= deadline {
-			bail!("still on {url} {LOGIN_TIMEOUT:?} after submitting the login form");
-		}
-		time::sleep(Duration::from_millis(500)).await;
-	};
-	info!("skool login landed on {url}");
-
-	let header = tab
-		.cookies()
-		.await
-		.map_err(crate::browser_failure)?
-		.iter()
-		.filter(|c| c.domain.contains("skool.com"))
+	let mut seen = HashSet::new();
+	Ok(cookies
+		.into_iter()
+		.filter(|c| seen.insert((c.name.clone(), c.domain.clone(), c.path.clone())))
 		.map(|c| format!("{}={}", c.name, c.value))
 		.collect::<Vec<_>>()
-		.join("; ");
-	if header.is_empty() {
-		bail!("login navigated to {url} but left no skool.com cookies");
-	}
-	Ok(header)
+		.join("; "))
 }
 
 /// Deliberately the HTML rather than `/_next/data/<buildId>/…`: that route needs a `buildId` that

@@ -27,6 +27,11 @@ use super::sway::{self, Window};
 use crate::browser_failure;
 
 const GRAPHQL: &str = "/api/graphql/";
+const FACEBOOK: &str = "https://www.facebook.com/";
+/// Above the 10 s a wheel is given before the window is parked.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a human gets to log in.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub(super) struct Tab<'a> {
 	page: browser_manipulation::Tab<'a, Noise>,
@@ -85,7 +90,7 @@ impl Tab<'_> {
 
 	/// From the `c_user` cookie, which facebook sets to expire a year after the login.
 	async fn logged_in_at(&self) -> Result<Option<Timestamp>> {
-		let cookies = self.page.cookies().await.map_err(browser_failure)?;
+		let cookies = self.page.cookies(FACEBOOK).await.map_err(browser_failure)?;
 		let Some(c) = cookies.iter().find(|c| c.name == "c_user") else {
 			return Ok(None);
 		};
@@ -117,11 +122,10 @@ impl Tab<'_> {
 		}
 		notify("facebook: session ended — log in in the scraped tab")?;
 		eprintln!("waiting for a facebook login in the scraped tab");
-		while self.logged_in_at().await?.is_none() {
-			tokio::time::sleep(Duration::from_secs(5)).await;
-			self.eval::<u8>("1").await.wrap_err("the scraped tab was closed while waiting for the login")?;
-		}
-		Ok(())
+		self.page.set_timeout(LOGIN_TIMEOUT).await;
+		let waited = self.page.wait_for_cookie(FACEBOOK, "c_user").await;
+		self.page.set_timeout(ACTION_TIMEOUT).await;
+		waited.map(drop).map_err(browser_failure)
 	}
 
 	/// `expr` must evaluate to something JSON-serializable. Read-only by convention: page state is the site's.
@@ -264,8 +268,8 @@ pub(super) async fn launch<T>(chrome: &Path, profile: &Path, headless: bool, dir
 async fn ours<'b>(browser: &'b Browser<Noise>, user_id: &str) -> Result<browser_manipulation::Tab<'b, Noise>> {
 	let mut ours = Vec::new();
 	let mut others = Vec::new();
-	for page in browser.tabs().into_iter().filter(|t| t.url().starts_with("https://www.facebook.com/")) {
-		let c_user = page.cookies().await.map_err(browser_failure)?.into_iter().find(|c| c.name == "c_user").map(|c| c.value);
+	for page in browser.tabs().into_iter().filter(|t| t.url().starts_with(FACEBOOK)) {
+		let c_user = page.cookies(FACEBOOK).await.map_err(browser_failure)?.into_iter().find(|c| c.name == "c_user").map(|c| c.value);
 		match c_user.as_deref() == Some(user_id) {
 			true => ours.push(page),
 			false => others.push((c_user, page.url())),
@@ -278,8 +282,8 @@ async fn ours<'b>(browser: &'b Browser<Noise>, user_id: &str) -> Result<browser_
 	}
 }
 
-async fn run<T>(page: browser_manipulation::Tab<'_, Noise>, headless: bool, dir: &Path, work: impl AsyncFnOnce(&mut Tab) -> Result<T>) -> Result<T> {
-	page.set_timeout(Duration::from_secs(60)).await; // above the 10 s a wheel is given before the window is parked
+async fn run<T>(mut page: browser_manipulation::Tab<'_, Noise>, headless: bool, dir: &Path, work: impl AsyncFnOnce(&mut Tab) -> Result<T>) -> Result<T> {
+	page.set_timeout(ACTION_TIMEOUT).await;
 	let window = Mutex::new(None);
 	let run = pin!(async {
 		let mut tab = Tab {
