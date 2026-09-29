@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use social_networks_adapters::{
-	email::EmailConfig, facebook::FacebookConfig, llm::LlmConfig, skool::SkoolConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
+	breaker::CircuitBreakers, email::EmailConfig, facebook::FacebookConfig, llm::LlmConfig, skool::SkoolConfig, telegram_dms::TelegramConfig, twitter::TwitterConfig, youtube::YoutubeConfig,
 };
 use social_networks_reach::purpose::Purposes;
 use v_utils::macros::{LiveSettings, MyConfigPrimitives, Settings};
@@ -30,6 +30,10 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)]
 	pub email: Vec<EmailConfig>,
+	/// Over every send to a person: `dm` and the email scripts' replies
+	#[settings(skip)]
+	#[serde(default)]
+	pub circuit_breakers: CircuitBreakers,
 	/// `dm --skool` signs in with it, and `recon` sees no group at all without it — reading a *person*
 	/// is what is public either way
 	#[settings(skip)]

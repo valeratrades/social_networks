@@ -59,6 +59,11 @@ impl Database {
                 value      TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sends (
+                recipient TEXT NOT NULL,
+                sent_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS sends_by_recipient ON sends (recipient, sent_at);
             CREATE TABLE IF NOT EXISTS telegram_session (
                 name          TEXT PRIMARY KEY,
                 home_dc       INTEGER NOT NULL,
@@ -250,6 +255,27 @@ impl Database {
 			.await
 			.wrap_err("failed to record twitter_schedule outcome")?;
 		assert_eq!(updated, 1, "attempt {attempt} was begun on this db");
+		Ok(())
+	}
+
+	pub async fn sends_since(&self, recipient: &str, since: Timestamp) -> Result<usize> {
+		let mut rows = self
+			.conn
+			.query(
+				"SELECT count(*) FROM sends WHERE recipient = ?1 AND sent_at >= ?2",
+				libsql::params![recipient, since.as_millisecond()],
+			)
+			.await
+			.wrap_err("failed to count sends")?;
+		let row = rows.next().await.wrap_err("failed to read count")?.expect("count(*) always yields a row");
+		Ok(row.get::<u64>(0).wrap_err("failed to read count")? as usize)
+	}
+
+	pub async fn record_send(&self, recipient: &str, at: Timestamp) -> Result<()> {
+		self.conn
+			.execute("INSERT INTO sends (recipient, sent_at) VALUES (?1, ?2)", libsql::params![recipient, at.as_millisecond()])
+			.await
+			.wrap_err("failed to record send")?;
 		Ok(())
 	}
 

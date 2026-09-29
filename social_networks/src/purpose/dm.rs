@@ -13,6 +13,7 @@ use social_networks_reach::{
 	person::{self, Person},
 	purpose::Purpose,
 };
+use social_networks_utils::db::Database;
 use strum::AsRefStr;
 
 use super::with_telegram;
@@ -70,6 +71,7 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 	};
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
+	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
 	// one `Direct::send`, four sessions: the same enum dispatch the reads go through
 	let sent = match messenger {

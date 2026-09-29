@@ -23,6 +23,7 @@ use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowRet
 pub use self::script::Scripts;
 use self::script::{Reply, Script, Step};
 use crate::{
+	breaker::CircuitBreakers,
 	client::{AdapterError, Client as AdapterClient},
 	llm::LlmConfig,
 	telegram_dms::TelegramConfig,
@@ -127,10 +128,11 @@ pub struct EmailMonitor {
 	notifier: TelegramNotifier,
 	db: Database,
 	rules: CompiledRules,
+	breakers: CircuitBreakers,
 	dry_run: bool,
 }
 impl EmailMonitor {
-	fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database, dry_run: bool) -> Result<Self> {
+	fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database, breakers: CircuitBreakers, dry_run: bool) -> Result<Self> {
 		let rules = CompiledRules::try_new(&config.rules)?;
 		Ok(Self {
 			config,
@@ -138,16 +140,17 @@ impl EmailMonitor {
 			notifier,
 			db,
 			rules,
+			breakers,
 			dry_run,
 		})
 	}
 
-	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig, dry_run: bool) -> Result<Self> {
+	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig, breakers: CircuitBreakers, dry_run: bool) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Self::try_new(email_config, llm_config, notifier, db, dry_run)
+		Self::try_new(email_config, llm_config, notifier, db, breakers, dry_run)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -276,6 +279,7 @@ impl EmailMonitor {
 		let EmailAuth::Imap(ImapAuth { pass }) = &self.config.auth else {
 			unreachable!("SMTP is how IMAP accounts send")
 		};
+		self.breakers.admit(&self.db, &format!("email:{}", reply.to)).await?;
 		let transport = AsyncSmtpTransport::<Tokio1Executor>::relay("smtp.gmail.com")?
 			.credentials(Credentials::new(self.config.email.clone(), pass.clone()))
 			.build();
@@ -442,6 +446,7 @@ impl EmailMonitor {
 	}
 
 	async fn send_oauth(&self, hub: &Hub, thread_id: &str, reply: &Reply) -> Result<()> {
+		self.breakers.admit(&self.db, &format!("email:{}", reply.to)).await?;
 		let raw = lettre::Message::try_from(reply)?.formatted();
 		let request = Message {
 			thread_id: Some(thread_id.to_owned()),

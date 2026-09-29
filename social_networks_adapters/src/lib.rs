@@ -1,6 +1,7 @@
 #![allow(unused_features)]
 #![feature(default_field_values)]
 pub mod behaviour;
+pub mod breaker;
 pub mod client;
 pub mod discord;
 pub mod dm_event;
