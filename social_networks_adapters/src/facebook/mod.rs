@@ -84,23 +84,25 @@ pub struct Facebook<'t, 'c> {
 impl Facebook<'_, '_> {
 	/// People search for each first name in turn under the City filter; everyone it lists counts as
 	/// living there. One query's list is capped, which is why it walks names, in an [`Order`] kept
-	/// in the session's state. The cursor is the last name exhausted.
+	/// in the session's state. The cursor is a [`Walked`], moved on every page.
 	async fn city(&mut self, id: &str, roster: &mut impl Roster) -> Result<()> {
 		let names = Order::load(FIRST_NAMES.lines(), &self.dir.join("first_names.seed"))?;
-		let mut cursor = roster.cursor().map(str::to_string);
-		let start = match &cursor {
-			None => 0,
-			Some(done) =>
-				1 + names
-					.iter()
-					.position(|n| n == done)
-					.ok_or_else(|| eyre!("the walk stopped after `{done}`, which is not one of its first names"))?,
+		let position = |name: &str| {
+			names
+				.iter()
+				.position(|n| *n == name)
+				.ok_or_else(|| eyre!("the walk stopped at `{name}`, which is not one of its first names"))
+		};
+		let (start, mut resume) = match roster.cursor().map(str::parse::<Walked>).transpose()? {
+			None => (0, None),
+			Some(Walked::Past(done)) => (1 + position(&done)?, None),
+			Some(Walked::Within { name, page }) => (position(&name)?, Some(page)),
 		};
 		let searched = self.dir.join("searched").join(id);
 		std::fs::create_dir_all(&searched).wrap_err_with(|| format!("failed to create {}", searched.display()))?;
 		let mut rate = lead_rate::Tracker::load(self.dir.join("lead_rate.toml"))?;
 		for name in &names[start..] {
-			let mut query = Query::start(&searched, name)?;
+			let mut query = Query::start(&searched, name, resume.is_some())?;
 			self.load(&search_url(name, id), &[FEED, &unfiltered_url(name)]).await?;
 			let mut results = Results::default();
 			for s in self.tab.scripts().await? {
@@ -114,17 +116,29 @@ impl Facebook<'_, '_> {
 				.await?
 				.ok_or_else(|| eyre!("facebook names city {id} `{city}`, which Nominatim does not know"))?;
 
+			// until the resumed page has landed, a kill has to resume it again rather than this first page
+			let walked = |results: &Results, resume: &Option<String>| match (resume, &results.next) {
+				(Some(page), _) | (None, Some(page)) => Ok(Walked::Within {
+					name: name.to_string(),
+					page: page.clone(),
+				}),
+				(None, None) => match results.more {
+					Some(false) => Ok(Walked::Past(name.to_string())),
+					_ => Err(eyre!("`{name}` claims more results and names no cursor to them")),
+				},
+			};
 			let mut checked = HashSet::new();
-			let mut fresh = check_in_hits(roster, &results, &mut checked, &city, at, &cursor)?;
+			let mut fresh = check_in_hits(roster, &results, &mut checked, &city, at, walked(&results, &resume)?)?;
 			query.page(results.hits.keys(), fresh, false)?;
 			let mut seen = results.hits.len();
 			let mut idle = 0;
 			while results.more != Some(false) && idle < 3 {
 				self.behaviour.act(Action::Scroll { seen }).await?;
 				let before = results.hits.len();
+				let resuming = resume.is_some();
 				let progressed = self
 					.tab
-					.scroll(|body| {
+					.scroll(&mut resume, |body| {
 						let before = results.hits.len();
 						results.absorb(body)?;
 						Ok(results.hits.len() > before)
@@ -132,7 +146,10 @@ impl Facebook<'_, '_> {
 					.await?;
 				seen = results.hits.len() - before;
 				idle = if progressed { 0 } else { idle + 1 };
-				let new = check_in_hits(roster, &results, &mut checked, &city, at, &cursor)?;
+				if resuming && resume.is_none() {
+					info!("`{name}` resumed past its last page checked in");
+				}
+				let new = check_in_hits(roster, &results, &mut checked, &city, at, walked(&results, &resume)?)?;
 				fresh += new;
 				query.page(results.hits.keys(), new, true)?;
 				eprint!("\r`{name}` in {city}: {} listed, {fresh} new", results.hits.len());
@@ -142,8 +159,8 @@ impl Facebook<'_, '_> {
 				Some(false) => Ended::Exhausted,
 				_ => Ended::Stalled,
 			})?;
-			cursor = Some(name.to_string());
-			roster.check_in(&[], cursor.clone())?;
+			ensure!(resume.is_none(), "`{name}` ended before its resumed page was asked for");
+			roster.check_in(&[], Some(Walked::Past(name.to_string()).to_string()))?;
 			let stalled = match results.more {
 				Some(true) => " (stopped scrolling with more claimed)",
 				_ => "",
@@ -188,7 +205,7 @@ impl Facebook<'_, '_> {
 			let before = listing.len();
 			let progressed = self
 				.tab
-				.scroll(|body| {
+				.scroll(&mut None, |body| {
 					let before = listing.len();
 					listing.absorb(body)?;
 					Ok(listing.len() > before)
@@ -369,8 +386,35 @@ fn state(session: Session) -> Result<PathBuf> {
 	Ok(xdg::BaseDirectories::with_prefix("social_networks").create_state_directory(format!("facebook/{}", session.as_ref()))?)
 }
 
-/// The hits not yet in `checked`, as rows placed where the filter says; how many the roster lacked.
-fn check_in_hits(roster: &mut impl Roster, results: &Results, checked: &mut HashSet<String>, city: &str, at: Coords, cursor: &Option<String>) -> Result<usize> {
+/// Where a city walk stands: past a name once its query is done, or partway through one.
+#[derive(Clone, Debug, derive_more::Display, PartialEq)]
+enum Walked {
+	#[display("{_0}")]
+	Past(String),
+	/// `page` is facebook's cursor past the last page checked in
+	#[display("{name}@{page}")]
+	Within { name: String, page: String },
+}
+impl std::str::FromStr for Walked {
+	type Err = color_eyre::Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		Ok(match s.split_once('@') {
+			None => Self::Past(s.to_string()),
+			Some((name, page)) => {
+				ensure!(!name.is_empty() && !page.is_empty(), "a walk cursor is `<name>` or `<name>@<page>`, got `{s}`");
+				Self::Within {
+					name: name.to_string(),
+					page: page.to_string(),
+				}
+			}
+		})
+	}
+}
+
+/// The hits not yet in `checked`, as rows placed where the filter says, with the walk moved to
+/// `walked` whether or not there were any; how many the roster lacked.
+fn check_in_hits(roster: &mut impl Roster, results: &Results, checked: &mut HashSet<String>, city: &str, at: Coords, walked: Walked) -> Result<usize> {
 	let rows: Vec<Member> = results
 		.hits
 		.values()
@@ -386,10 +430,7 @@ fn check_in_hits(roster: &mut impl Roster, results: &Results, checked: &mut Hash
 			bio: (!hit.snippets.is_empty()).then(|| hit.snippets.join("\n")),
 		})
 		.collect();
-	match rows.is_empty() {
-		true => Ok(0),
-		false => roster.check_in(&rows, cursor.clone()),
-	}
+	roster.check_in(&rows, Some(walked.to_string()))
 }
 
 /// The same name without the City filter: a search anybody might make.

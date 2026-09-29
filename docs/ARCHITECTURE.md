@@ -210,6 +210,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **Facebook**:
   - no `Runtime.enable`, which is why the CDP client is hand-rolled rather than chromiumoxide's;
   - nothing is clicked: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch;
+  - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (CDP `Fetch`), and nothing else;
   - `city` never launches a browser, and `group` and profile visits never use the user's;
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;

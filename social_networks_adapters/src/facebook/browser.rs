@@ -13,10 +13,11 @@ use std::{
 	time::Duration,
 };
 
+use base64::Engine as _;
 use chromiumoxide::{
 	cdp::{
 		browser_protocol::{
-			browser, emulation, input,
+			browser, emulation, fetch, input,
 			network::{self, GetResponseBodyParams},
 			page::{self, BringToFrontParams, NavigateParams},
 			target::{AttachToTargetParams, CreateTargetParams, DetachFromTargetParams, GetTargetsParams, TargetId},
@@ -184,7 +185,31 @@ impl Tab<'_> {
 	/// One wheel gesture, then feeds each `/api/graphql/` answer to `absorb` until it reports progress
 	/// or 10 s pass; whether it did. A gesture is a few notches from one spot in the middle third of
 	/// the viewport, and now and then a notch or two back up.
-	pub(super) async fn scroll(&mut self, mut absorb: impl FnMut(&str) -> Result<bool>) -> Result<bool> {
+	///
+	/// With `from` set, the pagination request the gesture sets off asks for the page past that cursor
+	/// instead of the next one, and `from` is taken: the page's own request, sent by the page, differing
+	/// only in where it resumes.
+	pub(super) async fn scroll(&mut self, from: &mut Option<String>, mut absorb: impl FnMut(&str) -> Result<bool>) -> Result<bool> {
+		if from.is_some() {
+			let pattern = fetch::RequestPattern {
+				url_pattern: Some("*/api/graphql/*".into()),
+				resource_type: None,
+				request_stage: Some(fetch::RequestStage::Request),
+			};
+			self.call(fetch::EnableParams {
+				patterns: Some(vec![pattern]),
+				handle_auth_requests: None,
+			})
+			.await?;
+		}
+		let r = self.gesture(from, &mut absorb).await;
+		if from.is_some() {
+			self.call(fetch::DisableParams::default()).await?;
+		}
+		r
+	}
+
+	async fn gesture(&mut self, from: &mut Option<String>, absorb: &mut impl FnMut(&str) -> Result<bool>) -> Result<bool> {
 		let (w, h): (f64, f64) = self.eval("[innerWidth, innerHeight]").await?;
 		let at = (w * rand::random_range(1. / 3. ..2. / 3.), h * rand::random_range(1. / 3. ..2. / 3.));
 		let down = rand::random_range(3..=8);
@@ -206,7 +231,16 @@ impl Tab<'_> {
 		let mut graphql = HashSet::new();
 		while let Ok(e) = tokio::time::timeout_at(deadline, self.events.recv()).await {
 			let e = e.expect("the driver outlives the tab");
-			if let Some(r) = e.parse::<network::EventResponseReceived>() {
+			if let Some(paused) = e.parse::<fetch::EventRequestPaused>() {
+				let mut resumed = fetch::ContinueRequestParams::new(paused.request_id);
+				if let Some(page) = from.as_deref()
+					&& let Some(body) = resume(&paused.request, page)?
+				{
+					resumed.post_data = Some(base64::engine::general_purpose::STANDARD.encode(body).into());
+					*from = None;
+				}
+				self.call(resumed).await?;
+			} else if let Some(r) = e.parse::<network::EventResponseReceived>() {
 				if r.response.url.contains("/api/graphql/") {
 					graphql.insert(r.request_id);
 				}
@@ -216,6 +250,10 @@ impl Tab<'_> {
 				let r = self.call(GetResponseBodyParams::new(f.request_id)).await?;
 				assert!(!r.base64_encoded, "graphql answers are text");
 				if absorb(&r.body)? {
+					ensure!(
+						from.is_none(),
+						"the page paged on without a request `resume` recognised, so the walk would have gone on from its first page"
+					);
 					return Ok(true);
 				}
 			}
@@ -442,6 +480,38 @@ impl Cdp {
 		}
 		Ok(())
 	}
+}
+
+/// `request`'s form body with its `cursor` variable set to `page`, when it is a request that pages
+/// with one: facebook's pagination queries carry the cursor past the last page shown as a variable.
+fn resume(request: &network::Request, page: &str) -> Result<Option<String>> {
+	let query = request
+		.headers
+		.inner()
+		.as_object()
+		.and_then(|h| h.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-fb-friendly-name")))
+		.and_then(|(_, v)| v.as_str());
+	if !query.is_some_and(|q| q.starts_with("Search")) {
+		return Ok(None);
+	}
+	let Some(entries) = &request.post_data_entries else { return Ok(None) };
+	let mut body = Vec::new();
+	for entry in entries {
+		let bytes = entry.bytes.as_ref().ok_or_else(|| eyre!("a post data entry of {} carries no bytes", request.url))?;
+		body.extend(base64::engine::general_purpose::STANDARD.decode(AsRef::<str>::as_ref(bytes))?);
+	}
+	let mut form = reqwest::Url::parse("http://form/").expect("a constant base");
+	form.set_query(Some(std::str::from_utf8(&body).wrap_err_with(|| format!("{} posted a body that is not form text", request.url))?));
+	let mut pairs: Vec<(String, String)> = form.query_pairs().into_owned().collect();
+	let Some((_, variables)) = pairs.iter_mut().find(|(k, _)| k == "variables") else {
+		return Ok(None);
+	};
+	let mut parsed: Value = serde_json::from_str(variables).wrap_err("graphql `variables` is not JSON")?;
+	let Some(cursor) = parsed.get_mut("cursor").filter(|c| c.is_string()) else { return Ok(None) };
+	*cursor = page.into();
+	*variables = parsed.to_string();
+	form.query_pairs_mut().clear().extend_pairs(pairs);
+	Ok(Some(form.query().expect("just set").to_string()))
 }
 
 /// What happened to the facebook session since we last saw it logged in; one line per drop in `sessions.toml`.

@@ -20,6 +20,8 @@ pub struct Results {
 	pub city: Option<(String, String)>,
 	/// `has_next_page` of the result list, as last seen
 	pub more: Option<bool>,
+	/// `end_cursor` of the result list, as last seen: where the page after the last one starts
+	pub next: Option<String>,
 }
 impl Results {
 	/// Takes an embedded `application/json` script or a `/api/graphql/` body, which streams several documents.
@@ -36,8 +38,13 @@ impl Results {
 				if let Some(hit) = hit(v) {
 					self.hits.insert(hit.id.clone(), hit);
 				}
-				if let Some(more) = o.get("serpResponse").and_then(|r| r.pointer("/results/page_info/has_next_page")).and_then(Value::as_bool) {
-					self.more = Some(more);
+				if let Some(page_info) = o.get("serpResponse").and_then(|r| r.pointer("/results/page_info")) {
+					if let Some(more) = page_info.get("has_next_page").and_then(Value::as_bool) {
+						self.more = Some(more);
+					}
+					if let Some(next) = page_info.get("end_cursor").and_then(Value::as_str) {
+						self.next = Some(next.to_string());
+					}
 				}
 				if let (Some(text), Some(value)) = (
 					v.pointer("/current_value/text").and_then(Value::as_str),
