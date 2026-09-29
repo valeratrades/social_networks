@@ -163,3 +163,35 @@ fn the_loss_scales_with_the_weight_share() {
 	let (half, quarter) = (with(1), with(3));
 	assert!((half - 2.0 * quarter).abs() < 1e-12, "{half} against {quarter}");
 }
+
+/// Nobody unsynced is certain to move, but somebody seeded where the synced cohort turned out not to
+/// be stands to move further than somebody seeded where it is.
+#[test]
+fn a_seed_far_from_the_synced_cohort_stands_to_move_more() {
+	const LYON: &str = r#"lives_in = { name = "Lyon"; lat = 45.764; lon = 4.8357; };"#;
+	let synced = |name| Lead {
+		name,
+		tags: OWNER,
+		synced: Some(DAY),
+	};
+	let ranked = check(
+		"seed",
+		as_is,
+		&[
+			synced("paris_1"),
+			synced("paris_2"),
+			synced("paris_3"),
+			Lead {
+				name: "seeded_far",
+				tags: LYON,
+				synced: None,
+			},
+			Lead {
+				name: "seeded_near",
+				tags: OWNER,
+				synced: None,
+			},
+		],
+	);
+	assert!(stale(&ranked, "seeded_far") > stale(&ranked, "seeded_near"));
+}

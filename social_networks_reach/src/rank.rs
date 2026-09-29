@@ -133,7 +133,12 @@ fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], t
 		.map(|(column, by)| {
 			let mut sorted: Vec<f64> = column.iter().zip(facts).filter(|(_, f)| synced(f, *by).is_some()).map(|(v, _)| v.unwrap_or(0.0)).collect();
 			sorted.sort_by(f64::total_cmp);
-			let sums = std::iter::once(0.0).chain(sorted.iter().scan(0.0, |sum, v| Some(*sum + v))).collect();
+			let sums = std::iter::once(0.0)
+				.chain(sorted.iter().scan(0.0, |sum, v| {
+					*sum += v;
+					Some(*sum)
+				}))
+				.collect();
 			(sorted, sums)
 		})
 		.collect();
