@@ -109,6 +109,8 @@
         # Skia aborts the browser when fontconfig finds no fonts, and the image has none of its own.
         chromium = pkgs.writeShellScriptBin "chromium" ''
           export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
+          export XDG_DATA_HOME=/tmp/chromium-xdg-data # NSS writes key4.db/cert9.db under here; keep it off the PVC litestream scans
+          mkdir -p "$XDG_DATA_HOME"
           exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"
         '';
         # One image, every daemon (`contract.daemons` below).
