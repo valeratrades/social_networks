@@ -230,9 +230,9 @@ dependencies = [
 
 [[package]]
 name = "ask_llm"
-version = "3.4.1"
+version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0668e2a870b592ef3a4a0877bb16de221571913316274722acc0d460d79ee4eb"
+checksum = "6eecc81e38ef90fd83a9944a78ca084a2f49ba974031445dd6368adf5cd1ada5"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -247,6 +247,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-error",
  "v_utils",
 ]
 
@@ -5460,6 +5461,7 @@ dependencies = [
  "chromiumoxide",
  "clap",
  "color-eyre",
+ "derive_more",
  "futures",
  "futures-util",
  "google-gmail1",

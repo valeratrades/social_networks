@@ -22,6 +22,7 @@ use social_networks_adapters::{
 	facebook::{self, Facebook},
 	github::Github,
 	linkedin::Linkedin,
+	llm::LlmConfig,
 	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Place, Profiles, Source, VenueRef, Window},
 	skool::Skool,
 	telegram_dms::{self, TelegramConfig},
@@ -498,14 +499,18 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	);
 	pb.set_prefix(purpose.name.clone());
 	pb.enable_steady_tick(Duration::from_millis(80));
-	let (mut updated, mut entries, mut failures) = (0usize, 0usize, 0usize);
+	let (mut updated, mut entries, mut failures, mut unreasoned) = (0usize, 0usize, 0usize, 0usize);
+	// the first answer of "no model" stands for the rest of the run, so nobody after waits on it again
+	let mut silence: Option<color_eyre::Report> = None;
 
 	for mut person in people {
 		let name = format!("{:<width$}", person.name);
 		let person_dir = person.dir(dir);
 		let assets = person_dir.join("assets");
 		let mut meta = history::Meta::load(&person_dir)?;
-		let mut fetched_sources = BTreeMap::new();
+		let waiting = meta.unreasoned().cloned();
+		// a fresh fetch of a source outranks what an earlier one left waiting
+		let mut fetched_sources = waiting.as_ref().map(|w| w.sources.clone()).unwrap_or_default();
 		let mut handles = BTreeMap::new();
 		let mut fetched = Vec::new();
 		// stays `None` unless a platform that states membership answered, so a skool read that failed
@@ -570,6 +575,12 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let from_venues = venue_items(venues, &person, meta.venues_through())?;
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
+		if let Some(waiting) = waiting {
+			fetched.extend(waiting.items);
+			// a venue line waiting since a pull no model answered is read from the venue again
+			let mut seen = std::collections::HashSet::new();
+			fetched.retain(|item| seen.insert((item.source, item.id.clone())));
+		}
 
 		let facts_before = person.tags.clone();
 		// a visit outranks whatever placed them before it, a visit that found no city included
@@ -612,22 +623,35 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			pb.inc(1);
 			continue;
 		};
-		pb.set_message(format!("{} extracting", person.name));
-		let extraction = match delta::extract(&delta, purpose, &llm_config).await {
-			Ok(extraction) => extraction,
-			Err(e) => {
-				pb.abandon();
-				return Err(e).wrap_err_with(|| format!("extraction for {}", person.name));
+		let answer = match silence {
+			Some(_) => None,
+			None => {
+				pb.set_message(format!("{} reasoning", person.name));
+				match reason(&delta, purpose, &llm_config).await {
+					Ok(answer) => Some(answer),
+					Err(e) if unanswered(&e) => {
+						pb.suspend(|| println!("   {} no model answered, so the rest is saved unreasoned: {e:#}", "✗".red()));
+						silence = Some(e);
+						None
+					}
+					Err(e) => {
+						pb.abandon();
+						return Err(e).wrap_err_with(|| format!("reasoning over {}", person.name));
+					}
+				}
 			}
 		};
-
-		pb.set_message(format!("{} discovering handles", person.name));
-		let discovered = match delta::discover_handles(&delta, &llm_config).await {
-			Ok(discovered) => discovered,
-			Err(e) => {
-				pb.abandon();
-				return Err(e).wrap_err_with(|| format!("handle discovery for {}", person.name));
+		let Some((extraction, discovered)) = answer else {
+			meta.defer(delta.into())?;
+			// what platforms state needs no model: the facts are already on the person
+			for (platform, handle) in handles {
+				person.handles.entry(platform).or_insert(handle);
 			}
+			person.write(dir)?;
+			unreasoned += 1;
+			pb.suspend(|| println!("   {} {name} saved, not reasoned over{state}", "·".yellow()));
+			pb.inc(1);
+			continue;
 		};
 		// what a platform reports about itself outranks what an LLM read out of a conversation
 		let mut added: Vec<String> = Vec::new();
@@ -639,7 +663,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		}
 
 		// only once the extraction has actually read them, so a failed call costs a re-read
-		meta.venues_read(through)?;
+		meta.reasoned(through)?;
 		updated += 1;
 		entries += extraction.new_log_entries.len();
 		info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
@@ -661,7 +685,14 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	}
 
 	let failures = if failures == 0 { String::new() } else { format!(", {failures} failed") };
-	let summary = format!("{total} {}, {updated} updated, +{entries} log entries{failures}", if total == 1 { "person" } else { "people" });
+	let unreasoned = match unreasoned {
+		0 => String::new(),
+		n => format!(", {n} saved unreasoned — the next pull a model answers reasons over them"),
+	};
+	let summary = format!(
+		"{total} {}, {updated} updated, +{entries} log entries{failures}{unreasoned}",
+		if total == 1 { "person" } else { "people" }
+	);
 	// the finished bar is the summary wherever it renders; without a tty it never does
 	if pb.is_hidden() {
 		println!("   {summary}");
@@ -669,6 +700,33 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	pb.set_style(ProgressStyle::with_template(" ✓ {prefix:.bold.green} [{elapsed_precise}] {bar:30.green/238} {pos:>2}/{len} {msg:.green}").expect("static template"));
 	pb.finish_with_message(summary);
 	Ok(())
+}
+
+async fn reason(delta: &delta::Delta<'_>, purpose: &Purpose, llm_config: &LlmConfig) -> Result<(delta::Extraction, Vec<(String, String)>)> {
+	let extraction = delta::extract(delta, purpose, llm_config).await?;
+	let discovered = delta::discover_handles(delta, llm_config).await?;
+	Ok((extraction, discovered))
+}
+
+/// No model answered for a reason of the account or the network, which waiting fixes and the person
+/// does not: every other failure is about what was asked.
+fn unanswered(e: &color_eyre::Report) -> bool {
+	use ask_llm::{Cli, Error, Failure, Unrecoverable};
+	match e.downcast_ref::<Error>() {
+		Some(Error::Recoverable(_)) => true,
+		Some(Error::Unrecoverable(exhausted)) => exhausted.attempts.iter().all(|attempt| match &attempt.failure {
+			Failure::Recoverable(_) => true,
+			Failure::Unrecoverable(u) => matches!(
+				u,
+				Unrecoverable::MissingToken { .. }
+					| Unrecoverable::Auth { .. }
+					| Unrecoverable::Quota { .. }
+					| Unrecoverable::GeoBlocked { .. }
+					| Unrecoverable::Cli(Cli::NotInstalled { .. } | Cli::Exit { .. } | Cli::Failed { .. })
+			),
+		}),
+		_ => false,
+	}
 }
 
 /// What a platform states, for the sources that hold no conversation.

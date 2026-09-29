@@ -62,9 +62,6 @@ fn main() {
 	let cli = Cli::parse();
 	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
 	let config: AppConfig = exit_on_error(settings.config());
-	if let Some(llm) = &config.llm {
-		exit_on_error(llm.assert_any_key());
-	}
 
 	let result: Result<()> = match cli.command {
 		Commands::Health => health::main(config),

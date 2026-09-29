@@ -56,6 +56,16 @@ pub struct Meta {
 	/// copied into their file, so this is the only record of what the extraction has seen of it.
 	#[serde(default)]
 	venues_through: Option<Timestamp>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	unreasoned: Option<Unreasoned>,
+}
+/// What a pull fetched and no model has read yet, because none answered. The labels are made of it
+/// by the next pull that reaches one; until then the platform-stated sources wait here rather than in
+/// the person file, which holds only what the labels were made of.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Unreasoned {
+	pub items: Vec<Item>,
+	pub sources: BTreeMap<String, String>,
 }
 impl Meta {
 	pub fn load(person_dir: &Path) -> Result<Self> {
@@ -131,13 +141,21 @@ impl Meta {
 		self.venues_through
 	}
 
-	/// Called once the extraction has actually read them: a failed call has to cost a re-read rather
-	/// than the lines.
-	pub fn venues_read(&mut self, through: Option<Timestamp>) -> Result<()> {
-		if through.is_none() {
-			return Ok(());
-		}
+	pub fn unreasoned(&self) -> Option<&Unreasoned> {
+		self.unreasoned.as_ref()
+	}
+
+	/// Called once the extraction has actually read everything up to `through`: a failed call has to
+	/// cost a re-read rather than the lines.
+	pub fn reasoned(&mut self, through: Option<Timestamp>) -> Result<()> {
 		self.venues_through = through.max(self.venues_through);
+		self.unreasoned = None;
+		self.save()
+	}
+
+	/// Replaces what was waiting: `unreasoned` is built on top of it.
+	pub fn defer(&mut self, unreasoned: Unreasoned) -> Result<()> {
+		self.unreasoned = Some(unreasoned);
 		self.save()
 	}
 
