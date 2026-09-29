@@ -9,9 +9,10 @@ use std::{
 };
 
 use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Deserializer, de::Error as _};
 use social_networks_adapters::reach::VenueRef;
+use v_utils::Timeframe;
 
 use crate::{
 	person::{Birthday, Value},
@@ -68,6 +69,8 @@ pub struct Purpose {
 	pub procure: BTreeMap<String, Strategy>,
 	/// Never empty: a purpose is kept in order to be ranked.
 	pub rank: Vec<Term>,
+	/// How fast what a pull refreshes goes out of date; what `stale` in a [ranking](crate::rank) is measured by.
+	pub half_life: SignedDuration,
 }
 impl Purpose {
 	fn try_new(name: String, raw: RawPurpose) -> Result<Self> {
@@ -89,12 +92,17 @@ impl Purpose {
 		if raw.rank.is_empty() {
 			bail!("`rank` is empty, and a purpose is kept in order to be ranked");
 		}
+		let half_life = SignedDuration::try_from(raw.half_life.duration()).expect("a Timeframe is milliseconds, always in SignedDuration range");
+		if !half_life.is_positive() {
+			bail!("`half_life` is {}, and a half-life is positive", raw.half_life);
+		}
 		let mut purpose = Self {
 			name,
 			path: raw.path,
 			tags,
 			procure: BTreeMap::new(),
 			rank: Vec::new(),
+			half_life,
 		};
 		purpose.rank = raw.rank.into_iter().map(|term| purpose.term(term)).collect::<Result<_>>()?;
 		purpose.procure = raw
@@ -241,6 +249,21 @@ impl Purpose {
 			strategy.tags.insert(tag, value);
 		}
 		Ok(strategy)
+	}
+
+	/// What a pull does that brings `term` up to date.
+	pub(crate) fn refreshed_by(&self, term: &Term) -> Refresh {
+		let reasoned = || match self.tags[&term.of].about() {
+			Some(_) => Refresh::Reasoning,
+			None => Refresh::Never,
+		};
+		match &term.signal {
+			Signal::Interactions | Signal::LastInteraction { .. } => Refresh::Fetch,
+			Signal::Place(_) | Signal::Age { .. } if FACTS.iter().any(|(fact, _)| *fact == term.of) => Refresh::Fetch,
+			Signal::Bool | Signal::Number { .. } | Signal::Age { .. } => reasoned(),
+			// `recon` writes the venues and a human the timestamps
+			Signal::Place(_) | Signal::Timestamp { .. } | Signal::VenueActivity { .. } => Refresh::Never,
+		}
 	}
 
 	/// `strategy` with `predicate` — inline SQL or a path to it — ANDed onto its own `where`.
@@ -520,6 +543,15 @@ pub(crate) enum Signal {
 	},
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Refresh {
+	/// Every handle of theirs answered a pull.
+	Fetch,
+	/// A model read what the pull fetched.
+	Reasoning,
+	Never,
+}
+
 /// 1 inside the radius, halving every `halving_km` beyond it.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -539,6 +571,7 @@ struct RawPurpose {
 	#[serde(default)]
 	procure: BTreeMap<String, RawStrategy>,
 	rank: Vec<RawTerm>,
+	half_life: Timeframe,
 }
 
 /// A list is a group; anything else is read as [`RawTyped`], afterwards, so its own errors survive.

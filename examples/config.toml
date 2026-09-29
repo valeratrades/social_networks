@@ -67,6 +67,7 @@ channels = { hamaha = "UCI3uVtN-W5StRN1RsLNKV6g", test = "UCG5YX-fn1-EIv-sOSYMjS
 
 [purposes.rolodex]
 path = "/home/v/Sync/rolodex/people"
+half_life = "30d"
 tags = { ServiceArb = { type = "bool" } }
 rank = [{ of = "venue_activity", decay = 3, weight = 1 }]
 

@@ -2,8 +2,12 @@
   inputs = {
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
     claude_code_nix.url = "github:sadjow/claude-code-nix"; # a newer model needs a newer CLI, and nixpkgs trails the releases
+    browser_manipulation = {
+      url = "github:valeratrades/browser_manipulation?ref=v0.2.1"; # the same tag as the cargo dep: its driver is pinned to it
+      inputs.v_flakes.follows = "v_flakes";
+    };
   };
-  outputs = { self, v_flakes, claude_code_nix }:
+  outputs = { self, v_flakes, claude_code_nix, browser_manipulation }:
     let
       inherit (v_flakes) flake-utils pre-commit-hooks;
     in
@@ -16,6 +20,11 @@
         manifest = (pkgs.lib.importTOML ./social_networks/Cargo.toml).package;
         pname = manifest.name;
         stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
+        patchright = browser_manipulation.packages.${system}.patchright;
+        driverEnv = {
+          PLAYWRIGHT_CLI_JS = "${patchright}/package/cli.js";
+          PLAYWRIGHT_NODE_EXE = "${pkgs.nodejs}/bin/node";
+        };
 
         rs = v_flakes.rs {
           inherit pkgs rust;
@@ -73,6 +82,7 @@
           ];
           nativeBuildInputs = with pkgs; [ pkg-config ];
           RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in the sandbox
+          PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD = "1";
           # HOME: the rolodex history tests write under ~/.cache. nix: the purpose tests evaluate
           # person files, and a sandbox has no daemon, so the evaluator gets a store it never writes to.
           nativeCheckInputs = [ pkgs.nix ];
@@ -81,14 +91,19 @@
             export NIX_CONFIG=$'experimental-features = nix-command\nstore = dummy://'
           '';
 
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes."browser_manipulation-0.2.1" = "sha256-3Je1LiU6dYg0+Vpw2N+rHN/K47oKMfEf12JAncHc5eM=";
+          };
           src = pkgs.lib.cleanSource ./.;
         };
-        rustPlatform = pkgs.makeRustPlatform {
-          rustc = rust;
-          cargo = rust;
-          inherit stdenv;
-        };
+        rustPlatform =
+          let build_rust = v_flakes.rs.build_nightly system; in
+          pkgs.makeRustPlatform {
+            rustc = build_rust;
+            cargo = build_rust;
+            inherit stdenv;
+          };
         # The container is the isolation; chromium's own sandbox needs user
         # namespaces a pod does not get.
         # Skia aborts the browser when fontconfig finds no fonts, and the image has none of its own.
@@ -104,10 +119,10 @@
             healthPath = null;
             criticality = "normal";
             entrypoint = [ "${bin}/bin/${pname}" ];
-            contents = [ chromium claude_code_nix.packages.${system}.default pkgs.coreutils ];
+            contents = [ chromium claude_code_nix.packages.${system}.default pkgs.coreutils pkgs.nodejs patchright ];
             mounts = [ "/data" ];
             workingDir = "/data";
-            imageEnv = [ "HOME=/data" "PATH=/bin" ];
+            imageEnv = [ "HOME=/data" "PATH=/bin" ] ++ pkgs.lib.mapAttrsToList (k: v: "${k}=${v}") driverEnv;
           };
         };
       in
@@ -153,7 +168,8 @@
               RUST_BACKTRACE = 1;
               RUST_LIB_BACKTRACE = 0;
               CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG = true;
-            };
+              PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD = "1";
+            } // driverEnv;
           };
       }
     );

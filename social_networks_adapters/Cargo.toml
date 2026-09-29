@@ -21,9 +21,10 @@ youtube-reads = []
 [dependencies]
 ask_llm.workspace = true
 base64.workspace = true
-chromiumoxide.workspace = true
+browser_manipulation.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
+derive_more.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 google-gmail1.workspace = true

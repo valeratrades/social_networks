@@ -8,6 +8,7 @@ use social_networks_adapters::{
 	reach::{Author, INITIAL_ITEMS, Item, Kind, Source},
 };
 use social_networks_reach::{
+	history::Unreasoned,
 	person::{Birthday, LogEntry, Person, Value},
 	purpose::{Purpose, TagType},
 };
@@ -54,6 +55,15 @@ impl<'a> Delta<'a> {
 	}
 }
 
+impl From<Delta<'_>> for Unreasoned {
+	fn from(delta: Delta<'_>) -> Self {
+		Self {
+			items: delta.new_messages.into_iter().chain(delta.new_public).collect(),
+			sources: delta.changed_sources,
+		}
+	}
+}
+
 pub struct Extraction {
 	pub summary: String,
 	pub new_log_entries: Vec<LogEntry>,
@@ -65,11 +75,7 @@ pub struct Extraction {
 pub async fn extract(delta: &Delta<'_>, purpose: &Purpose, llm_config: &LlmConfig) -> Result<Extraction> {
 	let asked: BTreeMap<&str, (&TagType, &str)> = purpose.tags.iter().filter_map(|(tag, kind)| kind.about().map(|about| (tag.as_str(), (kind, about)))).collect();
 	let prompt = prompt(delta, &asked);
-	let response = llm(llm_config)
-		.ask(&prompt)
-		.await
-		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
-		.wrap_err("extraction call failed")?;
+	let response = llm(llm_config).ask(&prompt).await.wrap_err("extraction call failed")?;
 	let Response { summary, new_log_entries, tags } = serde_json::from_str(&response.text).wrap_err_with(|| format!("extraction did not return the requested shape:\n{}", response.text))?;
 	let tags = tags.unwrap_or_default();
 	if !tags.keys().map(String::as_str).eq(asked.keys().copied()) {
@@ -107,11 +113,7 @@ pub async fn discover_handles(delta: &Delta<'_>, llm_config: &LlmConfig) -> Resu
 		return Ok(Vec::new());
 	}
 	let prompt = discovery_prompt(delta);
-	let response = llm(llm_config)
-		.ask(&prompt)
-		.await
-		.map_err(|e| color_eyre::eyre::eyre!("{e:#}"))
-		.wrap_err("handle discovery call failed")?;
+	let response = llm(llm_config).ask(&prompt).await.wrap_err("handle discovery call failed")?;
 	let discovered: Discovered = serde_json::from_str(&response.text).wrap_err_with(|| format!("handle discovery did not return the requested shape:\n{}", response.text))?;
 	Ok(discovered
 		.handles

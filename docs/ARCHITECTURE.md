@@ -39,7 +39,7 @@ social_networks/
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
-│       ├── facebook/                       # a hand-rolled CDP client over a logged-in chrome: City-filter search, group listings, About-tab visits
+│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits
 │       ├── nominatim.rs                    # place name → point, ≤1 req/s, cached on disk forever
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
@@ -189,7 +189,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
 - `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
-- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it.
 
 ## Invariants
 
@@ -200,7 +200,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session counts — gets `AUTH_KEY_DUPLICATED` on both ends. So each daemon logs in its own session (`dms` on `<user>`, `telegram-channel-watch` on `<user>_channel_watch`), and no key is shared with another host's process, e.g. the laptop's `tg`.
 - **A daemon's state is the db**: sessions, cursors and caches are rows of `db.sqlite3`, the one file the cluster replicates (litestream, devops). A daemon writing a file of its own beside it loses that state on every failover.
 - **Auth = exit**: an auth-class failure on any surface brings the process down non-zero. Nothing retries past it in-process; recovery is a human fixing creds and restarting.
-- **Provider keys**: carried by `[llm]`, required by the surfaces that reason (youtube, email, a purpose's `pull`), refused when empty.
+- **Provider keys**: carried by `[llm]`, each optional — the `claude` CLI's own login is one — and resolved per request, never at load. A daemon that reasons (youtube, email) exits when no model answers; a purpose's `pull` saves what it fetched and says that nothing reasoned over it.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
 - **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app. `procure` fetches nothing — it selects over what `recon` wrote.
@@ -208,12 +208,14 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **A fact outranks its seed**: `lives_in` and `birthday` are tags platforms state. `procure` seeds `lives_in` from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
-  - no `Runtime.enable`, which is why the CDP client is hand-rolled rather than chromiumoxide's;
+  - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
   - nothing is clicked: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch;
+  - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
   - `city` never launches a browser, and `group` and profile visits never use the user's;
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;
   - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
+  - the user's sway focus is never moved: no `Page.bringToFront`, and a window that must render is moved to a headless output, never to the user;
   - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
 - **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.
 

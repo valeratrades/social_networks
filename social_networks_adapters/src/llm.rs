@@ -1,25 +1,16 @@
-use color_eyre::eyre::{Result, bail};
 use v_utils::macros::MyConfigPrimitives;
 
-/// Keys for the providers `ask_llm` can reach. Which one a call needs follows from the
-/// [`ask_llm::Model`] tier it asks for, so a key absent here surfaces as `ask_llm::MissingToken`
-/// on the request that wanted it — except `claude_token`, which only overrides what the `claude`
-/// CLI would otherwise resolve for itself.
+/// Overrides for the providers `ask_llm` can reach, each optional: the `claude` CLI resolves its own
+/// login without one. A key named by an unset env var is absent, so a missing one surfaces on the
+/// request that wanted it rather than at load.
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct LlmConfig {
 	#[serde(default)]
+	#[private_value]
 	pub claude_token: Option<String>,
 	#[serde(default)]
+	#[private_value]
 	pub openai_token: Option<String>,
-}
-
-impl LlmConfig {
-	pub fn assert_any_key(&self) -> Result<()> {
-		if self.claude_token.is_none() && self.openai_token.is_none() {
-			bail!("`[llm]` carries no key — give it at least one of claude_token, openai_token, or drop the section");
-		}
-		Ok(())
-	}
 }
 
 impl From<&LlmConfig> for ask_llm::config::AppConfig {

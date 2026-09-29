@@ -22,6 +22,7 @@ use social_networks_adapters::{
 	facebook::{self, Facebook},
 	github::Github,
 	linkedin::Linkedin,
+	llm::LlmConfig,
 	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Place, Profiles, Source, VenueRef, Window},
 	skool::Skool,
 	telegram_dms::{self, TelegramConfig},
@@ -58,8 +59,13 @@ pub enum PurposeCommand {
 	Procure(procure::ProcureArgs),
 	/// Remove people every venue we keep has lost, and no conversation is on record with
 	Prune,
-	/// Fetch what is new about matching people and fold it into their files
-	Pull { pattern: Option<String> },
+	/// Fetch what is new about matching people and fold it into their files, stalest first
+	Pull {
+		pattern: Option<String>,
+		/// Only the n whose ranking a pull would move the most
+		#[arg(long)]
+		top: Option<usize>,
+	},
 	/// Matching people in order, with the score and what each term of the ranking gave it
 	Rank { pattern: Option<String> },
 	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
@@ -89,7 +95,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 		PurposeCommand::Open { pattern } => open(purpose, pattern.as_deref()).await,
 		PurposeCommand::Procure(args) => procure::main(purpose, venues()?, args).await,
 		PurposeCommand::Prune => prune(purpose, venues()?),
-		PurposeCommand::Pull { pattern } => pull(&config, purpose, venues()?, pattern.as_deref()).await,
+		PurposeCommand::Pull { pattern, top } => pull(&config, purpose, venues()?, pattern.as_deref(), top).await,
 		PurposeCommand::Rank { pattern } => {
 			let selected: Vec<Person> = select(purpose, pattern.as_deref())?;
 			let total = selected.len();
@@ -276,7 +282,7 @@ fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
 	let Some(width) = ranked.iter().map(|r| r.person.name.chars().count()).max() else { return };
 	let columns: Vec<usize> = purpose.rank.iter().map(|term| term.of.chars().count().max(3)).collect();
 	let header: String = purpose.rank.iter().zip(&columns).map(|(term, w)| format!(" {:>w$}", term.of)).collect();
-	println!("   {} {:<width$}{}", "score".dimmed(), "", header.dimmed());
+	println!("   {} {} {:<width$}{}", "score".dimmed(), "stale".dimmed(), "", header.dimmed());
 	for r in ranked {
 		let terms: String = r
 			.terms
@@ -290,8 +296,9 @@ fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
 		let handles: Vec<String> = r.person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
 		let backfilling = if r.backfilling { " backfilling".yellow().to_string() } else { String::new() };
 		println!(
-			"   {:>5.0} {:<width$}{} {}{backfilling}",
+			"   {:>5.0} {:>5.1} {:<width$}{} {}{backfilling}",
 			r.score * 100.0,
+			r.stale * 100.0,
 			r.person.name,
 			terms.dimmed(),
 			handles.join(" ").dimmed()
@@ -412,12 +419,24 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 	Ok(cold)
 }
 
-async fn pull(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>) -> Result<()> {
+async fn pull(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, top: Option<usize>) -> Result<()> {
 	let dir = &purpose.path;
-	let people = select(purpose, pattern)?;
-	if people.is_empty() {
+	let selected = select(purpose, pattern)?;
+	if selected.is_empty() {
 		bail!("no people in {} matching {}", dir.display(), pattern.unwrap_or("anything"));
 	}
+	if top == Some(0) {
+		bail!("`--top 0` pulls nobody");
+	}
+	let mut ranked = rank::rank(purpose, venues, selected)?;
+	ranked.sort_by(|a, b| b.stale.partial_cmp(&a.stale).expect("a loss is finite"));
+	ranked.truncate(top.unwrap_or(ranked.len()));
+	let loss = format!(
+		"a pull stands to move their scores by {:.1} points, {:.1} at most",
+		ranked.iter().map(|r| r.stale).sum::<f64>() * 100.0,
+		ranked[0].stale * 100.0
+	);
+	let people: Vec<Person> = ranked.into_iter().map(|r| r.person).collect();
 
 	// A pattern says who; without one this is the whole purpose, and whoever has no cursor yet is
 	// read from their first message rather than from where the last read stopped.
@@ -432,8 +451,8 @@ async fn pull(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Opt
 			}
 		}
 		let scope = match whole.is_empty() {
-			true => format!("pull {} people, each from where the last read stopped", people.len()),
-			false => format!("pull {} people, {} of them in full ({})", people.len(), whole.len(), whole.join(", ")),
+			true => format!("pull {} people, each from where the last read stopped; {loss}", people.len()),
+			false => format!("pull {} people, {} of them in full ({}); {loss}", people.len(), whole.len(), whole.join(", ")),
 		};
 		if v_utils::io::confirmation(&scope).flush_blocking() == v_utils::io::ConfirmResult::No {
 			return Ok(());
@@ -498,14 +517,18 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	);
 	pb.set_prefix(purpose.name.clone());
 	pb.enable_steady_tick(Duration::from_millis(80));
-	let (mut updated, mut entries, mut failures) = (0usize, 0usize, 0usize);
+	let (mut updated, mut entries, mut failures, mut unreasoned) = (0usize, 0usize, 0usize, 0usize);
+	// the first answer of "no model" stands for the rest of the run, so nobody after waits on it again
+	let mut silence: Option<color_eyre::Report> = None;
 
 	for mut person in people {
 		let name = format!("{:<width$}", person.name);
 		let person_dir = person.dir(dir);
 		let assets = person_dir.join("assets");
 		let mut meta = history::Meta::load(&person_dir)?;
-		let mut fetched_sources = BTreeMap::new();
+		let waiting = meta.unreasoned().cloned();
+		// a fresh fetch of a source outranks what an earlier one left waiting
+		let mut fetched_sources = waiting.as_ref().map(|w| w.sources.clone()).unwrap_or_default();
 		let mut handles = BTreeMap::new();
 		let mut fetched = Vec::new();
 		// stays `None` unless a platform that states membership answered, so a skool read that failed
@@ -513,6 +536,8 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let mut member_of: Option<Vec<String>> = None;
 		let mut lives_in: Option<Option<Place>> = None;
 		let mut born: Option<jiff::civil::Date> = None;
+		let mut complete = true;
+		let mut labelled = true;
 
 		for (platform, handle) in &person.handles {
 			// the remaining connected-account handles (youtube, battlenet, …) carry no fetch path
@@ -552,6 +577,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
 				// the pull continues
 				Err(e) => {
+					complete = false;
 					failures += 1;
 					error!("{}: {platform}/{handle} failed, skipping: {e:#}", person.name);
 					pb.suspend(|| println!("   {} {name} {platform}/{handle}: {e:#}", "✗".red()));
@@ -570,6 +596,12 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let from_venues = venue_items(venues, &person, meta.venues_through())?;
 		let through = from_venues.iter().map(|item| item.at).max();
 		fetched.extend(from_venues);
+		if let Some(waiting) = waiting {
+			fetched.extend(waiting.items);
+			// a venue line waiting since a pull no model answered is read from the venue again
+			let mut seen = std::collections::HashSet::new();
+			fetched.retain(|item| seen.insert((item.source, item.id.clone())));
+		}
 
 		let facts_before = person.tags.clone();
 		// a visit outranks whatever placed them before it, a visit that found no city included
@@ -598,70 +630,94 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			true => Some(record(&person_dir, venues, &person)?),
 			false => None,
 		};
-		let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched, record) else {
-			// a venue they left is a change with no text and no items behind it, so it has to be
-			// written on the path a text delta calls empty
-			if moved {
+		'person: {
+			let Some(delta) = delta::Delta::new(&person, &fetched_sources, fetched, record) else {
+				// a venue they left is a change with no text and no items behind it, so it has to be
+				// written on the path a text delta calls empty
+				if moved {
+					person.write(dir)?;
+					updated += 1;
+					pb.suspend(|| println!("   {} {name} venues or facts changed{state}", "✓".green()));
+				} else {
+					info!("{}: nothing new", person.name);
+					pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
+				}
+				break 'person;
+			};
+			let answer = match silence {
+				Some(_) => None,
+				None => {
+					pb.set_message(format!("{} reasoning", person.name));
+					match reason(&delta, purpose, &llm_config).await {
+						Ok(answer) => Some(answer),
+						Err(e) if unanswered(&e) => {
+							pb.suspend(|| println!("   {} no model answered, so the rest is saved unreasoned: {e:#}", "✗".red()));
+							silence = Some(e);
+							None
+						}
+						Err(e) => {
+							pb.abandon();
+							return Err(e).wrap_err_with(|| format!("reasoning over {}", person.name));
+						}
+					}
+				}
+			};
+			let Some((extraction, discovered)) = answer else {
+				meta.defer(delta.into())?;
+				labelled = false;
+				// what platforms state needs no model: the facts are already on the person
+				for (platform, handle) in handles {
+					person.handles.entry(platform).or_insert(handle);
+				}
 				person.write(dir)?;
-				updated += 1;
-				pb.suspend(|| println!("   {} {name} venues or facts changed{state}", "✓".green()));
-			} else {
-				info!("{}: nothing new", person.name);
-				pb.suspend(|| println!("   {} {name} unchanged{state}", "·".dimmed()));
+				unreasoned += 1;
+				pb.suspend(|| println!("   {} {name} saved, not reasoned over{state}", "·".yellow()));
+				break 'person;
+			};
+			// what a platform reports about itself outranks what an LLM read out of a conversation
+			let mut added: Vec<String> = Vec::new();
+			for (platform, handle) in discovered {
+				if !person.handles.contains_key(&platform) && !handles.contains_key(&platform) {
+					added.push(platform.clone());
+					handles.insert(platform, handle);
+				}
 			}
-			pb.inc(1);
-			continue;
-		};
-		pb.set_message(format!("{} extracting", person.name));
-		let extraction = match delta::extract(&delta, purpose, &llm_config).await {
-			Ok(extraction) => extraction,
-			Err(e) => {
-				pb.abandon();
-				return Err(e).wrap_err_with(|| format!("extraction for {}", person.name));
-			}
-		};
 
-		pb.set_message(format!("{} discovering handles", person.name));
-		let discovered = match delta::discover_handles(&delta, &llm_config).await {
-			Ok(discovered) => discovered,
-			Err(e) => {
-				pb.abandon();
-				return Err(e).wrap_err_with(|| format!("handle discovery for {}", person.name));
+			// only once the extraction has actually read them, so a failed call costs a re-read
+			meta.reasoned(through)?;
+			updated += 1;
+			entries += extraction.new_log_entries.len();
+			info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
+			let added = if added.is_empty() { String::new() } else { format!(", +{}", added.join(" +")) };
+			pb.suspend(|| {
+				println!(
+					"   {} {name} +{} log entries, {} sources{added}{state}",
+					"✓".green(),
+					extraction.new_log_entries.len(),
+					fetched_sources.len()
+				)
+			});
+			person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
+			for (tag, value) in extraction.tags {
+				person.weigh(&tag, value);
 			}
-		};
-		// what a platform reports about itself outranks what an LLM read out of a conversation
-		let mut added: Vec<String> = Vec::new();
-		for (platform, handle) in discovered {
-			if !person.handles.contains_key(&platform) && !handles.contains_key(&platform) {
-				added.push(platform.clone());
-				handles.insert(platform, handle);
-			}
+			person.write(dir)?;
 		}
-
-		// only once the extraction has actually read them, so a failed call costs a re-read
-		meta.venues_read(through)?;
-		updated += 1;
-		entries += extraction.new_log_entries.len();
-		info!("{}: +{} log entries over {} sources", person.name, extraction.new_log_entries.len(), fetched_sources.len());
-		let added = if added.is_empty() { String::new() } else { format!(", +{}", added.join(" +")) };
-		pb.suspend(|| {
-			println!(
-				"   {} {name} +{} log entries, {} sources{added}{state}",
-				"✓".green(),
-				extraction.new_log_entries.len(),
-				fetched_sources.len()
-			)
-		});
-		person.absorb(extraction.summary, extraction.new_log_entries, fetched_sources, handles);
-		for (tag, value) in extraction.tags {
-			person.weigh(&tag, value);
+		if complete {
+			meta.fetched(labelled)?;
 		}
-		person.write(dir)?;
 		pb.inc(1);
 	}
 
 	let failures = if failures == 0 { String::new() } else { format!(", {failures} failed") };
-	let summary = format!("{total} {}, {updated} updated, +{entries} log entries{failures}", if total == 1 { "person" } else { "people" });
+	let unreasoned = match unreasoned {
+		0 => String::new(),
+		n => format!(", {n} saved unreasoned — the next pull a model answers reasons over them"),
+	};
+	let summary = format!(
+		"{total} {}, {updated} updated, +{entries} log entries{failures}{unreasoned}",
+		if total == 1 { "person" } else { "people" }
+	);
 	// the finished bar is the summary wherever it renders; without a tty it never does
 	if pb.is_hidden() {
 		println!("   {summary}");
@@ -669,6 +725,33 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	pb.set_style(ProgressStyle::with_template(" ✓ {prefix:.bold.green} [{elapsed_precise}] {bar:30.green/238} {pos:>2}/{len} {msg:.green}").expect("static template"));
 	pb.finish_with_message(summary);
 	Ok(())
+}
+
+async fn reason(delta: &delta::Delta<'_>, purpose: &Purpose, llm_config: &LlmConfig) -> Result<(delta::Extraction, Vec<(String, String)>)> {
+	let extraction = delta::extract(delta, purpose, llm_config).await?;
+	let discovered = delta::discover_handles(delta, llm_config).await?;
+	Ok((extraction, discovered))
+}
+
+/// No model answered for a reason of the account or the network, which waiting fixes and the person
+/// does not: every other failure is about what was asked.
+fn unanswered(e: &color_eyre::Report) -> bool {
+	use ask_llm::{Cli, Error, Failure, Unrecoverable};
+	match e.downcast_ref::<Error>() {
+		Some(Error::Recoverable(_)) => true,
+		Some(Error::Unrecoverable(exhausted)) => exhausted.attempts.iter().all(|attempt| match &attempt.failure {
+			Failure::Recoverable(_) => true,
+			Failure::Unrecoverable(u) => matches!(
+				u,
+				Unrecoverable::MissingToken { .. }
+					| Unrecoverable::Auth { .. }
+					| Unrecoverable::Quota { .. }
+					| Unrecoverable::GeoBlocked { .. }
+					| Unrecoverable::Cli(Cli::NotInstalled { .. } | Cli::Exit { .. } | Cli::Failed { .. })
+			),
+		}),
+		_ => false,
+	}
 }
 
 /// What a platform states, for the sources that hold no conversation.

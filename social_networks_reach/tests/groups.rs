@@ -21,6 +21,7 @@ fn purpose(path: &Path, procure: serde_json::Value) -> Result<Purpose, String> {
 		},
 		"procure": procure,
 		"rank": [{ "of": "interactions", "weight": 1 }],
+		"half_life": "30d",
 	}});
 	serde_json::from_value::<Purposes>(raw).map(|p| p.get("p").unwrap().clone()).map_err(|e| e.to_string())
 }

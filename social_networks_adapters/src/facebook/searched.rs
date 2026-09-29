@@ -1,13 +1,14 @@
 //! A record per city query, `searched/<city id>/<name>.toml`: what it listed and how it ended, so
-//! which query found whom outlives the roster. Nothing reads it to decide what to search.
+//! which query found whom outlives the roster. Nothing reads it to decide what to search; a query
+//! resumed partway adds to its own.
 
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, WrapErr};
 use jiff::Timestamp;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum Ended {
 	Exhausted,
@@ -19,13 +20,23 @@ pub(super) enum Ended {
 /// Written at the start and on every page; dropped without [`Query::end`], it ends `interrupted`.
 pub(super) struct Query {
 	record: Record,
+	/// listed before a resume, which this run's listing does not repeat
+	prior: Vec<String>,
 	path: PathBuf,
 }
 impl Query {
-	pub(super) fn start(dir: &Path, name: &str) -> Result<Self> {
+	/// `resumed` carries on the record the query left when it was cut off partway.
+	pub(super) fn start(dir: &Path, name: &str, resumed: bool) -> Result<Self> {
 		assert!(!name.contains('/'), "a first name is a file name");
-		let q = Self {
-			record: Record {
+		let path = dir.join(format!("{name}.toml"));
+		let record = match resumed {
+			true => {
+				let s = std::fs::read_to_string(&path).wrap_err_with(|| format!("the walk resumes `{name}` partway, and its record {} is unreadable", path.display()))?;
+				let mut r: Record = toml::from_str(&s).wrap_err_with(|| format!("{} is not a query record", path.display()))?;
+				(r.finished, r.ended) = (None, None);
+				r
+			}
+			false => Record {
 				started: Timestamp::now(),
 				finished: None,
 				listed: 0,
@@ -34,7 +45,11 @@ impl Query {
 				ended: None,
 				ids: Vec::new(),
 			},
-			path: dir.join(format!("{name}.toml")),
+		};
+		let q = Self {
+			prior: record.ids.clone(),
+			record,
+			path,
 		};
 		q.write()?;
 		Ok(q)
@@ -43,7 +58,8 @@ impl Query {
 	/// Everyone listed so far, how many of them the roster lacked, and one more scroll unless it is the first page.
 	pub(super) fn page<'a>(&mut self, ids: impl IntoIterator<Item = &'a String>, new: usize, scrolled: bool) -> Result<()> {
 		let r = &mut self.record;
-		r.ids = ids.into_iter().cloned().collect();
+		r.ids = self.prior.clone();
+		r.ids.extend(ids.into_iter().filter(|id| !self.prior.contains(id)).cloned());
 		r.listed = r.ids.len();
 		r.new += new;
 		r.scrolls += scrolled as u32;
@@ -61,7 +77,7 @@ impl Query {
 	}
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct Record {
 	started: Timestamp,
 	finished: Option<Timestamp>,
@@ -97,7 +113,7 @@ mod tests {
 		std::fs::create_dir_all(&dir).unwrap();
 		let ids = |n: usize| (0..n).map(|i| format!("1000{i}")).collect::<Vec<_>>();
 
-		let mut q = Query::start(&dir, "jean").unwrap();
+		let mut q = Query::start(&dir, "jean", false).unwrap();
 		assert!(!read(&dir, "jean").contains_key("ended"));
 		q.page(&ids(10), 10, false).unwrap();
 		q.page(&ids(21), 9, true).unwrap();
@@ -107,7 +123,7 @@ mod tests {
 		assert_eq!((r["listed"].as_integer(), r["new"].as_integer(), r["scrolls"].as_integer()), (Some(21), Some(19), Some(1)));
 		assert_eq!(r["ids"].as_array().unwrap().len(), 21);
 
-		let mut q = Query::start(&dir, "jean").unwrap();
+		let mut q = Query::start(&dir, "jean", false).unwrap();
 		q.page(&ids(3), 0, false).unwrap();
 		q.end(Ended::Exhausted).unwrap();
 		let r = read(&dir, "jean");

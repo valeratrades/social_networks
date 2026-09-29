@@ -15,7 +15,7 @@ Problem: a Facebook login made in the CDP-exposed Chrome does not survive while 
 2. A behaviour trigger: the same members page loaded repeatedly in new tabs right after a fresh login.
 
 ## Mitigation in place (rev. 2, 2026-09-22)
-- A fresh own-profile Chrome got facebook's "are you human" check on login, so that was dropped. The scraper attaches to the daily Chrome (`cdp_port`) and takes over its single facebook tab (evinvest profile), through a hand-rolled CDP client that never sends `Runtime.enable`. Scrolling is `Input.dispatchMouseEvent` wheel events.
+- A fresh own-profile Chrome got facebook's "are you human" check on login, so that was dropped. The scraper attaches to the daily Chrome (`cdp_port`) and takes over its single facebook tab (evinvest profile), through a client that never sends `Runtime.enable` — now `browser_manipulation`, whose invariant 4 this is (tested by its `page_sees_no_automation`). Scrolling is real wheel events, notch by notch.
 - The earlier finding "`window.scrollTo` does not paginate" was probably the window sitting on a hidden sway workspace: no frames there, so no IntersectionObserver and no input acks. Wheel scrolling paginates when the window is visible (35 members seen).
 - Each drop appends a line to `$XDG_STATE_HOME/social_networks/facebook/{attached,launched}/sessions.toml`: `logged_in_at`, `lifetime`, `page_views`, `scrolls`, `last_url`. Use it to tell hypothesis 1 from 2: a drop with 0 scrolls and few views points to presence detection; drops that grow with views or scrolls point to behaviour.
 
