@@ -1,7 +1,10 @@
 {
   inputs = {
     v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
-    claude_code_nix.url = "github:sadjow/claude-code-nix"; # a newer model needs a newer CLI, and nixpkgs trails the releases
+    claude_code_nix = {
+      url = "github:sadjow/claude-code-nix"; # a newer model needs a newer CLI, and nixpkgs trails the releases
+      inputs.nixpkgs.follows = "v_flakes/nixpkgs";
+    };
     browser_manipulation = {
       url = "github:valeratrades/browser_manipulation?ref=v0.3.0"; # the same tag as the cargo dep: its driver is pinned to it
       inputs.v_flakes.follows = "v_flakes";

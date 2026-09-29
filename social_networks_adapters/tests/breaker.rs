@@ -13,8 +13,8 @@ async fn a_recipient_over_the_limit_is_refused_until_the_timeout_ends() {
 	let breakers = CircuitBreakers {
 		per_recipient: PerRecipient {
 			max: 3,
-			window: Timeframe(300),
-			timeout: Timeframe(600),
+			window: Timeframe(5_000), // wall-clock: a CI runner's db writes can eat a narrower window
+			timeout: Timeframe(10_000),
 		},
 	};
 
@@ -24,10 +24,10 @@ async fn a_recipient_over_the_limit_is_refused_until_the_timeout_ends() {
 	assert!(breakers.admit(&db, "email:a@x").await.is_err(), "4th within the window trips");
 	breakers.admit(&db, "email:b@x").await.unwrap();
 
-	tokio::time::sleep(Duration::from_millis(400)).await;
+	tokio::time::sleep(Duration::from_millis(6_000)).await;
 	assert!(breakers.admit(&db, "email:a@x").await.is_err(), "window has passed, timeout has not");
 
-	tokio::time::sleep(Duration::from_millis(300)).await;
+	tokio::time::sleep(Duration::from_millis(5_000)).await;
 	breakers.admit(&db, "email:a@x").await.unwrap();
 
 	std::fs::remove_dir_all(&state).unwrap();
