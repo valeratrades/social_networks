@@ -1,5 +1,6 @@
 #![allow(unused_features)]
 #![feature(default_field_values)]
+#![feature(error_generic_member_access)]
 pub mod behaviour;
 pub mod client;
 pub mod discord;

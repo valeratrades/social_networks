@@ -13,6 +13,7 @@
 mod browser;
 pub mod lead_rate;
 pub mod members;
+mod messenger;
 pub mod profile;
 pub mod search;
 mod searched;

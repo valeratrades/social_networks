@@ -123,15 +123,23 @@ impl Tab<'_> {
 
 	/// From the `c_user` cookie, which facebook sets to expire a year after the login.
 	async fn logged_in_at(&self) -> Result<Option<Timestamp>> {
-		let params = network::GetCookiesParams {
-			urls: Some(vec!["https://www.facebook.com/".into()]),
-		};
-		let cookies = self.call(params).await?.cookies;
-		let Some(c) = cookies.iter().find(|c| c.name == "c_user") else {
+		let Some(c) = self.c_user().await? else {
 			return Ok(None);
 		};
 		let expires = Timestamp::from_second(c.expires as i64)?;
 		Ok(Some(expires.checked_sub(SignedDuration::from_hours(24 * 365))?))
+	}
+
+	/// The account the tab is logged in as.
+	pub(super) async fn account(&self) -> Result<String> {
+		Ok(self.c_user().await?.ok_or_else(|| eyre!("the tab holds no `c_user` cookie, so it is logged out"))?.value)
+	}
+
+	async fn c_user(&self) -> Result<Option<network::Cookie>> {
+		let params = network::GetCookiesParams {
+			urls: Some(vec!["https://www.facebook.com/".into()]),
+		};
+		Ok(self.call(params).await?.cookies.into_iter().find(|c| c.name == "c_user"))
 	}
 
 	/// Logs why the session ended, then waits for the human to log in again in this tab. Credentials are never ours to type.
@@ -166,7 +174,7 @@ impl Tab<'_> {
 	}
 
 	/// `expr` must evaluate to something JSON-serializable. Read-only by convention: page state is the site's.
-	async fn eval<T: DeserializeOwned>(&self, expr: &str) -> Result<T> {
+	pub(super) async fn eval<T: DeserializeOwned>(&self, expr: &str) -> Result<T> {
 		let mut params = EvaluateParams::new(expr);
 		params.return_by_value = Some(true);
 		let r = self.call(params).await?;
@@ -260,35 +268,54 @@ impl Tab<'_> {
 		Ok(false)
 	}
 
-	/// A real wheel event: `window.scrollTo` does not trigger facebook's pagination. Unacked, the window
-	/// is taken to be hidden and parked where it renders.
+	/// `text` into whatever has focus, then Enter, as a keyboard would.
+	pub(super) async fn type_line(&mut self, text: &str) -> Result<()> {
+		self.input(input::InsertTextParams::new(text)).await?;
+		for (kind, text) in [(input::DispatchKeyEventType::KeyDown, Some("\r")), (input::DispatchKeyEventType::KeyUp, None)] {
+			let mut key = input::DispatchKeyEventParams::new(kind);
+			key.key = Some("Enter".into());
+			key.code = Some("Enter".into());
+			key.windows_virtual_key_code = Some(13);
+			key.native_virtual_key_code = Some(13);
+			key.text = text.map(String::from);
+			self.input(key).await?;
+		}
+		Ok(())
+	}
+
+	/// A real wheel event: `window.scrollTo` does not trigger facebook's pagination.
 	async fn wheel(&mut self, (x, y): (f64, f64), delta_y: f64) -> Result<()> {
 		let mut params = input::DispatchMouseEventParams::new(input::DispatchMouseEventType::MouseWheel, x, y);
 		params.delta_x = Some(0.);
 		params.delta_y = Some(delta_y);
-		{
-			let mut ack = pin!(self.call(params));
-			match tokio::time::timeout(Duration::from_secs(10), &mut ack).await {
-				Ok(r) => r?,
-				Err(_) if self.headless => bail!("headless chrome did not ack a wheel event in 10s"),
-				Err(_) => {
-					let title: String = self.eval("document.title").await?;
-					{
-						let mut window = self.window.lock().expect("never held across a panic");
-						let window = match &mut *window {
-							Some(w) => w,
-							None => window.insert(Window::find(&title)?),
-						};
-						ensure!(!window.parked(), "chrome did not ack a wheel event in 10s with its window on a headless output");
-						window.park()?;
-					}
-					tokio::time::timeout(Duration::from_secs(10), &mut ack)
-						.await
-						.wrap_err("chrome did not ack a wheel event in 10s after its window moved to a headless output")??
+		self.input(params).await
+	}
+
+	/// An input event, which chrome acks only for a rendered window. Unacked, the window is taken to be
+	/// hidden and parked where it renders; the user's focus is never moved to it.
+	async fn input<C: Command>(&mut self, cmd: C) -> Result<()> {
+		let method = cmd.identifier();
+		let mut ack = pin!(self.call(cmd));
+		match tokio::time::timeout(Duration::from_secs(10), &mut ack).await {
+			Ok(r) => r.map(|_| ()),
+			Err(_) if self.headless => bail!("headless chrome did not ack {method} in 10s"),
+			Err(_) => {
+				let title: String = self.eval("document.title").await?;
+				{
+					let mut window = self.window.lock().expect("never held across a panic");
+					let window = match &mut *window {
+						Some(w) => w,
+						None => window.insert(Window::find(&title)?),
+					};
+					ensure!(!window.parked(), "chrome did not ack {method} in 10s with its window on a headless output");
+					window.park()?;
 				}
-			};
+				tokio::time::timeout(Duration::from_secs(10), &mut ack)
+					.await
+					.wrap_err_with(|| format!("chrome did not ack {method} in 10s after its window moved to a headless output"))?
+					.map(|_| ())
+			}
 		}
-		Ok(())
 	}
 }
 
