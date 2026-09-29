@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use social_networks_adapters::breaker::{CircuitBreakers, PerRecipient};
 use social_networks_utils::db::Database;
@@ -6,7 +6,7 @@ use v_utils::Timeframe;
 
 #[tokio::test]
 async fn a_recipient_over_the_limit_is_refused_until_the_timeout_ends() {
-	let state = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("breaker_{}", std::process::id()));
+	let state = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("breaker_{}", std::process::id()));
 	// SAFETY: the only test in this binary, set before anything reads the environment
 	unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
 	let db = Database::try_new().await.unwrap();
