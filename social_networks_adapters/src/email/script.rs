@@ -286,7 +286,7 @@ mod tests {
 		)
 		.unwrap();
 		let by_default: Scripts = serde_json::from_str(r#"{ "Google Business Profile": { "goal": "a call", "methods": "ask" } }"#).unwrap();
-		assert!(by_default.find(&[forward.clone()]).unwrap().is_none());
+		assert!(by_default.find(std::slice::from_ref(&forward)).unwrap().is_none());
 		let opted_in: Scripts = serde_json::from_str(r#"{ "Google Business Profile": { "goal": "a call", "methods": "ask", "match_forwards": true } }"#).unwrap();
 		assert!(opted_in.find(&[forward]).unwrap().is_some());
 	}
