@@ -2,6 +2,7 @@
 mod delta;
 mod dm;
 mod procure;
+mod send;
 
 use std::{
 	collections::BTreeMap,
@@ -68,6 +69,9 @@ pub enum PurposeCommand {
 	},
 	/// Matching people in order, with the score and what each term of the ranking gave it
 	Rank { pattern: Option<String> },
+	/// Send what is due in matching people's `outbox/`, best ranked first, within each messenger's
+	/// `circuit_breakers.per_surface` budget
+	Send { pattern: Option<String> },
 	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
 	/// named nothing. A bare name is a bool tag set to true
 	Tag {
@@ -103,6 +107,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			println!("   {total} ranked");
 			Ok(())
 		}
+		PurposeCommand::Send { pattern } => send::main(&config, purpose, venues()?, pattern.as_deref()).await,
 		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
 	}
 }

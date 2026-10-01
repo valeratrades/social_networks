@@ -52,6 +52,7 @@ social_networks/
 │   ├── src/
 │   │   ├── lib.rs                          # the telegram session wrapper
 │   │   ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
+│   │   ├── outbox.rs                       # `<person>/outbox/<messenger>/<at>.md`: messages written ahead, sent by `purpose send`
 │   │   ├── venue.rs                        # `<venues>/<platform>/<slug>/`, the line reader, roster selection
 │   │   ├── person.rs                       # `<person>/__main__.nix`, typed tag values
 │   │   ├── purpose.rs                      # `purposes.<name>`: folder, tag vocabulary, procurement, ranking — checked at load
@@ -144,7 +145,7 @@ answered by the LLM toward the script's goal, until it answers that the goal is 
 to the alerts channel instead. `--dry-run` sends the drafts there too.
 
 `purpose` (and `rolodex`, which is `purpose rolodex`) and `recon` are the commands that are not daemons and notify nobody — they read the same
-sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them:
+sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them (`send` is `dm` over what is due in the outboxes):
 
 ```
 Discord ──┐                                                                  ┌──► Discord
@@ -218,7 +219,8 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
   - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
   - the user's sway focus is never moved: no `Page.bringToFront`, and a window that must render is moved to a headless output, never to the user;
   - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
-- **Every send to a person is admitted by `breaker`**: `dm` and the email scripts' replies. A tripped breaker refuses, it never queues; the send log and open breakers are rows of the db.
+- **Every send to a person is admitted by `breaker`**: `dm`, `send` and the email scripts' replies. A tripped breaker or a spent `per_surface` budget refuses, it never queues; the send log and open breakers are rows of the db. `send` refuses a messenger with no `per_surface` budget.
+- **Writing a campaign and sending it never share a step**: a writer only drops files into `<person>/outbox/`; `send` reads nothing else, and removes a file only after it went out.
 - **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.
 
 ## Cross-Cutting Concerns

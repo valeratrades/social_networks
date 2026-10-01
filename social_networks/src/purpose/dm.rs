@@ -14,7 +14,7 @@ use social_networks_reach::{
 	purpose::Purpose,
 };
 use social_networks_utils::db::Database;
-use strum::AsRefStr;
+use strum::{AsRefStr, EnumString};
 
 use super::with_telegram;
 use crate::config::AppConfig;
@@ -45,8 +45,8 @@ impl From<&MessengerFlag> for Messenger {
 }
 
 /// `as_ref` is the `handles` key, so a messenger cannot be reachable under a name the person files
-/// do not use.
-#[derive(AsRefStr, Clone, Copy, Debug)]
+/// do not use. It also names the person's `outbox/<messenger>/` directory.
+#[derive(AsRefStr, Clone, Copy, Debug, EnumString, Eq, Ord, PartialEq, PartialOrd)]
 #[strum(serialize_all = "lowercase")]
 pub enum Messenger {
 	Discord,
@@ -69,6 +69,12 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 			matches.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
 		);
 	};
+	send_to(config, purpose, person, messenger, text).await
+}
+
+/// An `Unreachable` refusal is recorded on the person before it is returned.
+pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str) -> Result<()> {
+	let dir = &purpose.path;
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
