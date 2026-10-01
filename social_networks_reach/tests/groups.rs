@@ -61,7 +61,7 @@ fn a_strategy_binds_exactly_its_groups_to_their_values() {
 
 	let bound = servicing.bind(&bindings(&[("location", "lyon")])).unwrap();
 	assert_eq!(bound.predicate.as_deref(), Some("zone LIKE '%lyon%'"));
-	assert_eq!(bound.tags["location"], Value::Word("lyon".to_string()));
+	assert_eq!(bound.tags["location"], Value::Text("lyon".to_string()));
 
 	for refused in [&[][..], &[("location", "berlin")], &[("location", "lyon"), ("home", "lyon")]] {
 		assert!(servicing.bind(&bindings(refused)).is_err(), "{refused:?} was bound");

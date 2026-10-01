@@ -271,6 +271,7 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 		for (tag, (kind, about)) in asked {
 			let shape = match kind {
 				TagType::Bool { .. } => "true or false".to_string(),
+				TagType::Text { .. } => "a few words, or null".to_string(),
 				TagType::Number { min, max, .. } => format!("a number from {min} to {max}"),
 				TagType::Birthday { .. } => "{\"age\": number, \"said_on\": \"YYYY-MM-DD\" or null} or {\"born\": year, \"said_on\": …}".to_string(),
 				TagType::Place | TagType::Timestamp | TagType::Group(_) => unreachable!("a purpose refuses an `about` on a {kind} at load"),
@@ -280,8 +281,8 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 				Some(None) => "null".to_string(),
 				Some(Some(Value::Bool(b))) => b.to_string(),
 				Some(Some(Value::Number(n))) => n.to_string(),
-				Some(Some(v @ Value::Birthday(_))) => v.nix(),
-				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_) | Value::Word(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
+				Some(Some(v @ (Value::Birthday(_) | Value::Text(_)))) => v.nix(),
+				Some(Some(v @ (Value::Place { .. } | Value::Timestamp(_)))) => unreachable!("`{tag}` = {} was typed against the purpose at load", v.nix()),
 			};
 			p.push_str(&format!("- `{tag}` ({shape}): {about}. Now: {now}\n"));
 		}

@@ -185,6 +185,14 @@ fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {
 				})
 			})
 			.collect(),
+		Signal::Present => tags()
+			.map(|v| {
+				v.map(|v| match v {
+					Value::Text(_) => 1.0,
+					v => mistyped(v),
+				})
+			})
+			.collect(),
 		Signal::Number { min, max } => tags()
 			.map(|v| {
 				v.map(|v| match v {

@@ -169,7 +169,7 @@ fn tag(purpose: &Purpose, tag: Option<&str>, pattern: Option<&str>, rm: bool) ->
 		bail!("nobody in {} matching `{pattern}` to {}", dir.display(), if rm { "untag" } else { "tag" });
 	}
 	let shown = match &value {
-		Some(Value::Word(word)) => format!("{name}:{word}"),
+		Some(Value::Text(word)) => format!("{name}:{word}"),
 		Some(value) => format!("{name} = {}", value.nix()),
 		None => name.clone(),
 	};

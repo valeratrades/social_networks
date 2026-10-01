@@ -78,7 +78,7 @@ impl Person {
 	/// swallowed a name fragment is not a cohort.
 	pub fn matches(&self, pattern: &str) -> bool {
 		if let Some((group, value)) = pattern.split_once(':') {
-			return matches!(self.tags.get(&snake(group)), Some(Some(Value::Word(w))) if w == value);
+			return matches!(self.tags.get(&snake(group)), Some(Some(Value::Text(w))) if w == value);
 		}
 		if self.tags.get(&snake(pattern)) == Some(&Some(Value::Bool(true))) {
 			return true;
@@ -162,8 +162,8 @@ pub enum Value {
 	Timestamp(Timestamp),
 	/// After [`Self::Timestamp`], which no bare date parses as.
 	Birthday(Birthday),
-	/// A group's value. After [`Self::Timestamp`] and [`Self::Birthday`], which no bare word parses as.
-	Word(String),
+	/// A group's value, or free text. After [`Self::Timestamp`] and [`Self::Birthday`], which no bare word parses as.
+	Text(String),
 	Place {
 		name: String,
 		lat: f64,
@@ -176,7 +176,7 @@ impl Value {
 			Self::Bool(b) => b.to_string(),
 			Self::Number(n) => n.to_string(),
 			Self::Timestamp(at) => nix_dq(&at.to_string()),
-			Self::Word(word) => nix_dq(word),
+			Self::Text(text) => nix_dq(text),
 			Self::Birthday(Birthday::Exact(date)) => nix_dq(&date.to_string()),
 			Self::Birthday(Birthday::Rough { min, max, as_of }) => match as_of {
 				Some(at) => format!("{{ min = {min}; max = {max}; as_of = {}; }}", nix_dq(&at.to_string())),
@@ -449,7 +449,7 @@ mod tests {
 					}),
 				),
 				("last_login".to_string(), Some(Value::Timestamp("2026-09-01T12:30:00Z".parse().unwrap()))),
-				("location".to_string(), Some(Value::Word("lyon".to_string()))),
+				("location".to_string(), Some(Value::Text("lyon".to_string()))),
 			]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),

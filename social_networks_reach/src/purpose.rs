@@ -137,7 +137,8 @@ impl Purpose {
 			(TagType::Birthday { .. }, Value::Birthday(Birthday::Exact(_))) => Ok(()),
 			(TagType::Birthday { .. }, Value::Birthday(Birthday::Rough { min, max, .. })) if min <= max => Ok(()),
 			(TagType::Place, Value::Place { lat, lon, .. }) if (-90.0..=90.0).contains(lat) && (-180.0..=180.0).contains(lon) => Ok(()),
-			(TagType::Group(values), Value::Word(word)) if values.contains(word) => Ok(()),
+			(TagType::Text { .. }, Value::Text(text)) if !text.trim().is_empty() => Ok(()),
+			(TagType::Group(values), Value::Text(word)) if values.contains(word) => Ok(()),
 			(kind, value) => bail!("`{tag}` is {kind}, and `{}` is not one", value.nix()),
 		}
 	}
@@ -184,6 +185,7 @@ impl Purpose {
 		};
 		let signal = match (self.tags.get(&of), of.as_str()) {
 			(Some(TagType::Bool { .. }), _) => shape(&[]).map(|()| Signal::Bool)?,
+			(Some(TagType::Text { .. }), _) => shape(&[]).map(|()| Signal::Present)?,
 			(Some(TagType::Number { min, max, .. }), _) => shape(&[]).map(|()| Signal::Number { min: *min, max: *max })?,
 			(Some(TagType::Birthday { .. }), _) => {
 				shape(&["within"])?;
@@ -227,14 +229,14 @@ impl Purpose {
 		}
 		for (tag, value) in raw.tags {
 			let value = match value {
-				Value::Word(word) if word.starts_with('$') => {
+				Value::Text(word) if word.starts_with('$') => {
 					let over = self.over(&word)?;
 					let (group, values) = over
 						.first_key_value()
 						.filter(|_| over.len() == 1 && placeholders(&word)[0].0 == (0..word.len()))
 						.ok_or_else(|| eyre!("tag `{tag}` is `{word}`, and a placeholder stands for a tag's whole value"))?;
 					for value in values {
-						self.check(&tag, Some(&Value::Word(value.clone())))
+						self.check(&tag, Some(&Value::Text(value.clone())))
 							.wrap_err_with(|| format!("`{tag} = {word}` with ${group} = {value}"))?;
 					}
 					let group = group.clone();
@@ -260,7 +262,7 @@ impl Purpose {
 		match &term.signal {
 			Signal::Interactions | Signal::LastInteraction { .. } => Refresh::Fetch,
 			Signal::Place(_) | Signal::Age { .. } if FACTS.iter().any(|(fact, _)| *fact == term.of) => Refresh::Fetch,
-			Signal::Bool | Signal::Number { .. } | Signal::Age { .. } => reasoned(),
+			Signal::Bool | Signal::Present | Signal::Number { .. } | Signal::Age { .. } => reasoned(),
 			// `recon` writes the venues and a human the timestamps
 			Signal::Place(_) | Signal::Timestamp { .. } | Signal::VenueActivity { .. } => Refresh::Never,
 		}
@@ -305,6 +307,9 @@ impl Purpose {
 pub enum TagType {
 	#[display("a bool")]
 	Bool { about: Option<String> },
+	/// A few words, ranked by whether there are any.
+	#[display("a text")]
+	Text { about: Option<String> },
 	/// Bounded, so it normalises on its own rather than against the cohort.
 	#[display("a number in [{min}, {max}]")]
 	Number { min: f64, max: f64, about: Option<String> },
@@ -323,7 +328,7 @@ pub enum TagType {
 impl TagType {
 	pub fn about(&self) -> Option<&str> {
 		match self {
-			Self::Bool { about } | Self::Number { about, .. } | Self::Birthday { about } => about.as_deref(),
+			Self::Bool { about } | Self::Text { about } | Self::Number { about, .. } | Self::Birthday { about } => about.as_deref(),
 			Self::Place | Self::Timestamp | Self::Group(_) => None,
 		}
 	}
@@ -335,6 +340,7 @@ impl TagType {
 		let number = |s: &str| s.trim().parse::<f64>().wrap_err_with(|| format!("`{s}` is not a number"));
 		Ok(match self {
 			Self::Bool { .. } => Value::Bool(raw.parse().wrap_err_with(|| format!("`{raw}` is not true or false"))?),
+			Self::Text { .. } => Value::Text(raw.to_string()),
 			Self::Number { .. } => Value::Number(number(raw)?),
 			Self::Birthday { .. } => Value::Birthday(match raw.parse::<jiff::civil::Date>() {
 				Ok(date) => Birthday::Exact(date),
@@ -370,7 +376,7 @@ impl TagType {
 					.timestamp(),
 			}),
 			Self::Group(values) => match values.contains(raw) {
-				true => Value::Word(raw.to_string()),
+				true => Value::Text(raw.to_string()),
 				false => bail!("`{raw}` is not {self}"),
 			},
 		})
@@ -434,7 +440,7 @@ impl Strategy {
 				.map(|(tag, value)| {
 					let value = match value {
 						StrategyTag::Given(value) => value.clone(),
-						StrategyTag::Templated(group) => Value::Word(bound(group)),
+						StrategyTag::Templated(group) => Value::Text(bound(group)),
 					};
 					(tag.clone(), value)
 				})
@@ -518,6 +524,8 @@ enum StrategyTag {
 #[derive(Clone, Debug)]
 pub(crate) enum Signal {
 	Bool,
+	/// 1 for any text.
+	Present,
 	Number {
 		min: f64,
 		max: f64,
@@ -619,6 +627,7 @@ impl RawTyped {
 		}
 		Ok(match kind.as_str() {
 			"bool" => TagType::Bool { about },
+			"text" => TagType::Text { about },
 			"number" => {
 				let (Some(min), Some(max)) = (min, max) else {
 					bail!("tag `{tag}` is a number, so it declares `min` and `max` — it normalises within them");
@@ -632,7 +641,7 @@ impl RawTyped {
 			"place" | "timestamp" if about.is_some() => bail!("tag `{tag}` is a {kind}, which the extraction cannot fill, so it takes no `about`"),
 			"place" => TagType::Place,
 			"timestamp" => TagType::Timestamp,
-			other => bail!("tag `{tag}` has type `{other}`; a type is one of bool, number, birthday, place, timestamp"),
+			other => bail!("tag `{tag}` has type `{other}`; a type is one of bool, text, number, birthday, place, timestamp"),
 		})
 	}
 }

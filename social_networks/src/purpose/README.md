@@ -14,7 +14,7 @@ config.nix
 ├─ venues = "/…/venues"                 shared: a venue feeds any purpose (`recon` writes here)
 └─ purposes.<name>
      ├─ path     folder whose children are person dirs
-     ├─ tags     { <name> = { type = bool | number{min;max} | birthday | place | timestamp; about?; };
+     ├─ tags     { <name> = { type = bool | text | number{min;max} | birthday | place | timestamp; about?; };
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      ├─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
