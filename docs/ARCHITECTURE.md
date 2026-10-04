@@ -52,7 +52,7 @@ social_networks/
 │   ├── src/
 │   │   ├── lib.rs                          # the telegram session wrapper
 │   │   ├── history.rs                      # `<person>/<year>.md`, cursors, the backfill's two states
-│   │   ├── outbox.rs                       # `<person>/outbox/<messenger>/<at>.md`: messages written ahead, sent by `purpose send`
+│   │   ├── outbox.rs                       # `<person>/outbox/<messenger>/<at>.md`: messages written ahead, sent by `purpose send`; `--multi-message` sends one as a burst of bubbles split on blank lines, one breaker admission
 │   │   ├── venue.rs                        # `<venues>/<platform>/<slug>/`, the line reader, roster selection
 │   │   ├── person.rs                       # `<person>/__main__.nix`, typed tag values
 │   │   ├── purpose.rs                      # `purposes.<name>`: folder, tag vocabulary, procurement, ranking — checked at load

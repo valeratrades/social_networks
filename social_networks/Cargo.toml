@@ -36,6 +36,7 @@ grammers-client.workspace = true
 indicatif.workspace = true
 jiff.workspace = true
 miette.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 social_networks_adapters.workspace = true

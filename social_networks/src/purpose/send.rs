@@ -16,7 +16,7 @@ use super::{
 };
 use crate::config::AppConfig;
 
-pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>) -> Result<()> {
+pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, multi_message: bool) -> Result<()> {
 	let now = Timestamp::now();
 	let db = Database::try_new().await?;
 	let mut budget: BTreeMap<Messenger, usize> = BTreeMap::new();
@@ -37,7 +37,7 @@ pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern:
 			println!("   {} {} ({}): unreachable on {platform}: {why}", "·".dimmed(), person.name, due.at);
 			continue;
 		}
-		match dm::send_to(config, purpose, person, messenger, &due.text).await {
+		match dm::send_to(config, purpose, person, messenger, &due.text, multi_message).await {
 			Ok(()) => {
 				std::fs::remove_file(&due.path).unwrap_or_else(|e| panic!("sent {}, but could not remove it, so the next run would send it again: {e}", due.path.display()));
 				*left -= 1;

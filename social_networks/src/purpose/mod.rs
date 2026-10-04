@@ -51,6 +51,9 @@ pub enum PurposeCommand {
 		messenger: dm::MessengerFlag,
 		pattern: String,
 		text: String,
+		/// Split on blank lines and send each part as its own bubble
+		#[arg(long)]
+		multi_message: bool,
 	},
 	/// Print what matching people said in every venue, straight out of the transcripts
 	Lines { pattern: Option<String> },
@@ -71,7 +74,12 @@ pub enum PurposeCommand {
 	Rank { pattern: Option<String> },
 	/// Send what is due in matching people's `outbox/`, best ranked first, within each messenger's
 	/// `circuit_breakers.per_surface` budget
-	Send { pattern: Option<String> },
+	Send {
+		pattern: Option<String>,
+		/// Split each message on blank lines and send each part as its own bubble
+		#[arg(long)]
+		multi_message: bool,
+	},
 	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
 	/// named nothing. A bare name is a bool tag set to true
 	Tag {
@@ -94,7 +102,12 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 	};
 	match command {
 		PurposeCommand::Cold { pattern } => cold(&config, purpose, venues()?, pattern.as_deref()).await,
-		PurposeCommand::Dm { messenger, pattern, text } => dm::send(&config, purpose, (&messenger).into(), &pattern, &text).await,
+		PurposeCommand::Dm {
+			messenger,
+			pattern,
+			text,
+			multi_message,
+		} => dm::send(&config, purpose, (&messenger).into(), &pattern, &text, multi_message).await,
 		PurposeCommand::Lines { pattern } => lines(purpose, venues()?, pattern.as_deref()),
 		PurposeCommand::Open { pattern } => open(purpose, pattern.as_deref()).await,
 		PurposeCommand::Procure(args) => procure::main(purpose, venues()?, args).await,
@@ -107,7 +120,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			println!("   {total} ranked");
 			Ok(())
 		}
-		PurposeCommand::Send { pattern } => send::main(&config, purpose, venues()?, pattern.as_deref()).await,
+		PurposeCommand::Send { pattern, multi_message } => send::main(&config, purpose, venues()?, pattern.as_deref(), multi_message).await,
 		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
 	}
 }

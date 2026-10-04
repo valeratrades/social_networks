@@ -5404,6 +5404,7 @@ dependencies = [
  "indicatif",
  "jiff",
  "miette",
+ "regex",
  "serde",
  "serde_json",
  "social_networks_adapters",

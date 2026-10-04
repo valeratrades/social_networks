@@ -4,6 +4,7 @@
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
+use regex::Regex;
 use social_networks_adapters::{
 	reach::{Direct, Unreachable},
 	skool::Skool,
@@ -57,7 +58,7 @@ pub enum Messenger {
 
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
 /// the wrong human and cannot be taken back.
-pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str) -> Result<()> {
+pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str, multi_message: bool) -> Result<()> {
 	let dir = &purpose.path;
 	let people = person::load_dir(purpose)?;
 	let matches: Vec<&Person> = people.values().filter(|p| p.matches(pattern)).collect();
@@ -69,32 +70,43 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 			matches.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
 		);
 	};
-	send_to(config, purpose, person, messenger, text).await
+	send_to(config, purpose, person, messenger, text, multi_message).await
 }
 
-/// An `Unreachable` refusal is recorded on the person before it is returned.
-pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str) -> Result<()> {
+/// An `Unreachable` refusal is recorded on the person before it is returned. `multi_message` sends
+/// `text` split on blank lines as consecutive bubbles; they are one message to the breaker.
+pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool) -> Result<()> {
 	let dir = &purpose.path;
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
+	let bubbles: Vec<&str> = match multi_message {
+		true => Regex::new(r"\n\n+").expect("literal pattern").split(text).map(str::trim).collect(),
+		false => vec![text],
+	};
+	if let Some(i) = bubbles.iter().position(|b| b.is_empty()) {
+		bail!("bubble {} of {} to {} is empty", i + 1, bubbles.len(), person.name);
+	}
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
 	// one `Direct::send`, four sessions: the same enum dispatch the reads go through
 	let sent = match messenger {
 		Messenger::Discord =>
-			social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone())
-				.send(handle, text)
-				.await,
+			burst(
+				&mut social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone()),
+				handle,
+				&bubbles,
+			)
+			.await,
 		// the read path is happy anonymous, but a message is written as somebody
 		Messenger::Skool => {
 			let credentials = config
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
-			Skool::try_new(Some(credentials.clone())).await?.send(handle, text).await
+			burst(&mut Skool::try_new(Some(credentials.clone())).await?, handle, &bubbles).await
 		}
-		Messenger::Telegram => with_telegram(&config.telegram, async |client| telegram_dms::Reach { client: &client }.send(handle, text).await).await,
-		Messenger::Twitter => twitter::Reach(&config.twitter).send(handle, text).await,
+		Messenger::Telegram => with_telegram(&config.telegram, async |client| burst(&mut telegram_dms::Reach { client: &client }, handle, &bubbles).await).await,
+		Messenger::Twitter => burst(&mut twitter::Reach(&config.twitter), handle, &bubbles).await,
 	};
 
 	// The outcome is worth as much as the message: a campaign that does not record a refusal picks
@@ -113,5 +125,18 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	sent?;
 
 	println!("   {} {platform}/{handle} ({})", "✓".green(), person.name);
+	Ok(())
+}
+
+/// Bubbles already out cannot be taken back, so a burst cut short says how far it got.
+async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str]) -> Result<()> {
+	for (i, bubble) in bubbles.iter().enumerate() {
+		if let Err(e) = session.send(handle, bubble).await {
+			return match i {
+				0 => Err(e),
+				_ => Err(e.wrap_err(format!("{i} of {} bubbles to {handle} already went out", bubbles.len()))),
+			};
+		}
+	}
 	Ok(())
 }
