@@ -210,20 +210,22 @@ impl EmailMonitor {
 			session.select("INBOX").context("Failed to select INBOX")?;
 
 			let uids = session.uid_search("UNSEEN").context("Failed to search for unread messages")?;
-			info!("Found {} unread messages", uids.len());
-
-			let mut all_mail = None;
+			let mut new = Vec::new();
 			for uid in uids.iter() {
 				let id = format!("{}/imap-{uid}", this.config.email);
-				if rt.block_on(this.db.is_email_processed(&id))? {
-					debug!("Message {id} already processed, skipping");
-					continue;
+				if !rt.block_on(this.db.is_email_processed(&id))? {
+					new.push((*uid, id));
 				}
+			}
+			info!("Found {} unread messages, {} new", uids.len(), new.len());
+
+			let mut all_mail = None;
+			for (uid, id) in new {
 				if all_mail.is_none() {
 					all_mail = Some(this.connect_all_mail()?);
 				}
 				let all_mail = all_mail.as_mut().expect("connected above");
-				if let Err(e) = this.process_message_imap(&rt, &mut session, all_mail, *uid, id) {
+				if let Err(e) = this.process_message_imap(&rt, &mut session, all_mail, uid, id) {
 					if classify_email_auth_error(&e).is_some() {
 						return Err(e);
 					}
@@ -364,10 +366,16 @@ impl EmailMonitor {
 		log!("Successfully authenticated with Gmail API");
 
 		let unread = self.list_unread_oauth(&hub).await?;
-		info!("Found {} unread messages", unread.len());
+		let mut new = Vec::new();
+		for (gmail_id, thread_id) in &unread {
+			if !self.db.is_email_processed(&format!("{}/{gmail_id}", self.config.email)).await? {
+				new.push((gmail_id, thread_id));
+			}
+		}
+		info!("Found {} unread messages, {} new", unread.len(), new.len());
 
-		for (gmail_id, thread_id) in unread {
-			if let Err(e) = self.process_message_oauth(&hub, &gmail_id, &thread_id).await {
+		for (gmail_id, thread_id) in new {
+			if let Err(e) = self.process_message_oauth(&hub, gmail_id, thread_id).await {
 				if classify_email_auth_error(&e).is_some() {
 					return Err(e);
 				}
@@ -428,10 +436,6 @@ impl EmailMonitor {
 
 	async fn process_message_oauth(&self, hub: &Hub, gmail_id: &str, thread_id: &str) -> Result<()> {
 		let id = format!("{}/{gmail_id}", self.config.email);
-		if self.db.is_email_processed(&id).await? {
-			debug!("Message {id} already processed, skipping");
-			return Ok(());
-		}
 		let thread = self.thread_oauth(hub, thread_id).await?;
 		let email = thread.iter().find(|m| m.id == id).context("thread does not hold the message listed under it")?;
 
