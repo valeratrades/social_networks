@@ -5,7 +5,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use browser_manipulation::{Browser, Launch, Robot};
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,7 +13,7 @@ async fn main() -> Result<()> {
 	let mut args = std::env::args().skip(1);
 	let (executable, profile) = match (args.next(), args.next()) {
 		(Some(e), Some(p)) => (PathBuf::from(e), PathBuf::from(p)),
-		_ => return Err(eyre!("usage: facebook_messenger_probe <chrome> <profile dir>")),
+		_ => bail!("usage: facebook_messenger_probe <chrome> <profile dir>"),
 	};
 	let browser = Browser::launch(
 		Launch::Owned {
