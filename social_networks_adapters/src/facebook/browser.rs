@@ -115,7 +115,7 @@ impl Tab<'_> {
 			eprintln!("facebook session ended after {:#} (landed on {landed}); logged to {}", line.lifetime, path.display());
 		}
 		if self.headless {
-			bail!("the account is logged out (landed on {landed}); log it in with `recon facebook-login`");
+			bail!("the account is logged out (landed on {landed}); log it in with `recon facebook-login` (`--send` for the send session)");
 		}
 		if !landed.contains("/login") {
 			self.navigate("https://www.facebook.com/login").await?;
@@ -130,7 +130,22 @@ impl Tab<'_> {
 
 	/// `expr` must evaluate to something JSON-serializable. Read-only by convention: page state is the site's.
 	async fn eval<T: DeserializeOwned>(&mut self, expr: &str) -> Result<T> {
-		self.page.eval(expr, ()).await.map_err(browser_failure)
+		self.see(expr, ()).await
+	}
+
+	/// `js` is a function of `arg`, or an expression; read-only, as `eval`.
+	pub(super) async fn see<T: DeserializeOwned>(&mut self, js: &str, arg: impl Serialize) -> Result<T> {
+		self.page.eval(js, arg).await.map_err(browser_failure)
+	}
+
+	/// Clicks into `selector` and types `text` over whatever it held.
+	pub(super) async fn type_into(&mut self, selector: &str, text: &str) -> Result<()> {
+		self.page.fill(selector, text).await.map_err(browser_failure)
+	}
+
+	/// `key` as Playwright names it, with `selector` focused.
+	pub(super) async fn press(&mut self, selector: &str, key: &str) -> Result<()> {
+		self.page.press(selector, key).await.map_err(browser_failure)
 	}
 
 	/// The JSON the page embeds, one `application/json` script each: facebook's first render.
@@ -334,7 +349,7 @@ fn closed<T>(r: Result<T>, close: Result<(), browser_manipulation::Error>) -> Re
 	}
 }
 
-/// Pointer and wheel shaped like a hand. Nothing is typed.
+/// Pointer, wheel and keys shaped like a hand; only a message is ever typed.
 fn motion() -> Noise {
 	Noise::builder()
 		.dwell(Duration::from_millis(250))
@@ -342,9 +357,9 @@ fn motion() -> Noise {
 		.speed(1200.)
 		.overshoot(0.15)
 		.jitter(1.)
-		.key_gap(Duration::from_millis(120))
+		.key_gap(Duration::from_millis(180))
 		.key_spread(0.4)
-		.typo(0.)
+		.typo(0.015)
 		.notch(100.0..=120.)
 		.notch_gap(Duration::from_millis(8)..=Duration::from_millis(40))
 		.back(1. / 15.)

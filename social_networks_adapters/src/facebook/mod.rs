@@ -1,10 +1,11 @@
 //! Facebook, read through a logged-in chrome: pages are loaded by URL and read from the JSON they
-//! embed and the GraphQL they fetch. Two sessions, never mixed, each paced on its own:
+//! embed and the GraphQL they fetch. Sessions never mix, each paced on its own:
 //!
 //! ```text
 //!   attached  the user's own chrome     city/<page id>   people search under the City filter
 //!   launched  our chrome, the burner    group/<id>       a group's member listing
 //!                                       profile(<id>)    the About tab, for where somebody lives
+//!   send      our chrome, its account   send(<id>)       a Messenger conversation; `launched` when unset
 //! ```
 //!
 //! The invariants are in `docs/ARCHITECTURE.md`; why the driver must never send `Runtime.enable` is in
@@ -13,6 +14,7 @@
 mod browser;
 pub mod lead_rate;
 pub mod members;
+mod messenger;
 pub mod profile;
 pub mod search;
 mod searched;
@@ -53,6 +55,10 @@ pub struct FacebookConfig {
 	pub attached: AttachedConfig,
 	#[primitives(skip)]
 	pub launched: LaunchedConfig,
+	/// The account messages go out from, when it is not `launched`'s
+	#[primitives(skip)]
+	#[serde(default)]
+	pub send: Option<LaunchedConfig>,
 }
 /// The user's own chrome, with exactly one facebook tab logged in as `user_id` (its `c_user` cookie).
 #[derive(Clone, Debug, MyConfigPrimitives)]
@@ -76,6 +82,8 @@ pub struct Facebook<'t, 'c> {
 	behaviour: Behaviour,
 	geocoder: Geocoder,
 	dir: PathBuf,
+	/// the Messenger conversation the tab is on, by handle
+	conversation: Option<String>,
 }
 impl Facebook<'_, '_> {
 	/// People search for each first name in turn under the City filter; everyone it lists counts as
@@ -231,6 +239,7 @@ impl Facebook<'_, '_> {
 	/// `url`, after as many ordinary loads, picked from `ordinary`, as the behaviour's noise asks for.
 	/// Nothing is read from those.
 	async fn load(&mut self, url: &str, ordinary: &[&str]) -> Result<()> {
+		self.conversation = None;
 		while self.behaviour.noise() {
 			self.behaviour.act(Action::Load).await?;
 			self.tab.goto(ordinary[rand::random_range(..ordinary.len())]).await?;
@@ -250,28 +259,55 @@ pub async fn with_session<T>(config: &FacebookConfig, at: &VenueRef, work: impl 
 
 /// The burner's chrome, headless. Opened for the one command and closed after it, Ctrl-C included.
 pub async fn with_launched<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
-	let c = &config.launched;
-	let dir = state(Session::Launched)?;
+	launched(&config.launched, Session::Launched, work).await
+}
+
+/// The chrome messages go out from: `send`'s, or the burner's when it has none.
+pub async fn with_sender<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
+	let (c, session) = sender(config);
+	launched(c, session, work).await
+}
+
+/// A window of the burner's chrome, or with `send` of the send session's, waiting for a human to log
+/// in. Credentials are never ours to type.
+pub async fn login(config: &FacebookConfig, send: bool) -> Result<()> {
+	let (c, session) = match send {
+		true => (
+			config
+				.send
+				.as_ref()
+				.ok_or_else(|| eyre!("no `facebook.send` session in the config: messages go out from the launched one"))?,
+			Session::Send,
+		),
+		false => (&config.launched, Session::Launched),
+	};
+	let dir = state(session)?;
+	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir, async |tab| tab.goto("https://www.facebook.com/").await).await
+}
+
+fn sender(config: &FacebookConfig) -> (&LaunchedConfig, Session) {
+	match &config.send {
+		Some(c) => (c, Session::Send),
+		None => (&config.launched, Session::Launched),
+	}
+}
+
+async fn launched<T>(c: &LaunchedConfig, session: Session, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
+	let dir = state(session)?;
 	let behaviour = Behaviour::load(&c.behaviour, &dir)?;
 	let geocoder = Geocoder::try_new()?;
 	browser::launch(&c.chrome_executable, &dir.join("chrome"), true, &dir, async |tab| {
 		work(&mut Facebook {
 			tab,
-			session: Session::Launched,
+			session,
 			behaviour,
 			geocoder,
 			dir: dir.clone(),
+			conversation: None,
 		})
 		.await
 	})
 	.await
-}
-
-/// A window of the burner's chrome, waiting for a human to log in. Credentials are never ours to type.
-pub async fn login(config: &FacebookConfig) -> Result<()> {
-	let c = &config.launched;
-	let dir = state(Session::Launched)?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir, async |tab| tab.goto("https://www.facebook.com/").await).await
 }
 
 async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut Facebook<'_, '_>) -> Result<T>) -> Result<T> {
@@ -286,6 +322,7 @@ async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut F
 			behaviour,
 			geocoder,
 			dir: dir.clone(),
+			conversation: None,
 		})
 		.await
 	})
@@ -346,6 +383,7 @@ impl Profiles for Facebook<'_, '_> {
 enum Session {
 	Attached,
 	Launched,
+	Send,
 }
 
 enum Slug<'a> {
@@ -429,4 +467,31 @@ fn search_url(name: &str, city: &str) -> String {
 	reqwest::Url::parse_with_params("https://www.facebook.com/search/people/", [("q", name), ("filters", &filters)])
 		.expect("a constant base")
 		.into()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The config a live one is: `send` is a whole session of its own, or absent.
+	#[test]
+	fn messages_go_out_from_the_burner_unless_send_names_its_own_session() {
+		let session = |chrome: &str| {
+			format!(
+				r#"chrome_executable = "{chrome}"
+				behaviour = {{ active_hours = [8, 23], burst_min = 1.0, break_min = 1.0, noise_share = 0.0, load = {{ per_hour = 1, per_day = 1, dwell_secs = 1.0, spread = 0.0 }}, scroll = {{ per_hour = 1, per_day = 1, dwell_secs = 1.0, spread = 0.0, read_secs_per_item = 0.0 }} }}"#
+			)
+		};
+		let attached = r#"[attached]
+			cdp_port = 1
+			user_id = "1"
+			behaviour = { active_hours = [8, 23], burst_min = 1.0, break_min = 1.0, noise_share = 0.0, load = { per_hour = 1, per_day = 1, dwell_secs = 1.0, spread = 0.0 }, scroll = { per_hour = 1, per_day = 1, dwell_secs = 1.0, spread = 0.0, read_secs_per_item = 0.0 } }"#;
+		let shared: FacebookConfig = toml::from_str(&format!("{attached}\n[launched]\n{}", session("/burner"))).unwrap();
+		let (c, s) = sender(&shared);
+		assert_eq!((c.chrome_executable.to_str(), s), (Some("/burner"), Session::Launched));
+
+		let apart: FacebookConfig = toml::from_str(&format!("{attached}\n[launched]\n{}\n[send]\n{}", session("/burner"), session("/sender"))).unwrap();
+		let (c, s) = sender(&apart);
+		assert_eq!((c.chrome_executable.to_str(), s), (Some("/sender"), Session::Send));
+	}
 }

@@ -185,12 +185,13 @@ the person rather than listing them, since a request that did not complete is no
 their own venue lines, whole, with the venue each came from. Nothing is fetched and nothing is
 summarised — outreach is written off what somebody actually said.
 
-`dm <--discord|--skool|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
+`dm <--discord|--facebook|--skool|--telegram|--twitter> <pattern> <text>` takes the same pattern but refuses anything
 other than exactly one match: a wasted fetch is recoverable, a message to the wrong person is not.
 The flag names the `handles` key it sends through, so a person without that handle is an error
 rather than a guess. Every one of them goes out through the same `Direct::send` the reads come in
 through: discord and telegram over the sessions `pull` uses, twitter from the `[twitter.oauth]`
-account, skool over a chat channel it opens through a shared group.
+account, skool over a chat channel it opens through a shared group, facebook typed into Messenger
+from `facebook.send`'s chrome, or the burner's without one.
 
 `tags` are the axis no platform has a say in — `venues` and `handles` are what a platform states,
 a tag is what is said about them. The vocabulary is the purpose's `tags`, typed, and a tag a person

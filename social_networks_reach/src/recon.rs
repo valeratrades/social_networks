@@ -11,7 +11,7 @@
 //! recon posts   <platform>:<slug> --since <tf>      → <year>.md
 //! recon roster  <platform>:<slug> [--where …]         read the roster back
 //! recon find    skool:<slug> <term>                   the group's own member search
-//! recon facebook-login                                a window of the burner's chrome, for a human
+//! recon facebook-login [--send]                       a window of the burner's (or the send session's) chrome, for a human
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -99,13 +99,17 @@ enum Command {
 		term: String,
 	},
 	/// Wait, in a window of the chrome facebook groups and profiles are read on, for a human to log in
-	FacebookLogin,
+	FacebookLogin {
+		/// The send session's chrome instead
+		#[arg(long)]
+		send: bool,
+	},
 }
 impl Command {
 	fn platform(&self) -> VenueSource {
 		match self {
 			Self::Venues { platform } => *platform,
-			Self::FacebookLogin => VenueSource::Facebook,
+			Self::FacebookLogin { .. } => VenueSource::Facebook,
 			Self::Members { at } | Self::Posts { at, .. } | Self::Roster { at, .. } | Self::Find { at, .. } => at.platform,
 		}
 	}
@@ -170,7 +174,7 @@ async fn run(config: &ReconConfig, dir: &Path, command: Command) -> Result<()> {
 				.as_ref()
 				.ok_or_else(|| eyre!("facebook is read through a logged-in chrome, so this needs a `facebook` section in the config"))?;
 			match command {
-				Command::FacebookLogin => facebook::login(config).await,
+				Command::FacebookLogin { send } => facebook::login(config, send).await,
 				Command::Members { at } => facebook::with_session(config, &at, async |client| act(client, dir, Command::Members { at: at.clone() }).await).await,
 				_ => bail!("facebook is read for `members` only: `facebook:city/<page id>` or `facebook:group/<group id>`"),
 			}
@@ -205,7 +209,7 @@ async fn act<V: Venue>(client: &mut V, dir: &Path, command: Command) -> Result<(
 			println!("   {} +{landed} items → {}", "✓".green(), store.dir().display());
 		}
 		Command::Find { at, .. } => bail!("`{}` has no member search — skool is the only platform that answers one", at.platform.as_ref()),
-		Command::Roster { .. } | Command::FacebookLogin => unreachable!("answered in `run`, without this session"),
+		Command::Roster { .. } | Command::FacebookLogin { .. } => unreachable!("answered in `run`, without this session"),
 	}
 	Ok(())
 }

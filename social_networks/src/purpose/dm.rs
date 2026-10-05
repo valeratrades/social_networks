@@ -6,6 +6,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
 use regex::Regex;
 use social_networks_adapters::{
+	facebook,
 	reach::{Direct, Unreachable},
 	skool::Skool,
 	telegram_dms, twitter,
@@ -27,6 +28,8 @@ pub struct MessengerFlag {
 	#[arg(long)]
 	discord: bool,
 	#[arg(long)]
+	facebook: bool,
+	#[arg(long)]
 	skool: bool,
 	#[arg(long)]
 	telegram: bool,
@@ -35,11 +38,12 @@ pub struct MessengerFlag {
 }
 impl From<&MessengerFlag> for Messenger {
 	fn from(flag: &MessengerFlag) -> Self {
-		match (flag.discord, flag.skool, flag.telegram, flag.twitter) {
+		match (flag.discord, flag.facebook, flag.skool, flag.telegram, flag.twitter) {
 			(true, ..) => Self::Discord,
-			(_, true, ..) => Self::Skool,
-			(_, _, true, _) => Self::Telegram,
-			(_, _, _, true) => Self::Twitter,
+			(_, true, ..) => Self::Facebook,
+			(_, _, true, ..) => Self::Skool,
+			(_, _, _, true, _) => Self::Telegram,
+			(.., true) => Self::Twitter,
 			_ => unreachable!("clap rejects the command before this when the group is unfilled"),
 		}
 	}
@@ -51,6 +55,7 @@ impl From<&MessengerFlag> for Messenger {
 #[strum(serialize_all = "lowercase")]
 pub enum Messenger {
 	Discord,
+	Facebook,
 	Skool,
 	Telegram,
 	Twitter,
@@ -88,7 +93,7 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	}
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
-	// one `Direct::send`, four sessions: the same enum dispatch the reads go through
+	// one `Direct::send`, a session per messenger: the same enum dispatch the reads go through
 	let sent = match messenger {
 		Messenger::Discord =>
 			burst(
@@ -97,6 +102,13 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				&bubbles,
 			)
 			.await,
+		Messenger::Facebook => {
+			let fb = config
+				.facebook
+				.as_ref()
+				.ok_or_else(|| eyre!("a facebook message goes out from a logged-in chrome, so it needs a `facebook` section in the config"))?;
+			facebook::with_sender(fb, async |session| burst(session, handle, &bubbles).await).await
+		}
 		// the read path is happy anonymous, but a message is written as somebody
 		Messenger::Skool => {
 			let credentials = config

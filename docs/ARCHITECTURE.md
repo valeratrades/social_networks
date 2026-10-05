@@ -40,7 +40,7 @@ social_networks/
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
-│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits
+│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits; Messenger sends
 │       ├── nominatim.rs                    # place name → point, ≤1 req/s, cached on disk forever
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
@@ -149,10 +149,10 @@ sessions on demand and write to disk, and `dm` is the only place anything goes *
 
 ```
 Discord ──┐                                                                  ┌──► Discord
-Telegram ─┤              ┌─► history ────────► <purpose>/<person>/<year>.md     ├──► Skool
-GitHub ───┤              │                                                  dm ─┼──► Telegram
-LinkedIn ─┼──► pull ─────┼─► LLM extraction ─► <purpose>/<person>/__main__.nix  └──► Twitter
-Skool ────┤              │                         ▲     │
+Telegram ─┤              ┌─► history ────────► <purpose>/<person>/<year>.md     ├──► Facebook
+GitHub ───┤              │                                                  dm ─┼──► Skool
+LinkedIn ─┼──► pull ─────┼─► LLM extraction ─► <purpose>/<person>/__main__.nix  ├──► Telegram
+Skool ────┤              │                         ▲     │                      └──► Twitter
 Facebook ─┘              └─► facts (lives_in) ─────┘     └──► rank ◄── tags + year files + venue lines
                                     ▲
                                     │ lines matching `[<handle>/`
@@ -174,7 +174,8 @@ the writer put there, so nothing is derived that could not be rebuilt.
 
 Facebook is read through a logged-in chrome and nothing else, over two sessions that never mix: the
 user's own (attached over CDP) walks the City-filter people search, and our own headless chrome on a
-burner account lists groups and visits profiles. A city walk takes days, so a roster is checked in
+burner account lists groups and visits profiles. Messages go out over Messenger from the burner, or
+from a third chrome on an account of its own when `facebook.send` is set. A city walk takes days, so a roster is checked in
 page by page with a resume cursor beside it rather than returned whole. See
 [`adapters::facebook`](../social_networks_adapters/src/facebook/mod.rs) and `docs/facebook/`.
 
@@ -211,9 +212,11 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
   - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
-  - nothing is clicked: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch;
+  - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks and types: into the Messenger composer of a conversation loaded by URL, then Enter;
+  - a message counts as sent only once the conversation shows it; a refusal about the recipient is `Unreachable`, anything else the page says is an error;
   - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
-  - `city` never launches a browser, and `group` and profile visits never use the user's;
+  - `city` never launches a browser, and `group`, profile visits and sends never use the user's;
+  - messages go out from `facebook.send`'s own chrome profile and state, or from the launched session's when it is unset;
   - credentials are never typed by us: a logged-out attached session waits for a human, a logged-out launched one is an error until `recon facebook-login`;
   - "Lives in" is the only residence signal; "From" (hometown) never counts;
   - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
@@ -227,6 +230,6 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
 - **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
 - **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
-- **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` or `<name>.session` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched}/` and `skool/`; facebook's session drops and the burner's chrome profile beside them; a failed skool login's page in `skool/browser_captures/`; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
+- **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` or `<name>.session` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched,send}/` and `skool/`; facebook's session drops and our chrome profiles beside them; a failed skool login's page in `skool/browser_captures/`; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.
