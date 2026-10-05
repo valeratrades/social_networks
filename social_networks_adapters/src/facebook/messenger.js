@@ -26,6 +26,7 @@
 	return {
 		composers: boxes.length,
 		draft: boxes[0]?.textContent ?? '',
+		to: boxes[0]?.getAttribute('aria-label') ?? null,
 		text: document.body.innerText.toLowerCase().replaceAll('’', "'"),
 		suggesting: !!main?.querySelector('[role="combobox"][aria-expanded="true"]'),
 		shown: main ? letters(main.innerText).split(letters(message)).length - 1 : null,

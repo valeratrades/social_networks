@@ -47,6 +47,8 @@ const FAILED: &[&str] = &[
 struct Seen {
 	composers: usize,
 	draft: String,
+	/// the composer's `Write to <recipients>`
+	to: Option<String>,
 	text: String,
 	shown: Option<usize>,
 	/// the recipient field's contact list, open over the composer of a new conversation
@@ -165,7 +167,14 @@ impl Direct for Facebook<'_, '_> {
 		let open = match open.suggesting {
 			true => {
 				self.tab.press(r#"[role="main"] [role="combobox"][aria-expanded="true"]"#, "Tab").await?; // the field's own hint: "Tab to chat"
-				self.watch(text, "the recipient suggestions over the composer stayed open after Tab", |s| !s.suggesting).await?
+				let seen = self.watch(text, "the recipient suggestions over the composer stayed open after Tab", |s| !s.suggesting).await?;
+				ensure!(
+					seen.to == open.to,
+					"Tab over the recipient suggestions changed the recipients from {:?} to {:?}; look at the conversation",
+					open.to,
+					seen.to
+				);
+				seen
 			}
 			false => open,
 		};
