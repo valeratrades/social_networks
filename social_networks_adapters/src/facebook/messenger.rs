@@ -49,6 +49,8 @@ struct Seen {
 	draft: String,
 	text: String,
 	shown: Option<usize>,
+	/// the recipient field's contact list, open over the composer of a new conversation
+	suggesting: bool,
 	front: Option<Front>,
 }
 /// What stands in front of the composer; see `messenger.js`.
@@ -106,6 +108,9 @@ impl Facebook<'_, '_> {
 	/// through. A PIN with no way past it is the human's to enter.
 	async fn composer(&mut self, handle: &str, message: &str) -> Result<Seen> {
 		for passed in 0.. {
+			if passed > 0 {
+				self.behaviour.act(Action::Load).await?; // paced before the read, not between it and the click: a notice can go away by itself meanwhile
+			}
 			let seen = self
 				.watch(message, "no Messenger composer showed", |s| match &s.front {
 					None => s.composers > 0,
@@ -129,7 +134,6 @@ impl Facebook<'_, '_> {
 				front.text
 			);
 			info!("clicking `{pass}` on a {:?} in front of the conversation with {handle}: {}", front.kind, front.text);
-			self.behaviour.act(Action::Load).await?; // what it leads to is a page of its own
 			self.tab.click(&front.button(pass)).await?;
 		}
 		unreachable!("an unbounded loop")
@@ -158,6 +162,14 @@ impl Direct for Facebook<'_, '_> {
 			false => self.load(&format!("https://www.facebook.com/messages/t/{handle}"), &[FEED]).await?,
 		}
 		let open = self.composer(handle, text).await?;
+		let open = match open.suggesting {
+			true => {
+				self.tab.press(r#"[role="main"] [role="combobox"][aria-expanded="true"]"#, "Escape").await?;
+				self.watch(text, "the recipient suggestions over the composer stayed open after Escape", |s| !s.suggesting)
+					.await?
+			}
+			false => open,
+		};
 		ensure!(open.composers == 1, "{} Messenger composers on the page", open.composers);
 		ensure!(open.draft.trim().is_empty(), "the composer to {handle} already holds `{}`", open.draft);
 		let before = open
