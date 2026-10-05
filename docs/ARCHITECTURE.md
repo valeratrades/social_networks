@@ -212,7 +212,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
   - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
-  - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks and types: into the Messenger composer of a conversation loaded by URL, then Enter;
+  - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks and types: through the prompts Messenger stands in front of the composer of a conversation loaded by URL, then into the composer, then Enter;
   - a message counts as sent only once the conversation shows it; a refusal about the recipient is `Unreachable`, anything else the page says is an error;
   - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
   - `city` never launches a browser, and `group`, profile visits and sends never use the user's;
@@ -222,7 +222,8 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
   - pacing is per session, through `behaviour`, whose logs and phase outlive a restart; a browser is opened per command and closed with it, Ctrl-C included;
   - the user's sway focus is never moved: no `Page.bringToFront`, and a window that must render is moved to a headless output, never to the user;
   - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
-- **Every send to a person is admitted by `breaker`**: `dm`, `send` and the email scripts' replies. A tripped breaker or a spent `per_surface` budget refuses, it never queues; the send log and open breakers are rows of the db. `send` refuses a messenger with no `per_surface` budget.
+- **Every send to a person is admitted by `breaker`**: `dm`, `send` and the email scripts' replies. A tripped breaker refuses, it never queues; the send log and open breakers are rows of the db.
+- **`send` sends to exactly `-n` people**: how many is the human's to say on every run; fewer sendable than asked is an error before anything goes out.
 - **Writing a campaign and sending it never share a step**: a writer only drops files into `<person>/outbox/`; `send` reads nothing else, and removes a file only after it went out.
 - **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.
 

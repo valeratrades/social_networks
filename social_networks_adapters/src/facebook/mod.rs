@@ -268,8 +268,8 @@ pub async fn with_sender<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut
 	launched(c, session, work).await
 }
 
-/// A window of the burner's chrome, or with `send` of the send session's, waiting for a human to log
-/// in. Credentials are never ours to type.
+/// A window of the burner's chrome, or with `send` of the send session's, open until the human closes
+/// it: for logging in, or for what Messenger asks only a human, its PIN. Credentials are never ours to type.
 pub async fn login(config: &FacebookConfig, send: bool) -> Result<()> {
 	let (c, session) = match send {
 		true => (
@@ -282,7 +282,21 @@ pub async fn login(config: &FacebookConfig, send: bool) -> Result<()> {
 		false => (&config.launched, Session::Launched),
 	};
 	let dir = state(session)?;
-	browser::launch(&c.chrome_executable, &dir.join("chrome"), false, &dir, async |tab| tab.goto("https://www.facebook.com/").await).await
+	let profile = dir.join("chrome");
+	browser::launch(&c.chrome_executable, &profile, false, &dir, async |tab| {
+		tab.goto(FEED).await?;
+		// chrome's own lock on its profile, `<host>-<pid>`; driven chrome outlives its last window, so the window is what is waited on
+		let lock = profile.join("SingletonLock");
+		let held = std::fs::read_link(&lock).wrap_err_with(|| format!("chrome holds no {}", lock.display()))?;
+		let pid = held
+			.to_str()
+			.and_then(|l| l.rsplit_once('-'))
+			.and_then(|(_, pid)| pid.parse().ok())
+			.ok_or_else(|| eyre!("{} points at `{}`, not `<host>-<pid>`", lock.display(), held.display()))?;
+		eprintln!("close the chrome window when done");
+		sway::closed(pid).await
+	})
+	.await
 }
 
 fn sender(config: &FacebookConfig) -> (&LaunchedConfig, Session) {

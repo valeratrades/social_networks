@@ -98,7 +98,7 @@ enum Command {
 		at: VenueRef,
 		term: String,
 	},
-	/// Wait, in a window of the chrome facebook groups and profiles are read on, for a human to log in
+	/// A window of the chrome facebook groups and profiles are read on, open until a human closes it: to log in, or enter the Messenger PIN
 	FacebookLogin {
 		/// The send session's chrome instead
 		#[arg(long)]

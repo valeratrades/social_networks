@@ -16,7 +16,6 @@ async fn a_recipient_over_the_limit_is_refused_until_the_timeout_ends() {
 			window: Timeframe(5_000), // wall-clock: a CI runner's db writes can eat a narrower window
 			timeout: Timeframe(10_000),
 		},
-		per_surface: Default::default(),
 	};
 
 	for _ in 0..3 {

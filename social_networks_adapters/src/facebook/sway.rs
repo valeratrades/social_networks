@@ -4,6 +4,7 @@
 
 use color_eyre::eyre::{Result, WrapErr, bail, ensure, eyre};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 pub(super) struct Window {
 	con_id: u64,
@@ -98,6 +99,21 @@ enum At {
 	Parked {
 		created: Option<String>,
 	},
+}
+
+/// Until process `pid`'s last window is closed.
+pub(super) async fn closed(pid: u32) -> Result<()> {
+	let mut sway = subscribe()?;
+	let mut events = BufReader::new(sway.stdout.take().expect("piped")).lines();
+	let open = || -> Result<bool> { Ok(!places(&swaymsg(&["-t", "get_tree"])?, &|n| n["pid"].as_u64() == Some(pid.into())).is_empty()) };
+	ensure!(open()?, "process {pid} has no sway window");
+	while let Some(line) = events.next_line().await? {
+		let e: Value = serde_json::from_str(&line).wrap_err_with(|| format!("sway sent a non-JSON event: {line}"))?;
+		if e["change"] == "close" && !open()? {
+			return Ok(());
+		}
+	}
+	bail!("sway's event stream ended")
 }
 
 /// `swaymsg -t subscribe -m '["workspace","window"]'`, killed with the run.

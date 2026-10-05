@@ -143,6 +143,10 @@ impl Tab<'_> {
 		self.page.fill(selector, text).await.map_err(browser_failure)
 	}
 
+	pub(super) async fn click(&mut self, selector: &str) -> Result<()> {
+		self.page.click(selector).await.map_err(browser_failure)
+	}
+
 	/// `key` as Playwright names it, with `selector` focused.
 	pub(super) async fn press(&mut self, selector: &str, key: &str) -> Result<()> {
 		self.page.press(selector, key).await.map_err(browser_failure)

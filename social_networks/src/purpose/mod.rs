@@ -72,10 +72,12 @@ pub enum PurposeCommand {
 	},
 	/// Matching people in order, with the score and what each term of the ranking gave it
 	Rank { pattern: Option<String> },
-	/// Send what is due in matching people's `outbox/`, best ranked first, within each messenger's
-	/// `circuit_breakers.per_surface` budget
+	/// Send what is due in the `outbox/` of exactly n matching people, best ranked first
 	Send {
 		pattern: Option<String>,
+		/// How many people; fewer sendable than this is an error before anything is sent
+		#[arg(short)]
+		n: usize,
 		/// Split each message on blank lines and send each part as its own bubble
 		#[arg(long)]
 		multi_message: bool,
@@ -120,7 +122,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			println!("   {total} ranked");
 			Ok(())
 		}
-		PurposeCommand::Send { pattern, multi_message } => send::main(&config, purpose, venues()?, pattern.as_deref(), multi_message).await,
+		PurposeCommand::Send { pattern, n, multi_message } => send::main(&config, purpose, venues()?, pattern.as_deref(), n, multi_message).await,
 		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
 	}
 }

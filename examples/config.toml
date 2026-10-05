@@ -103,10 +103,5 @@ max = 10
 window = "10m"
 timeout = "1h"
 
-# `purpose <name> send` refuses a messenger without one
-[circuit_breakers.per_surface.telegram]
-max = 20
-window = "1d"
-
 [clickhouse]
 url = "http://localhost:8123"

@@ -258,13 +258,13 @@ impl Database {
 		Ok(())
 	}
 
-	/// `of` is a recipient, `<surface>:<address>`, or a bare `<surface>` for all of its recipients.
-	pub async fn sends_since(&self, of: &str, since: Timestamp) -> Result<usize> {
+	/// `recipient` is `<surface>:<address>`.
+	pub async fn sends_since(&self, recipient: &str, since: Timestamp) -> Result<usize> {
 		let mut rows = self
 			.conn
 			.query(
-				"SELECT count(*) FROM sends WHERE (recipient = ?1 OR substr(recipient, 1, instr(recipient, ':') - 1) = ?1) AND sent_at >= ?2",
-				libsql::params![of, since.as_millisecond()],
+				"SELECT count(*) FROM sends WHERE recipient = ?1 AND sent_at >= ?2",
+				libsql::params![recipient, since.as_millisecond()],
 			)
 			.await
 			.wrap_err("failed to count sends")?;
