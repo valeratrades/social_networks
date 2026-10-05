@@ -156,7 +156,7 @@ impl EmailMonitor {
 	/// Main entry point - dispatches to IMAP or OAuth based on config
 	#[instrument(skip_all)]
 	pub async fn run(&self) -> Result<()> {
-		info!("Starting email monitor");
+		debug!("Starting email monitor");
 
 		match &self.config.auth {
 			EmailAuth::Imap(_) => self.run_imap().await,
@@ -217,7 +217,10 @@ impl EmailMonitor {
 					new.push((*uid, id));
 				}
 			}
-			info!("Found {} unread messages, {} new", uids.len(), new.len());
+			match new.is_empty() {
+				true => debug!("Found {} unread messages, 0 new", uids.len()),
+				false => info!("Found {} unread messages, {} new", uids.len(), new.len()),
+			}
 
 			let mut all_mail = None;
 			for (uid, id) in new {
@@ -372,7 +375,10 @@ impl EmailMonitor {
 				new.push((gmail_id, thread_id));
 			}
 		}
-		info!("Found {} unread messages, {} new", unread.len(), new.len());
+		match new.is_empty() {
+			true => debug!("Found {} unread messages, 0 new", unread.len()),
+			false => info!("Found {} unread messages, {} new", unread.len(), new.len()),
+		}
 
 		for (gmail_id, thread_id) in new {
 			if let Err(e) = self.process_message_oauth(&hub, gmail_id, thread_id).await {
