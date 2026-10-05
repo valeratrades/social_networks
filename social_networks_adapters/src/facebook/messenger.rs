@@ -164,9 +164,8 @@ impl Direct for Facebook<'_, '_> {
 		let open = self.composer(handle, text).await?;
 		let open = match open.suggesting {
 			true => {
-				self.tab.press(r#"[role="main"] [role="combobox"][aria-expanded="true"]"#, "Escape").await?;
-				self.watch(text, "the recipient suggestions over the composer stayed open after Escape", |s| !s.suggesting)
-					.await?
+				self.tab.press(r#"[role="main"] [role="combobox"][aria-expanded="true"]"#, "Tab").await?; // the field's own hint: "Tab to chat"
+				self.watch(text, "the recipient suggestions over the composer stayed open after Tab", |s| !s.suggesting).await?
 			}
 			false => open,
 		};
