@@ -31,6 +31,7 @@ const REFUSED: &[&str] = &[
 	"not available on messenger",
 	"unavailable on messenger",
 	"isn't receiving messages",
+	"can't access this chat yet", // until they next log into messenger
 ];
 /// About us, or about nobody we can tell: a send after it would meet the same.
 const FAILED: &[&str] = &[
