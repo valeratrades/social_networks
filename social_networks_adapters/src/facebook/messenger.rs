@@ -21,6 +21,8 @@ const SEE: &str = include_str!("messenger.js");
 const SETTLE: Duration = Duration::from_secs(30);
 /// Prompts clicked through on the way to one composer; past it, they are not going away.
 const PASSES: usize = 8;
+/// What the line under a bubble starts with once it went out.
+const SENT: &[&str] = &["Sent", "Delivered"];
 /// About them: nothing from this account reaches them.
 const REFUSED: &[&str] = &[
 	"you can't message",
@@ -49,8 +51,13 @@ struct Seen {
 	draft: String,
 	/// the composer's `Write to <recipients>`
 	to: Option<String>,
+	/// the To field's chips, on a conversation that is not yet one
+	recipients: Vec<String>,
+	covered: bool,
 	text: String,
 	shown: Option<usize>,
+	/// the line under the message's last bubble, where Messenger says whether it went out
+	status: Option<String>,
 	/// the recipient field's contact list, open over the composer of a new conversation
 	suggesting: bool,
 	front: Option<Front>,
@@ -163,34 +170,55 @@ impl Direct for Facebook<'_, '_> {
 			true => tokio::time::sleep(Duration::from_secs_f64(rand::random_range(2.0..6.0))).await, // the next bubble of a burst
 			false => self.load(&format!("https://www.facebook.com/messages/t/{handle}"), &[FEED]).await?,
 		}
-		let open = self.composer(handle, text).await?;
-		let open = match open.suggesting {
-			true => {
-				self.tab.press(r#"[role="main"] [role="combobox"][aria-expanded="true"]"#, "Tab").await?; // the field's own hint: "Tab to chat"
-				let seen = self.watch(text, "the recipient suggestions over the composer stayed open after Tab", |s| !s.suggesting).await?;
-				ensure!(
-					seen.to == open.to,
-					"Tab over the recipient suggestions changed the recipients from {:?} to {:?}; look at the conversation",
-					open.to,
-					seen.to
-				);
-				seen
-			}
-			false => open,
-		};
+		let mut open = self.composer(handle, text).await?;
+		if open.suggesting {
+			// the list hangs over the composer and Escape or Tab leave it open; a click outside closes it
+			self.tab.click(r#"[role="main"] span:text-is("To:") >> nth=0"#).await?;
+			let seen = self
+				.watch(text, "the recipient suggestions over the composer stayed open after a click on `To:`", |s| !s.suggesting)
+				.await?;
+			ensure!(
+				(&seen.to, &seen.recipients) == (&open.to, &open.recipients),
+				"closing the recipient suggestions changed the recipients from {:?} {:?} to {:?} {:?}; look at the conversation",
+				open.to,
+				open.recipients,
+				seen.to,
+				seen.recipients
+			);
+			open = seen;
+		}
 		ensure!(open.composers == 1, "{} Messenger composers on the page", open.composers);
+		ensure!(open.recipients.len() <= 1, "the conversation with {handle} is addressed to {:?}", open.recipients);
+		ensure!(!open.covered, "something lies over the composer to {handle}, where a click into it would land");
 		ensure!(open.draft.trim().is_empty(), "the composer to {handle} already holds `{}`", open.draft);
 		let before = open
 			.shown
 			.ok_or_else(|| color_eyre::eyre::eyre!("the conversation with {handle} has no `main` to read it from"))?;
 
 		self.tab.type_into(COMPOSER, text).await?;
+		let typed: Seen = self.tab.see(SEE, (COMPOSER, text)).await?;
+		let letters = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+		ensure!(
+			(&typed.to, &typed.recipients) == (&open.to, &open.recipients),
+			"typing changed the recipients from {:?} {:?} to {:?} {:?}; not sending",
+			open.to,
+			open.recipients,
+			typed.to,
+			typed.recipients
+		);
+		ensure!(
+			letters(&typed.draft) == letters(text),
+			"the composer to {handle} holds `{}` instead of what was typed",
+			typed.draft
+		);
 		self.tab.press(COMPOSER, "Enter").await?;
+		// the bubble shows before it goes out, and a chrome closed meanwhile loses it
 		self.watch(text, "the message was typed and Enter pressed, but the conversation does not show it sent", |s| {
-			s.draft.trim().is_empty() && s.shown.is_some_and(|n| n > before)
+			s.draft.trim().is_empty() && s.shown.is_some_and(|n| n > before) && s.status.as_deref().is_some_and(|l| SENT.iter().any(|m| l.starts_with(m)))
 		})
 		.await?;
-		self.conversation = Some(handle.to_string());
+		// a new conversation turns into its thread under the next bubble's typing, so that one loads it afresh
+		self.conversation = open.recipients.is_empty().then(|| handle.to_string());
 		Ok(())
 	}
 }

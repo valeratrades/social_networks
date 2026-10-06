@@ -2,6 +2,7 @@
 // conversation, which is how it is recognised whatever the bubble renders emoji and line breaks as;
 // `null` without a `main`. `front`: the topmost dialog, or without a composer a notice in `main`, with
 // the first button of `PASS` it offers; `pin` when it asks for the end-to-end-encryption PIN.
+// `status`: the line under the message's last bubble. `covered`: some point a click into the composer could land on is something else's.
 ([composer, message]) => {
 	// most specific first: on "Continue without restoring?", Close and Cancel lead back to the PIN
 	const PASS = ["Don't restore messages", 'Skip', 'Not now', 'Continue', 'OK', 'Got it', 'Dismiss', 'Decline optional cookies', 'Close'];
@@ -23,13 +24,23 @@
 		const notice = offered(main, main.innerText);
 		if (notice.pass) front = { kind: 'notice', ...notice };
 	}
+	const lines = (main?.querySelector('[role="log"]')?.innerText ?? '').split('\n').map(norm);
+	const box = boxes[0];
+	const rect = box?.getBoundingClientRect();
+	const covered = !!rect && [[0.5, 0.5], [0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [0.9, 0.9]].some(([fx, fy]) => {
+		const hit = document.elementFromPoint(rect.x + rect.width * fx, rect.y + rect.height * fy);
+		return !hit || !box.contains(hit);
+	});
 	return {
 		composers: boxes.length,
 		draft: boxes[0]?.textContent ?? '',
 		to: boxes[0]?.getAttribute('aria-label') ?? null,
+		recipients: [...(main?.querySelectorAll('[role="button"][aria-label^="Remove "]') ?? [])].map(b => norm(b.getAttribute('aria-label').slice('Remove '.length))),
+		covered,
 		text: document.body.innerText.toLowerCase().replaceAll('’', "'"),
 		suggesting: !!main?.querySelector('[role="combobox"][aria-expanded="true"]'),
 		shown: main ? letters(main.innerText).split(letters(message)).length - 1 : null,
+		status: lines[lines.findLastIndex(l => letters(l) === letters(message)) + 1] ?? null,
 		front,
 	};
 }
