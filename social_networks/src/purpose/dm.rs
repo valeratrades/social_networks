@@ -1,14 +1,16 @@
 //! The one path that writes to a platform rather than reading from it. Addressed by person, so their
 //! directory stays the thing you name and the handle is looked up rather than typed.
 
+use std::{ops::RangeInclusive, str::FromStr, time::Duration};
+
 use clap::Args;
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, bail, ensure, eyre};
 use colored::Colorize as _;
 use jiff::Timestamp;
 use regex::Regex;
 use social_networks_adapters::{
 	facebook,
-	reach::{Author, Direct, Item, Kind, Source, Unreachable},
+	reach::{Author, Browsing as _, Direct, Item, Kind, Source, Unreachable},
 	skool::Skool,
 	telegram_dms, twitter,
 };
@@ -63,9 +65,23 @@ pub enum Messenger {
 	Twitter,
 }
 
+/// `--noise <min>..<max>`: seconds of idle browsing after a message, picked uniformly per person.
+#[derive(Clone, Debug)]
+pub struct Noise(RangeInclusive<f64>);
+impl FromStr for Noise {
+	type Err = color_eyre::Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		let (min, max) = s.split_once("..").ok_or_else(|| eyre!("noise is `<min>..<max>` seconds, got `{s}`"))?;
+		let (min, max): (f64, f64) = (min.parse()?, max.parse()?);
+		ensure!(0. <= min && min <= max, "noise is `<min>..<max>` seconds with 0 ≤ min ≤ max, got `{s}`");
+		Ok(Self(min..=max))
+	}
+}
+
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
 /// the wrong human and cannot be taken back.
-pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str, multi_message: bool) -> Result<()> {
+pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str, multi_message: bool, noise: Option<&Noise>) -> Result<()> {
 	let dir = &purpose.path;
 	let people = person::load_dir(purpose)?;
 	let matches: Vec<&Person> = people.values().filter(|p| p.matches(pattern)).collect();
@@ -77,13 +93,16 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 			matches.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
 		);
 	};
-	send_to(config, purpose, person, messenger, text, multi_message).await
+	send_to(config, purpose, person, messenger, text, multi_message, noise).await?
 }
 
 /// An `Unreachable` refusal is recorded on the person before it is returned, and so is every bubble
 /// that went out, where no pull reads it back. `multi_message` sends
 /// `text` split on blank lines as consecutive bubbles; they are one message to the breaker.
-pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool) -> Result<()> {
+///
+/// The outer error is the message's: it did not all go out. The inner one is whatever failed once it
+/// had — the noise browsed after it, the browser closing.
+pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool, noise: Option<&Noise>) -> Result<Result<()>> {
 	let dir = &purpose.path;
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
@@ -94,11 +113,14 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	if let Some(i) = bubbles.iter().position(|b| b.is_empty()) {
 		bail!("bubble {} of {} to {} is empty", i + 1, bubbles.len(), person.name);
 	}
+	if noise.is_some() && messenger != Messenger::Facebook {
+		bail!("--noise browses in the chrome the message went out from, and {platform} sends through none");
+	}
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
 	// one `Direct::send`, a session per messenger: the same enum dispatch the reads go through
 	let mut sent_at = Vec::with_capacity(bubbles.len());
-	let sent = match messenger {
+	let r = match messenger {
 		Messenger::Discord =>
 			burst(
 				&mut social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone()),
@@ -112,7 +134,15 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				.facebook
 				.as_ref()
 				.ok_or_else(|| eyre!("a facebook message goes out from a logged-in chrome, so it needs a `facebook` section in the config"))?;
-			facebook::with_sender(fb, async |session| burst(session, handle, &bubbles, &mut sent_at).await).await
+			let span = noise.map(|n| Duration::from_secs_f64(rand::random_range(n.0.clone())));
+			facebook::with_sender(fb, async |session| {
+				burst(session, handle, &bubbles, &mut sent_at).await?;
+				match span {
+					Some(span) => session.noise(span).await,
+					None => Ok(()),
+				}
+			})
+			.await
 		}
 		// the read path is happy anonymous, but a message is written as somebody
 		Messenger::Skool => {
@@ -128,6 +158,21 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 			})
 			.await,
 		Messenger::Twitter => burst(&mut twitter::Reach(&config.twitter), handle, &bubbles, &mut sent_at).await,
+	};
+
+	// by what went out rather than by `r`: a Ctrl-C or a failure past the last bubble must not send it again
+	let sent = match sent_at.len() == bubbles.len() {
+		true => Ok(r),
+		false => {
+			let e = r.expect_err("a burst returns Ok only once every bubble went out");
+			Err(match sent_at.len() {
+				0 => e,
+				i => e.wrap_err(PartlySent {
+					sent: i,
+					rest: bubbles[i..].join("\n\n"),
+				}),
+			})
+		}
 	};
 
 	// The outcome is worth as much as the message: a campaign that does not record a refusal picks
@@ -173,13 +218,12 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 			false => history::record(&person_dir, items, &mut meta)?,
 		}
 	}
-	sent?;
+	let after = sent?;
 
 	println!("   {} {platform}/{handle} ({})", "✓".green(), person.name);
-	Ok(())
+	Ok(after)
 }
 
-/// Bubbles already out cannot be taken back, so a burst cut short says how far it got.
 /// A burst cut short: `rest` is what did not go out, in the shape `send_to` splits.
 #[derive(Debug)]
 pub struct PartlySent {
@@ -193,16 +237,8 @@ impl std::fmt::Display for PartlySent {
 }
 
 async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str], sent_at: &mut Vec<Timestamp>) -> Result<()> {
-	for (i, bubble) in bubbles.iter().enumerate() {
-		if let Err(e) = session.send(handle, bubble).await {
-			return match i {
-				0 => Err(e),
-				_ => Err(e.wrap_err(PartlySent {
-					sent: i,
-					rest: bubbles[i..].join("\n\n"),
-				})),
-			};
-		}
+	for bubble in bubbles {
+		session.send(handle, bubble).await?;
 		sent_at.push(Timestamp::now());
 	}
 	Ok(())

@@ -98,8 +98,8 @@ to add people (`procure`), and a ranking (`rank`). The config names them under `
 | `rolodex tag [<name>[=<value>]] [pattern]` | Put a tag on each person the pattern finds. Without a name, show the tags. |
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex prune` | Remove each person that left every group and holds no conversation. |
-| `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
-| `rolodex send -n <n> [pattern]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
+| `rolodex dm <--platform> <pattern> <text> [--noise <min>..<max>]` | Send one message to one person. |
+| `rolodex send -n <n> [pattern] [--noise <min>..<max>]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
 
 For another purpose, write `purpose <name>` in place of `rolodex`.
 
@@ -109,6 +109,9 @@ A pattern finds a person by file name or by any handle. Without a pattern, `open
 `pull` also keeps the messages. It writes them to `<person>/<year>.md`, next to the person file. The
 first `pull` gets the full history of each conversation, and can take a long time. If you stop it,
 the next `pull` continues from the same place.
+
+`--noise 15..60` browses facebook for 15 to 60 seconds after each message, in the same chrome: the
+feed, a profile, a search. Facebook only.
 
 `cold` finds each person that holds no conversation with you. A line that a person wrote in a group
 is not a conversation, so each member that `procure` added stays cold. `cold` checks every platform

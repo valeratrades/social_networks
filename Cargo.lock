@@ -5455,6 +5455,7 @@ dependencies = [
  "indicatif",
  "jiff",
  "miette",
+ "rand 0.10.3",
  "regex",
  "serde",
  "serde_json",

@@ -5,6 +5,7 @@
 //!   person ──► Profiles::profile ──► Profile      what the platform states, plus public activity
 //!          ──► Direct::direct   ──► Page          the conversation with them
 //!          ──► Direct::send                       the one thing that goes out
+//!   session ─► Browsing::noise                    idle browsing, unrelated to any of it
 //!   venue  ──► Venue::venues    ──► [VenueRef]    what this session can see
 //!          ──► Venue::members   ──► Roster        checked in page by page
 //!          ──► Venue::posts     ──► Page
@@ -18,7 +19,7 @@
 //! Callers dispatch over [`Source`] and [`VenueSource`] rather than over `dyn`, so a platform that
 //! gains an axis cannot fall through to an arm that silently fetches nothing.
 
-use std::{collections::BTreeMap, path::Path, str::FromStr};
+use std::{collections::BTreeMap, path::Path, str::FromStr, time::Duration};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use jiff::Timestamp;
@@ -57,6 +58,12 @@ pub trait Venue {
 	/// days, and one returned whole at the end would be lost to a Ctrl-C.
 	async fn members(&mut self, at: &VenueRef, roster: &mut impl Roster) -> Result<()>;
 	async fn posts(&mut self, at: &VenueRef, window: Window, assets: &Path) -> Result<Page>;
+}
+/// Idle, unrelated browsing, for a session that drives a browser by hand: one that only ever does
+/// its work and leaves is a pattern. It presses no button and leaves nothing a load by URL does not clear.
+#[trait_variant::make(Send)]
+pub trait Browsing {
+	async fn noise(&mut self, span: Duration) -> Result<()>;
 }
 /// Where [`Venue::members`] puts what it lists.
 pub trait Roster: Send {

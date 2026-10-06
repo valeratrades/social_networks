@@ -15,7 +15,7 @@ use super::{
 };
 use crate::config::AppConfig;
 
-pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, n: usize, multi_message: bool) -> Result<()> {
+pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, n: usize, multi_message: bool, noise: Option<&dm::Noise>) -> Result<()> {
 	let now = Timestamp::now();
 	let mut sendable = Vec::new();
 	for ranked in rank::rank(purpose, venues, select(purpose, pattern)?)? {
@@ -39,10 +39,11 @@ pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern:
 		if sent == n {
 			break;
 		}
-		match dm::send_to(config, purpose, person, *messenger, &due.text, multi_message).await {
-			Ok(()) => {
+		match dm::send_to(config, purpose, person, *messenger, &due.text, multi_message, noise).await {
+			Ok(after) => {
 				std::fs::remove_file(&due.path).unwrap_or_else(|e| panic!("sent {}, but could not remove it, so the next run would send it again: {e}", due.path.display()));
 				sent += 1;
+				after.wrap_err_with(|| format!("after the message to {} went out", person.name))?;
 			}
 			Err(e) => {
 				if let Some(partly) = e.downcast_ref::<dm::PartlySent>() {

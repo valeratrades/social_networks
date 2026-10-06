@@ -6,6 +6,7 @@
 //!   launched  our chrome, the burner    group/<id>       a group's member listing
 //!                                       profile(<id>)    the About tab, for where somebody lives
 //!   send      our chrome, its account   send(<id>)       a Messenger conversation; `launched` when unset
+//!                                       noise(<span>)    idle browsing after it, on either of ours
 //! ```
 //!
 //! The invariants are in `docs/ARCHITECTURE.md`; why the driver must never send `Runtime.enable` is in
@@ -15,6 +16,7 @@ mod browser;
 pub mod lead_rate;
 pub mod members;
 mod messenger;
+mod noise;
 pub mod profile;
 pub mod search;
 mod searched;

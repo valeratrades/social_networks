@@ -49,43 +49,46 @@ impl Tab<'_> {
 	/// human to log in, then navigates again.
 	pub(super) async fn goto(&mut self, url: &str) -> Result<()> {
 		loop {
-			let landed = self.navigate(url).await?;
-			if landed.contains("/checkpoint") {
-				bail!("facebook put the account through a checkpoint ({landed}); resolve it by hand before running again");
+			self.page.goto(url).await.map_err(browser_failure)?;
+			if self.landed().await? {
+				return Ok(());
 			}
-			let Some(logged_in_at) = self.logged_in_at().await? else {
-				self.relogin(&landed).await?;
-				continue;
-			};
-			if landed.contains("/login") {
-				bail!("landed on {landed} while holding a `c_user` cookie; look at the scraped tab");
-			}
-			let login = self.login.get_or_insert_with(|| Login {
-				at: logged_in_at,
-				page_views: 0,
-				scrolls: 0,
-				last_url: String::new(),
-			});
-			login.page_views += 1;
-			login.last_url = landed.clone();
-			let lang: String = self.eval("document.documentElement.lang").await?;
-			if !lang.starts_with("en") {
-				bail!("facebook is serving `{lang}`; switch the account's language to English, which is what the extraction reads");
-			}
-			let text = self.eval::<String>("document.body.innerText").await?.to_lowercase().replace('’', "'");
-			for marker in ["you're temporarily blocked", "you can't use this feature right now", "your account has been locked"] {
-				if text.contains(marker) {
-					bail!("facebook says \"{marker}\" on {landed}; stop and wait it out");
-				}
-			}
-			return Ok(());
 		}
 	}
 
-	/// Where the tab ended up.
-	async fn navigate(&mut self, url: &str) -> Result<String> {
-		self.page.goto(url).await.map_err(browser_failure)?;
-		Ok(self.page.url())
+	/// [`Self::goto`]'s refusals over wherever the tab is now; `false` after a logged-out landing the
+	/// human logged back in from, which leaves the tab on the login page.
+	pub(super) async fn landed(&mut self) -> Result<bool> {
+		let landed = self.page.url();
+		if landed.contains("/checkpoint") {
+			bail!("facebook put the account through a checkpoint ({landed}); resolve it by hand before running again");
+		}
+		let Some(logged_in_at) = self.logged_in_at().await? else {
+			self.relogin(&landed).await?;
+			return Ok(false);
+		};
+		if landed.contains("/login") {
+			bail!("landed on {landed} while holding a `c_user` cookie; look at the scraped tab");
+		}
+		let login = self.login.get_or_insert_with(|| Login {
+			at: logged_in_at,
+			page_views: 0,
+			scrolls: 0,
+			last_url: String::new(),
+		});
+		login.page_views += 1;
+		login.last_url = landed.clone();
+		let lang: String = self.eval("document.documentElement.lang").await?;
+		if !lang.starts_with("en") {
+			bail!("facebook is serving `{lang}`; switch the account's language to English, which is what the extraction reads");
+		}
+		let text = self.eval::<String>("document.body.innerText").await?.to_lowercase().replace('’', "'");
+		for marker in ["you're temporarily blocked", "you can't use this feature right now", "your account has been locked"] {
+			if text.contains(marker) {
+				bail!("facebook says \"{marker}\" on {landed}; stop and wait it out");
+			}
+		}
+		Ok(true)
 	}
 
 	/// From the `c_user` cookie, which facebook sets to expire a year after the login.
@@ -118,7 +121,7 @@ impl Tab<'_> {
 			bail!("the account is logged out (landed on {landed}); log it in with `recon facebook-login` (`--send` for the send session)");
 		}
 		if !landed.contains("/login") {
-			self.navigate("https://www.facebook.com/login").await?;
+			self.page.goto("https://www.facebook.com/login").await.map_err(browser_failure)?;
 		}
 		notify("facebook: session ended — log in in the scraped tab")?;
 		eprintln!("waiting for a facebook login in the scraped tab");
@@ -199,11 +202,7 @@ impl Tab<'_> {
 
 	async fn gesture(&mut self, resume: &Mutex<Resume>, absorb: &mut impl FnMut(&str) -> Result<bool>) -> Result<bool> {
 		let mut answers = pin!(self.page.responses(GRAPHQL).await.map_err(browser_failure)?);
-		let title: String = self.eval("document.title").await?;
-		self.wheel(&title).await?;
-		if let Some(login) = &mut self.login {
-			login.scrolls += 1;
-		}
+		self.wheel(None, f64::from(rand::random_range(3..=8u32)) * 110.).await?;
 		let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
 		while let Ok(next) = tokio::time::timeout_at(deadline, answers.next()).await {
 			let answer = next.expect("the tab outlives its listeners").map_err(browser_failure)?;
@@ -219,12 +218,15 @@ impl Tab<'_> {
 		Ok(false)
 	}
 
-	/// Real wheel events: `window.scrollTo` does not trigger facebook's pagination. Unacked, the window
-	/// titled `title` is taken to be hidden and parked where it renders.
-	async fn wheel(&mut self, title: &str) -> Result<()> {
+	/// Real wheel events, `dy` px with the pointer travelled over `within` first: `window.scrollTo` does
+	/// not trigger facebook's pagination. Unacked, the window is taken to be hidden and parked where it renders.
+	pub(super) async fn wheel(&mut self, within: Option<&str>, dy: f64) -> Result<()> {
+		let title: String = self.eval("document.title").await?;
+		if let Some(login) = &mut self.login {
+			login.scrolls += 1;
+		}
 		let (headless, window) = (self.headless, self.window);
-		let dy = f64::from(rand::random_range(3..=8u32)) * 110.;
-		let mut scroll = pin!(self.page.scroll(None, dy));
+		let mut scroll = pin!(self.page.scroll(within, dy));
 		match tokio::time::timeout(Duration::from_secs(10), &mut scroll).await {
 			Ok(r) => r.map_err(browser_failure),
 			Err(_) if headless => bail!("headless chrome did not ack a wheel event in 10s"),
@@ -233,7 +235,7 @@ impl Tab<'_> {
 					let mut window = window.lock().expect("never held across a panic");
 					let window = match &mut *window {
 						Some(w) => w,
-						None => window.insert(Window::find(title)?),
+						None => window.insert(Window::find(&title)?),
 					};
 					ensure!(!window.parked(), "chrome did not ack a wheel event in 10s with its window on a headless output");
 					window.park()?;
@@ -353,7 +355,7 @@ fn closed<T>(r: Result<T>, close: Result<(), browser_manipulation::Error>) -> Re
 	}
 }
 
-/// Pointer, wheel and keys shaped like a hand; only a message is ever typed.
+/// Pointer, wheel and keys shaped like a hand; only a message and a noise search are ever typed.
 fn motion() -> Noise {
 	Noise::builder()
 		.dwell(Duration::from_millis(250))

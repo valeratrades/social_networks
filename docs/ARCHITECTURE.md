@@ -9,7 +9,7 @@ Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitt
 The repository is a Cargo workspace with four members:
 
 - `social_networks` — the binary crate. Thin CLI dispatcher, and the commands over a purpose: pull, procure, rank, dm, extraction.
-- `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`.
+- `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`, and a session driving a browser by hand `Browsing`.
 - `social_networks_reach` — the transcript format and its store, the purposes over it (people, typed tags, the ranking formula), plus `recon`, the CLI over the venue axis.
 - `social_networks_utils` — shared primitives (db, telegram notifier/utils, image conversion, misc utils).
 
@@ -32,7 +32,7 @@ social_networks/
 │   └── src/
 │       ├── lib.rs
 │       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`  — the daemon axis
-│       ├── reach.rs                        # `Profiles`/`Direct`/`Venue` + `Item`       — the on-demand axis
+│       ├── reach.rs                        # `Profiles`/`Direct`/`Venue`/`Browsing` + `Item` — the on-demand axis
 │       ├── breaker.rs                      # circuit breakers every send to a person is admitted through
 │       ├── behaviour.rs                    # how a paced session spends its time: active hours, bursts, caps, dwell; a banded shuffle
 │       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends
@@ -41,7 +41,7 @@ social_networks/
 │       ├── twitter.rs                      # Poll monitoring from Twitter lists; outbound DMs
 │       ├── twitter_schedule.rs             # Scheduled poll posting (OAuth 1.0a)
 │       ├── email/                          # Gmail IMAP/OAuth, thread reads, LLM classification; `script.rs`: conversations it answers on its own
-│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits; Messenger sends
+│       ├── facebook/                       # a logged-in chrome through `browser_manipulation`: City-filter search, group listings, About-tab visits; Messenger sends; `noise.rs`: idle browsing after them
 │       ├── nominatim.rs                    # place name → point, ≤1 req/s, cached on disk forever
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
@@ -82,8 +82,8 @@ A platform is reached in one of two ways, and the seam between them is which sid
 A platform may sit on both, and skool does: it is read on demand, and its chat is *polled*, so a
 `/ping` there is not something you find out about tomorrow.
 
-`Client` is below; [`reach`](../social_networks_adapters/src/reach.rs) is the **thin waist**: three
-traits, six methods, a `Roster` a listing is checked into, and one `Item` that carries its own author — so a DM, a group post and a public
+`Client` is below; [`reach`](../social_networks_adapters/src/reach.rs) is the **thin waist**: four
+traits, seven methods, a `Roster` a listing is checked into, and one `Item` that carries its own author — so a DM, a group post and a public
 event differ in `Kind` and in nothing else. Everything a platform does lives behind it, and nothing
 above it names a platform except to dispatch.
 
@@ -94,6 +94,7 @@ above it names a platform except to dispatch.
                         venue  ─► Venue::venues      ├─► Item ─► <year>.md
                                ─► Venue::posts   ────┘
                                ─► Venue::members ──────► Roster ─► members.json, page by page
+                        session ─► Browsing::noise         nothing; idle browsing after a send
 ```
 
 Dispatch is an exhaustive `match` over `Source` (the person axis) and `VenueSource` (the venue axis)
@@ -221,7 +222,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
   - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
-  - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks and types: through the prompts Messenger stands in front of the composer of a conversation loaded by URL, then into the composer, then Enter;
+  - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks buttons and types: through the prompts Messenger stands in front of the composer of a conversation loaded by URL, then into the composer, then Enter. Noise (`Browsing`) clicks links and types into the search field, and nothing else: it presses no button, so nothing it does outlives the next load by URL;
   - a message counts as sent only once the conversation shows it; a refusal about the recipient is `Unreachable`, anything else the page says is an error;
   - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
   - `city` never launches a browser, and `group`, profile visits and sends never use the user's;

@@ -54,6 +54,9 @@ pub enum PurposeCommand {
 		/// Split on blank lines and send each part as its own bubble
 		#[arg(long)]
 		multi_message: bool,
+		/// `<min>..<max>` seconds of idle browsing after the message, in the chrome it went out from (facebook)
+		#[arg(long)]
+		noise: Option<dm::Noise>,
 	},
 	/// Print what matching people said in every venue, straight out of the transcripts
 	Lines { pattern: Option<String> },
@@ -81,6 +84,9 @@ pub enum PurposeCommand {
 		/// Split each message on blank lines and send each part as its own bubble
 		#[arg(long)]
 		multi_message: bool,
+		/// `<min>..<max>` seconds of idle browsing after each message, in the chrome it went out from (facebook)
+		#[arg(long)]
+		noise: Option<dm::Noise>,
 	},
 	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
 	/// named nothing. A bare name is a bool tag set to true
@@ -109,7 +115,8 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			pattern,
 			text,
 			multi_message,
-		} => dm::send(&config, purpose, (&messenger).into(), &pattern, &text, multi_message).await,
+			noise,
+		} => dm::send(&config, purpose, (&messenger).into(), &pattern, &text, multi_message, noise.as_ref()).await,
 		PurposeCommand::Lines { pattern } => lines(purpose, venues()?, pattern.as_deref()),
 		PurposeCommand::Open { pattern } => open(purpose, pattern.as_deref()).await,
 		PurposeCommand::Procure(args) => procure::main(purpose, venues()?, args).await,
@@ -122,7 +129,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			println!("   {total} ranked");
 			Ok(())
 		}
-		PurposeCommand::Send { pattern, n, multi_message } => send::main(&config, purpose, venues()?, pattern.as_deref(), n, multi_message).await,
+		PurposeCommand::Send { pattern, n, multi_message, noise } => send::main(&config, purpose, venues()?, pattern.as_deref(), n, multi_message, noise.as_ref()).await,
 		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
 	}
 }
