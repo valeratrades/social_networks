@@ -26,6 +26,7 @@ social_networks/
 │       ├── dms.rs                          # notification rules over the DM event stream
 │       ├── health.rs                       # config/disk checks, hand-run
 │       └── purpose/                        # the commands over a purpose; `rolodex` is `purpose rolodex`
+│           └── dm.rs                       # the one send path; writes what went out into the transcript where no pull reads it back
 │
 ├── social_networks_adapters/               # how to talk to a platform
 │   └── src/
@@ -56,7 +57,7 @@ social_networks/
 │   │   ├── venue.rs                        # `<venues>/<platform>/<slug>/`, the line reader, roster selection
 │   │   ├── person.rs                       # `<person>/__main__.nix`, typed tag values
 │   │   ├── purpose.rs                      # `purposes.<name>`: folder, tag vocabulary, procurement, ranking — checked at load
-│   │   ├── rank.rs                         # the one ranking formula, and the log-age recency axis
+│   │   ├── rank.rs                         # the one ranking formula, the log-age recency axis, the decay over a lead whose last line is ours
 │   │   └── recon.rs                        # the venue axis, hand-run
 │   └── tests/                              # the ranking's invariants over `examples/purposes/reviews.nix`; groups; facts
 │
@@ -192,7 +193,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
 - `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
-- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `stale_half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it. The score as a whole is then ×`(1 − 2^(−Δt / unanswered_half_life))` while their newest line is ours.
 
 ## Invariants
 
@@ -223,6 +224,7 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
   - the user's sway focus is never moved: no `Page.bringToFront`, and a window that must render is moved to a headless output, never to the user;
   - the attached window is parked on a headless output only while nobody can see it: focusing its workspace brings it back, and the run ends with it home. A home workspace sway destroyed meanwhile is recreated on the output it was on.
 - **Every send to a person is admitted by `breaker`**: `dm`, `send` and the email scripts' replies. A tripped breaker refuses, it never queues; the send log and open breakers are rows of the db.
+- **A sent message is on the person's record**, written at send where no pull reads it back: a lead whose newest year-file line is ours has its whole score decayed by the purpose's `unanswered_half_life`.
 - **`send` sends to exactly `-n` people**: how many is the human's to say on every run; fewer sendable than asked is an error before anything goes out.
 - **Writing a campaign and sending it never share a step**: a writer only drops files into `<person>/outbox/`; `send` reads nothing else, and removes a file only after it went out.
 - **Paced sessions**: every adapter `recon` drives against a rate-sensitive platform (facebook's two sessions, skool's group sweeps) goes through one `Behaviour`; a retry backoff answers a block and is not behaviour.

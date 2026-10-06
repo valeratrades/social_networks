@@ -363,7 +363,7 @@ impl Venue for Facebook<'_, '_> {
 
 impl Profiles for Facebook<'_, '_> {
 	/// Where they live, their work and education, and the accounts they link. Every call visits: who
-	/// is due one is the purpose's `half_life`'s to say.
+	/// is due one is the purpose's `stale_half_life`'s to say.
 	async fn profile(&mut self, handle: &str, _: Window) -> Result<Profile> {
 		ensure!(self.session == Session::Launched, "a profile is visited from the launched session only");
 

@@ -302,7 +302,7 @@ fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
 	let Some(width) = ranked.iter().map(|r| r.person.name.chars().count()).max() else { return };
 	let columns: Vec<usize> = purpose.rank.iter().map(|term| term.of.chars().count().max(3)).collect();
 	let header: String = purpose.rank.iter().zip(&columns).map(|(term, w)| format!(" {:>w$}", term.of)).collect();
-	println!("   {} {} {:<width$}{}", "score".dimmed(), "stale".dimmed(), "", header.dimmed());
+	println!("   {} {} {} {:<width$}{}", "score".dimmed(), "stale".dimmed(), "unanswered".dimmed(), "", header.dimmed());
 	for r in ranked {
 		let terms: String = r
 			.terms
@@ -315,8 +315,12 @@ fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
 			.collect();
 		let handles: Vec<String> = r.person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
 		let backfilling = if r.backfilling { " backfilling".yellow().to_string() } else { String::new() };
+		let unanswered = match r.unanswered {
+			Some(c) => format!("{:>10.2}", c),
+			None => format!("{:>10}", "·"),
+		};
 		println!(
-			"   {:>5.0} {:>5.1} {:<width$}{} {}{backfilling}",
+			"   {:>5.0} {:>5.1} {unanswered} {:<width$}{} {}{backfilling}",
 			r.score * 100.0,
 			r.stale * 100.0,
 			r.person.name,

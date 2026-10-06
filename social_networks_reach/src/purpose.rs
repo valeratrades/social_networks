@@ -9,10 +9,10 @@ use std::{
 };
 
 use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
-use jiff::{SignedDuration, Timestamp};
+use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use social_networks_adapters::reach::VenueRef;
-use v_utils::Timeframe;
+use v_utils::HalfLife;
 
 use crate::{
 	person::{Birthday, Value},
@@ -70,7 +70,9 @@ pub struct Purpose {
 	/// Never empty: a purpose is kept in order to be ranked.
 	pub rank: Vec<Term>,
 	/// How fast what a pull refreshes goes out of date; what `stale` in a [ranking](crate::rank) is measured by.
-	pub half_life: SignedDuration,
+	pub stale_half_life: HalfLife,
+	/// How fast the penalty on a lead whose last line is ours wears off; see [`crate::rank`].
+	pub unanswered_half_life: HalfLife,
 }
 impl Purpose {
 	fn try_new(name: String, raw: RawPurpose) -> Result<Self> {
@@ -92,17 +94,14 @@ impl Purpose {
 		if raw.rank.is_empty() {
 			bail!("`rank` is empty, and a purpose is kept in order to be ranked");
 		}
-		let half_life = SignedDuration::try_from(raw.half_life.duration()).expect("a Timeframe is milliseconds, always in SignedDuration range");
-		if !half_life.is_positive() {
-			bail!("`half_life` is {}, and a half-life is positive", raw.half_life);
-		}
 		let mut purpose = Self {
 			name,
 			path: raw.path,
 			tags,
 			procure: BTreeMap::new(),
 			rank: Vec::new(),
-			half_life,
+			stale_half_life: raw.stale_half_life,
+			unanswered_half_life: raw.unanswered_half_life,
 		};
 		purpose.rank = raw.rank.into_iter().map(|term| purpose.term(term)).collect::<Result<_>>()?;
 		purpose.procure = raw
@@ -579,7 +578,8 @@ struct RawPurpose {
 	#[serde(default)]
 	procure: BTreeMap<String, RawStrategy>,
 	rank: Vec<RawTerm>,
-	half_life: Timeframe,
+	stale_half_life: HalfLife,
+	unanswered_half_life: HalfLife,
 }
 
 /// A list is a group; anything else is read as [`RawTyped`], afterwards, so its own errors survive.

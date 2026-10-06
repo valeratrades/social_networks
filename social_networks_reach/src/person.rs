@@ -409,8 +409,10 @@ mod tests {
 
 		let dir = std::env::temp_dir().join("social_networks_rolodex_render_test");
 		let purpose = |tags: serde_json::Value| -> Purpose {
-			let purposes: Purposes =
-				serde_json::from_value(serde_json::json!({ "t": { "path": dir, "tags": tags, "rank": [{ "of": "interactions", "weight": 1 }], "half_life": "30d" } })).unwrap();
+			let purposes: Purposes = serde_json::from_value(
+				serde_json::json!({ "t": { "path": dir, "tags": tags, "rank": [{ "of": "interactions", "weight": 1 }], "stale_half_life": "30d", "unanswered_half_life": "1w" } }),
+			)
+			.unwrap();
 			purposes.get("t").unwrap().clone()
 		};
 		let tags = serde_json::json!({

@@ -41,22 +41,20 @@ pub struct Ranked {
 	pub backfilling: bool,
 	/// What the score stands to be off by for want of a pull, in `[0, 1]`: see `purpose/README.md`.
 	pub stale: f64,
+	/// What the score was multiplied by because their last line is ours, in `[0, 1)`.
+	pub unanswered: Option<f64>,
 }
 
 /// Best first. Every cohort-relative term is relative to `people`, so the same person ranks
 /// differently among different people.
 pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec<Ranked>> {
 	let reads = |f: fn(&Signal) -> bool| purpose.rank.iter().any(|term| f(&term.signal));
-	let transcript = reads(|s| matches!(s, Signal::Interactions | Signal::LastInteraction { .. }));
 	let in_venues = reads(|s| matches!(s, Signal::VenueActivity { .. }));
 
 	let mut facts = Vec::with_capacity(people.len());
 	for person in &people {
 		let dir = person.dir(&purpose.path);
-		let lines = match transcript {
-			true => venue::read(&dir, None)?,
-			false => Vec::new(),
-		};
+		let lines = venue::read(&dir, None)?;
 		let meta = history::Meta::load(&dir)?;
 		let spoke = match in_venues {
 			true => venue::lines_by(venues, person, None)?.into_iter().map(|(_, line)| line.at).collect(),
@@ -70,6 +68,7 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 				.collect::<BTreeSet<_>>()
 				.len(),
 			last: lines.iter().map(|line| line.at).max(),
+			last_ours: lines.iter().max_by_key(|line| line.at).filter(|line| line.handle == ME).map(|line| line.at),
 			spoke,
 			backfilling: meta.backfill_status().is_some(),
 			fetched_at: meta.fetched_at,
@@ -80,6 +79,7 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 	let columns: Vec<Vec<Option<f64>>> = purpose.rank.iter().map(|term| column(term, &people, &facts)).collect();
 	let total: f64 = purpose.rank.iter().map(|term| term.weight).sum();
 	let stale = staleness(purpose, &columns, &facts, total);
+	let now = Timestamp::now();
 	let mut ranked: Vec<Ranked> = people
 		.into_iter()
 		.zip(facts)
@@ -90,12 +90,18 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 			// absent is no credit, which makes every term a bonus
 			let score = purpose.rank.iter().zip(&terms).map(|(term, v)| term.weight * v.unwrap_or(0.0)).sum::<f64>() / total;
 			assert!((0.0..=1.0).contains(&score), "{}: a weighted mean of values in [0, 1] came out {score}", person.name);
+			let unanswered = facts.last_ours.map(|at| {
+				let since = now.duration_since(at);
+				assert!(!since.is_negative(), "{}: our last line is at {at}, which is after now", person.name);
+				1.0 - purpose.unanswered_half_life.left(since.unsigned_abs())
+			});
 			Ranked {
 				person,
-				score,
+				score: score * unanswered.unwrap_or(1.0), // their line is the newest, nothing to decay
 				terms,
 				backfilling: facts.backfilling,
 				stale,
+				unanswered,
 			}
 		})
 		.collect();
@@ -109,6 +115,8 @@ struct Facts {
 	days: usize,
 	/// Their newest year-file line, in either direction.
 	last: Option<Timestamp>,
+	/// `last`, when that line is ours.
+	last_ours: Option<Timestamp>,
 	/// When they wrote each of their venue lines.
 	spoke: Vec<Timestamp>,
 	backfilling: bool,
@@ -156,7 +164,7 @@ fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], t
 						Some(at) => {
 							let since = now.duration_since(at);
 							assert!(!since.is_negative(), "synced at {at}, which is after now");
-							1.0 - 0.5f64.powf(since.as_secs_f64() / purpose.half_life.as_secs_f64())
+							1.0 - purpose.stale_half_life.left(since.unsigned_abs())
 						}
 					};
 					let v = column[i].unwrap_or(0.0);

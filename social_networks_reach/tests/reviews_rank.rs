@@ -4,20 +4,42 @@
 //!
 //! Needs `nix` to evaluate the purpose and the person files, which the dev shell provides.
 
-use std::path::{Path, PathBuf};
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
 
-use social_networks_reach::{person, purpose::Purposes, rank};
+use jiff::{SignedDuration, Timestamp, tz::TimeZone};
+use social_networks_reach::{history::ME, person, purpose::Purposes, rank};
+
+const MINE: bool = true;
+const THEIRS: bool = false;
 
 struct Lead {
 	name: &'static str,
 	/// The body of `tags = { … };`, as a human would write it.
 	tags: &'static str,
-	/// `(day, time)` of each of their lines to me.
-	lines: &'static [(&'static str, &'static str)],
+	/// Each line of our conversation, and whether I wrote it.
+	lines: Vec<(Timestamp, bool)>,
 }
 
 const fn lead(name: &'static str, tags: &'static str) -> Lead {
-	Lead { name, tags, lines: &[] }
+	Lead { name, tags, lines: Vec::new() }
+}
+
+fn at(rfc3339: &str) -> Timestamp {
+	rfc3339.parse().unwrap()
+}
+
+/// `seconds` past the start of the UTC day `ago` before now.
+fn day_ago(ago: SignedDuration, seconds: i8) -> Timestamp {
+	(Timestamp::now() - ago)
+		.to_zoned(TimeZone::UTC)
+		.date()
+		.at(0, 0, seconds, 0)
+		.to_zoned(TimeZone::UTC)
+		.unwrap()
+		.timestamp()
 }
 
 /// Best first, with the score each got.
@@ -29,12 +51,21 @@ fn check(cohort: &str, leads: &[Lead]) -> Vec<(String, f64)> {
 		let person = people.join(lead.name);
 		std::fs::create_dir_all(&person).unwrap();
 		std::fs::write(person.join("__main__.nix"), format!("{{ tags = {{ {} }}; }}\n", lead.tags)).unwrap();
-		if !lead.lines.is_empty() {
-			let mut body = format!("# {} — 2026 (times UTC)\n", lead.name);
-			for (day, time) in lead.lines {
-				body.push_str(&format!("\n## {day}\n\n- {time} [{}/skool] hi\n", lead.name));
+		let mut lines = lead.lines.clone();
+		lines.sort();
+		let (mut years, mut day) = (BTreeMap::new(), None);
+		for (at, mine) in lines {
+			let at = at.to_zoned(TimeZone::UTC);
+			let body = years.entry(at.year()).or_insert_with(|| format!("# {} — {} (times UTC)\n", lead.name, at.year()));
+			if day != Some(at.date()) {
+				body.push_str(&format!("\n## {}\n\n", at.date()));
+				day = Some(at.date());
 			}
-			std::fs::write(person.join("2026.md"), body).unwrap();
+			let who = if mine { ME } else { lead.name };
+			body.push_str(&format!("- {:02}:{:02}:{:02} [{who}/skool] hi\n", at.hour(), at.minute(), at.second()));
+		}
+		for (year, body) in years {
+			std::fs::write(person.join(format!("{year}.md")), body).unwrap();
 		}
 	}
 
@@ -120,14 +151,40 @@ fn more_days_of_interaction_beat_fewer() {
 			Lead {
 				name: "seldom",
 				tags: "",
-				lines: &[("2026-03-05", "10:00:00")],
+				lines: vec![(at("2026-03-05T10:00:00Z"), THEIRS)],
 			},
 			Lead {
 				name: "zealous",
 				tags: "",
-				lines: &[("2026-03-01", "10:00:00"), ("2026-03-03", "10:00:00"), ("2026-03-05", "10:00:00")],
+				lines: vec![(at("2026-03-01T10:00:00Z"), THEIRS), (at("2026-03-03T10:00:00Z"), THEIRS), (at("2026-03-05T10:00:00Z"), THEIRS)],
 			},
 		],
 	);
 	assert_eq!(order(&ranked), ["zealous", "seldom"]);
+}
+
+/// Twins share a timeline to the second and differ only in who wrote a line, so whatever separates
+/// them is the decay on our unanswered line.
+#[test]
+fn our_last_message_cools_a_lead_until_it_decays_or_they_answer() {
+	let (yesterday, month) = (SignedDuration::from_hours(24), SignedDuration::from_hours(24 * 30));
+	let conversation = |name, ago, authors: [bool; 3]| Lead {
+		name,
+		tags: "business = true;",
+		lines: authors.into_iter().zip(0..).map(|(mine, s)| (day_ago(ago, s), mine)).collect(),
+	};
+	let ranked = check(
+		"unanswered",
+		&[
+			conversation("just_messaged", yesterday, [THEIRS, THEIRS, MINE]),
+			conversation("answered", yesterday, [THEIRS, MINE, THEIRS]),
+			conversation("never_messaged", yesterday, [THEIRS, THEIRS, THEIRS]),
+			conversation("messaged_a_month_ago", month, [THEIRS, THEIRS, MINE]),
+			conversation("silent_a_month", month, [THEIRS, THEIRS, THEIRS]),
+		],
+	);
+	assert_eq!(order(&ranked).last(), Some(&"just_messaged"));
+	assert_eq!(score(&ranked, "answered"), score(&ranked, "never_messaged"), "their reply lifts it");
+	let (cooled, warm) = (score(&ranked, "messaged_a_month_ago"), score(&ranked, "silent_a_month"));
+	assert!(cooled < warm && cooled > 0.9 * warm, "a month is four half-lives of a week: {cooled} against {warm}");
 }

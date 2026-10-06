@@ -96,7 +96,7 @@ fn a_longer_half_life_forgives_the_same_wait() {
 	let cohort = |half_life: &'static str| {
 		let ranked = check(
 			&format!("half_life_{half_life}"),
-			|raw| raw["half_life"] = serde_json::json!(half_life),
+			|raw| raw["stale_half_life"] = serde_json::json!(half_life),
 			&[
 				Lead {
 					name: "month",

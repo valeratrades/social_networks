@@ -4,14 +4,16 @@
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 use colored::Colorize as _;
+use jiff::Timestamp;
 use regex::Regex;
 use social_networks_adapters::{
 	facebook,
-	reach::{Direct, Unreachable},
+	reach::{Author, Direct, Item, Kind, Source, Unreachable},
 	skool::Skool,
 	telegram_dms, twitter,
 };
 use social_networks_reach::{
+	history,
 	person::{self, Person},
 	purpose::Purpose,
 };
@@ -78,7 +80,8 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 	send_to(config, purpose, person, messenger, text, multi_message).await
 }
 
-/// An `Unreachable` refusal is recorded on the person before it is returned. `multi_message` sends
+/// An `Unreachable` refusal is recorded on the person before it is returned, and so is every bubble
+/// that went out, where no pull reads it back. `multi_message` sends
 /// `text` split on blank lines as consecutive bubbles; they are one message to the breaker.
 pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool) -> Result<()> {
 	let dir = &purpose.path;
@@ -94,12 +97,14 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
 	// one `Direct::send`, a session per messenger: the same enum dispatch the reads go through
+	let mut sent_at = Vec::with_capacity(bubbles.len());
 	let sent = match messenger {
 		Messenger::Discord =>
 			burst(
 				&mut social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone()),
 				handle,
 				&bubbles,
+				&mut sent_at,
 			)
 			.await,
 		Messenger::Facebook => {
@@ -107,7 +112,7 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				.facebook
 				.as_ref()
 				.ok_or_else(|| eyre!("a facebook message goes out from a logged-in chrome, so it needs a `facebook` section in the config"))?;
-			facebook::with_sender(fb, async |session| burst(session, handle, &bubbles).await).await
+			facebook::with_sender(fb, async |session| burst(session, handle, &bubbles, &mut sent_at).await).await
 		}
 		// the read path is happy anonymous, but a message is written as somebody
 		Messenger::Skool => {
@@ -115,10 +120,14 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				.skool
 				.as_ref()
 				.ok_or_else(|| eyre!("sending a skool DM signs in, so it needs a `[skool]` section in the config"))?;
-			burst(&mut Skool::try_new(Some(credentials.clone())).await?, handle, &bubbles).await
+			burst(&mut Skool::try_new(Some(credentials.clone())).await?, handle, &bubbles, &mut sent_at).await
 		}
-		Messenger::Telegram => with_telegram(&config.telegram, async |client| burst(&mut telegram_dms::Reach { client: &client }, handle, &bubbles).await).await,
-		Messenger::Twitter => burst(&mut twitter::Reach(&config.twitter), handle, &bubbles).await,
+		Messenger::Telegram =>
+			with_telegram(&config.telegram, async |client| {
+				burst(&mut telegram_dms::Reach { client: &client }, handle, &bubbles, &mut sent_at).await
+			})
+			.await,
+		Messenger::Twitter => burst(&mut twitter::Reach(&config.twitter), handle, &bubbles, &mut sent_at).await,
 	};
 
 	// The outcome is worth as much as the message: a campaign that does not record a refusal picks
@@ -133,6 +142,36 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	}
 	if was != person.unreachable.get(platform).cloned() {
 		person.write(dir)?;
+	}
+	let read_back = match messenger {
+		Messenger::Facebook => Some(Source::Facebook),
+		Messenger::Discord | Messenger::Skool | Messenger::Telegram => None, // a pull reads our side back
+		Messenger::Twitter => None,                                          // keeps no transcript
+	};
+	if let Some(source) = read_back
+		&& !sent_at.is_empty()
+	{
+		let items: Vec<Item> = bubbles
+			.iter()
+			.zip(&sent_at)
+			.map(|(bubble, at)| Item {
+				id: format!("sent:{at}"),
+				source,
+				at: *at,
+				kind: Kind::Direct,
+				author: Author::Me,
+				text: bubble.to_string(),
+				attachments: Vec::new(),
+				permalink: None,
+			})
+			.collect();
+		let person_dir = person.dir(dir);
+		let mut meta = history::Meta::load(&person_dir)?;
+		let mut cursor = meta.cursor(source)?;
+		match cursor.archiving() {
+			true => cursor.stash(&items)?,
+			false => history::record(&person_dir, items, &mut meta)?,
+		}
 	}
 	sent?;
 
@@ -153,7 +192,7 @@ impl std::fmt::Display for PartlySent {
 	}
 }
 
-async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str]) -> Result<()> {
+async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str], sent_at: &mut Vec<Timestamp>) -> Result<()> {
 	for (i, bubble) in bubbles.iter().enumerate() {
 		if let Err(e) = session.send(handle, bubble).await {
 			return match i {
@@ -164,6 +203,7 @@ async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str]) -> Res
 				})),
 			};
 		}
+		sent_at.push(Timestamp::now());
 	}
 	Ok(())
 }

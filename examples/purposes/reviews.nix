@@ -1,7 +1,8 @@
 # Leads to ask for a review. Terms descend in weight; the weights are a starting point to tune.
 {
   path = "/home/v/s/g/rolodex/reviews";
-  half_life = "60d"; # residence and business move slowly
+  stale_half_life = "60d"; # residence and business move slowly
+  unanswered_half_life = "1w";
   tags = {
     business = { type = "bool"; about = "runs a business of their own"; };
     last_login = { type = "timestamp"; };

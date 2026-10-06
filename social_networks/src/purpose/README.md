@@ -18,7 +18,8 @@ config.nix
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      ├─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
-     └─ half_life how fast what a pull refreshes goes out of date, e.g. "60d"
+     ├─ stale_half_life       how fast what a pull refreshes goes out of date, e.g. "60d"
+     └─ unanswered_half_life  how fast the penalty on a lead whose last line is ours wears off, e.g. "1w"
 ```
 
 The whole purpose is checked at load, and fails by name: a rank term whose shape does not fit what
@@ -137,7 +138,8 @@ name is not load-bearing, since a pattern searches handles too.
 person dir ────────┤
                    └── year files ──► builtins: interactions, last_interaction, venue_activity
                                   │
-   rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w
+   rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w  ·  (1 − 2^(−Δt / unanswered_half_life))
+                                                                            └ Δt since our last line, when it is the newest ┘
 ```
 
 | type / builtin | term params | value |
@@ -158,10 +160,14 @@ transcript. Recency is `ln(age)` over the cohort, as [`rank`](../../../social_ne
 explains, so a score means nothing outside the cohort it was ranked in. A person still backfilling has
 no year files yet, and is marked rather than read as having none.
 
+The unanswered decay multiplies the whole score rather than adding a term, because a term can only ever be a bonus. A facebook send is
+written into their year file as it goes out, since no pull reads that conversation back; discord,
+telegram and skool sends arrive through the next pull. A reply after ours lifts it at once.
+
 `stale` is what a pull stands to move somebody's score by, in score points:
 
 ```
-stale = Σ_t  (w_t / Σw)  ·  (1 − 2^(−Δt / half_life))  ·  E|v_t − V_t|
+stale = Σ_t  (w_t / Σw)  ·  (1 − 2^(−Δt / stale_half_life))  ·  E|v_t − V_t|
              └ share ┘      └ P(changed since synced) ┘    └ how far it would move ┘
 
 Δt   since what refreshes t:  a fact, interactions, last_interaction → the last pull every handle answered
