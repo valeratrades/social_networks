@@ -93,7 +93,15 @@ impl Facebook<'_, '_> {
 	async fn watch(&mut self, message: &str, what: &str, done: impl Fn(&Seen) -> bool) -> Result<Seen> {
 		let deadline = tokio::time::Instant::now() + SETTLE;
 		loop {
-			let seen: Seen = self.tab.see(SEE, (COMPOSER, message)).await?;
+			let seen: Seen = match self.tab.see(SEE, (COMPOSER, message)).await {
+				Ok(seen) => seen,
+				// a first message moves a new conversation to its `/messages/e2ee/t/<thread>` url mid-read
+				Err(e) if e.to_string().contains("Execution context was destroyed") && tokio::time::Instant::now() < deadline => {
+					tokio::time::sleep(Duration::from_millis(500)).await;
+					continue;
+				}
+				Err(e) => return Err(e),
+			};
 			if let Some(m) = REFUSED.iter().find(|m| seen.text.contains(**m)) {
 				return Err(Unreachable(format!("facebook says \"{m}\"")).into());
 			}
