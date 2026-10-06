@@ -68,6 +68,12 @@ pub enum Messenger {
 /// `--noise <min>..<max>`: seconds of idle browsing after a message, picked uniformly per person.
 #[derive(Clone, Debug)]
 pub struct Noise(RangeInclusive<f64>);
+impl Noise {
+	pub fn pick(&self) -> Duration {
+		Duration::from_secs_f64(rand::random_range(self.0.clone()))
+	}
+}
+
 impl FromStr for Noise {
 	type Err = color_eyre::Report;
 
@@ -77,6 +83,13 @@ impl FromStr for Noise {
 		ensure!(0. <= min && min <= max, "noise is `<min>..<max>` seconds with 0 ≤ min ≤ max, got `{s}`");
 		Ok(Self(min..=max))
 	}
+}
+
+/// What is browsed in the chrome a message goes out from, before it and after it.
+#[derive(Clone, Copy)]
+pub struct Browse {
+	pub before: Option<Duration>,
+	pub after: Option<Duration>,
 }
 
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
@@ -93,7 +106,11 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 			matches.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
 		);
 	};
-	send_to(config, purpose, person, messenger, text, multi_message, noise).await?
+	let browse = Browse {
+		before: None,
+		after: noise.map(Noise::pick),
+	};
+	send_to(config, purpose, person, messenger, text, multi_message, browse).await?
 }
 
 /// An `Unreachable` refusal is recorded on the person before it is returned, and so is every bubble
@@ -102,7 +119,7 @@ pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, p
 ///
 /// The outer error is the message's: it did not all go out. The inner one is whatever failed once it
 /// had — the noise browsed after it, the browser closing.
-pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool, noise: Option<&Noise>) -> Result<Result<()>> {
+pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, messenger: Messenger, text: &str, multi_message: bool, browse: Browse) -> Result<Result<()>> {
 	let dir = &purpose.path;
 	let platform = messenger.as_ref();
 	let handle = person.handles.get(platform).ok_or_else(|| eyre!("{} has no {platform} handle", person.name))?;
@@ -113,8 +130,8 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	if let Some(i) = bubbles.iter().position(|b| b.is_empty()) {
 		bail!("bubble {} of {} to {} is empty", i + 1, bubbles.len(), person.name);
 	}
-	if noise.is_some() && messenger != Messenger::Facebook {
-		bail!("--noise browses in the chrome the message went out from, and {platform} sends through none");
+	if (browse.before.is_some() || browse.after.is_some()) && messenger != Messenger::Facebook {
+		bail!("browsing happens in the chrome the message goes out from, and {platform} sends through none");
 	}
 	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
 
@@ -134,10 +151,12 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				.facebook
 				.as_ref()
 				.ok_or_else(|| eyre!("a facebook message goes out from a logged-in chrome, so it needs a `facebook` section in the config"))?;
-			let span = noise.map(|n| Duration::from_secs_f64(rand::random_range(n.0.clone())));
 			facebook::with_sender(fb, async |session| {
+				if let Some(span) = browse.before {
+					session.noise(span).await?;
+				}
 				burst(session, handle, &bubbles, &mut sent_at).await?;
-				match span {
+				match browse.after {
 					Some(span) => session.noise(span).await,
 					None => Ok(()),
 				}

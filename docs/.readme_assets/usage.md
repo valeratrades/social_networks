@@ -36,7 +36,7 @@ to add people (`procure`), and a ranking (`rank`). The config names them under `
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex prune` | Remove each person that left every group and holds no conversation. |
 | `rolodex dm <--platform> <pattern> <text> [--noise <min>..<max>]` | Send one message to one person. |
-| `rolodex send -n <n> [pattern] [--noise <min>..<max>]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
+| `rolodex send -n <n> [pattern] [--noise <min>..<max>] [--chance-of-distraction <p>] [--distraction-duration <s>]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
 
 For another purpose, write `purpose <name>` in place of `rolodex`.
 
@@ -49,6 +49,8 @@ the next `pull` continues from the same place.
 
 `--noise 15..60` browses facebook for 15 to 60 seconds after each message, in the same chrome: the
 feed, a profile, a search. Facebook only.
+Before each facebook message, `send` browses like that with a chance of `--chance-of-distraction`
+(0.2), for half to one and a half of `--distraction-duration` (30 s).
 
 `cold` finds each person that holds no conversation with you. A line that a person wrote in a group
 is not a conversation, so each member that `procure` added stays cold. `cold` checks every platform

@@ -3,7 +3,7 @@
 Each point is **observed** (on the burner, 2026-10-06, with `examples/facebook_noise.rs`), **known** or **built**, as in `sending.md`.
 
 ## Why
-- **known**: a session that only ever loads a conversation, types, presses Enter and closes is a shape no person has. `send --noise <min>..<max>` browses for a uniform pick of that many seconds after each message, in the same chrome.
+- **known**: a session that only ever loads a conversation, types, presses Enter and closes is a shape no person has. `send --noise <min>..<max>` browses for a uniform pick of that many seconds after each message, in the same chrome. `send` also browses *before* a message, with a chance of `--chance-of-distraction` (0.2), for U(½, 1½) × `--distraction-duration` (30 s); a distraction that fails leaves the message unsent and its file in place.
 
 ## What it may touch (built)
 - Links, clicked with the pointer, and the `Search Facebook` field, typed into; nothing else. No button is pressed, so no like, follow, friend request, comment draft or docked chat is ever made: everything it leaves is DOM, gone with the next load by URL, which is how every command starts.

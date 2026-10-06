@@ -1,9 +1,10 @@
 //! Sends what is due in the outboxes of exactly `n` matching people, best ranked first. One message
 //! per person per run: the rest of theirs waits for the next.
 
-use std::{path::Path, str::FromStr as _};
+use std::{path::Path, str::FromStr as _, time::Duration};
 
-use color_eyre::eyre::{Result, WrapErr as _, bail};
+use clap::Args;
+use color_eyre::eyre::{Result, WrapErr as _, bail, ensure};
 use colored::Colorize as _;
 use jiff::Timestamp;
 use social_networks_adapters::reach::Unreachable;
@@ -15,7 +16,25 @@ use super::{
 };
 use crate::config::AppConfig;
 
-pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, n: usize, multi_message: bool, noise: Option<&dm::Noise>) -> Result<()> {
+/// Browsing around facebook messages, in the chrome they go out from: a run that goes from one
+/// conversation straight to the next is a pattern.
+#[derive(Args)]
+pub struct Idle {
+	/// Of facebook messages, the share that something else is browsed before
+	#[arg(long, default_value_t = 0.2)]
+	chance_of_distraction: f64,
+	/// Seconds; a distraction lasts from half of it to one and a half
+	#[arg(long, default_value_t = 30.)]
+	distraction_duration: f64,
+	/// `<min>..<max>` seconds of idle browsing after each message
+	#[arg(long)]
+	noise: Option<dm::Noise>,
+}
+
+pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern: Option<&str>, n: usize, multi_message: bool, idle: &Idle) -> Result<()> {
+	let (chance, median) = (idle.chance_of_distraction, idle.distraction_duration);
+	ensure!((0. ..=1.).contains(&chance), "--chance-of-distraction is a share, got {chance}");
+	ensure!(median > 0., "--distraction-duration is a positive number of seconds, got {median}");
 	let now = Timestamp::now();
 	let mut sendable = Vec::new();
 	for ranked in rank::rank(purpose, venues, select(purpose, pattern)?)? {
@@ -39,7 +58,17 @@ pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern:
 		if sent == n {
 			break;
 		}
-		match dm::send_to(config, purpose, person, *messenger, &due.text, multi_message, noise).await {
+		let browse = match messenger {
+			Messenger::Facebook => dm::Browse {
+				before: rand::random_bool(chance).then(|| Duration::from_secs_f64(rand::random_range(0.5 * median..=1.5 * median))),
+				after: idle.noise.as_ref().map(dm::Noise::pick),
+			},
+			_ => dm::Browse { before: None, after: None },
+		};
+		if let Some(d) = browse.before {
+			println!("   {} distracted for {:.0}s before {}", "~".dimmed(), d.as_secs_f64(), person.name);
+		}
+		match dm::send_to(config, purpose, person, *messenger, &due.text, multi_message, browse).await {
 			Ok(after) => {
 				std::fs::remove_file(&due.path).unwrap_or_else(|e| panic!("sent {}, but could not remove it, so the next run would send it again: {e}", due.path.display()));
 				sent += 1;

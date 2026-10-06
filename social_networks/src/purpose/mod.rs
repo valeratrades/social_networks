@@ -84,9 +84,9 @@ pub enum PurposeCommand {
 		/// Split each message on blank lines and send each part as its own bubble
 		#[arg(long)]
 		multi_message: bool,
-		/// `<min>..<max>` seconds of idle browsing after each message, in the chrome it went out from (facebook)
-		#[arg(long)]
-		noise: Option<dm::Noise>,
+		/// Facebook only
+		#[command(flatten)]
+		idle: send::Idle,
 	},
 	/// Put `<name>[=<value>]` or `<group>:<value>` on matching people, or print the vocabulary when
 	/// named nothing. A bare name is a bool tag set to true
@@ -129,7 +129,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			println!("   {total} ranked");
 			Ok(())
 		}
-		PurposeCommand::Send { pattern, n, multi_message, noise } => send::main(&config, purpose, venues()?, pattern.as_deref(), n, multi_message, noise.as_ref()).await,
+		PurposeCommand::Send { pattern, n, multi_message, idle } => send::main(&config, purpose, venues()?, pattern.as_deref(), n, multi_message, &idle).await,
 		PurposeCommand::Tag { tag: name, pattern, rm } => tag(purpose, name.as_deref(), pattern.as_deref(), rm),
 	}
 }
