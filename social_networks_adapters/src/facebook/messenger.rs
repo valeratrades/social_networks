@@ -152,7 +152,14 @@ impl Facebook<'_, '_> {
 				front.text
 			);
 			info!("clicking `{pass}` on a {:?} in front of the conversation with {handle}: {}", front.kind, front.text);
-			self.tab.click(&front.button(pass)).await?;
+			let (button, pass) = (front.button(pass), pass.clone());
+			if let Err(e) = self.tab.click(&button).await {
+				let now: Seen = self.tab.see(SEE, (COMPOSER, message)).await?;
+				if now.front.and_then(|f| f.pass).as_ref() == Some(&pass) {
+					return Err(e);
+				}
+				info!("`{pass}` went away by itself before the click landed"); // notices dismiss themselves once the conversation loads
+			}
 		}
 		unreachable!("an unbounded loop")
 	}
