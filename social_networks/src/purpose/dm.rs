@@ -141,12 +141,27 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 }
 
 /// Bubbles already out cannot be taken back, so a burst cut short says how far it got.
+/// A burst cut short: `rest` is what did not go out, in the shape `send_to` splits.
+#[derive(Debug)]
+pub struct PartlySent {
+	pub sent: usize,
+	pub rest: String,
+}
+impl std::fmt::Display for PartlySent {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{} bubbles already went out", self.sent)
+	}
+}
+
 async fn burst(session: &mut impl Direct, handle: &str, bubbles: &[&str]) -> Result<()> {
 	for (i, bubble) in bubbles.iter().enumerate() {
 		if let Err(e) = session.send(handle, bubble).await {
 			return match i {
 				0 => Err(e),
-				_ => Err(e.wrap_err(format!("{i} of {} bubbles to {handle} already went out", bubbles.len()))),
+				_ => Err(e.wrap_err(PartlySent {
+					sent: i,
+					rest: bubbles[i..].join("\n\n"),
+				})),
 			};
 		}
 	}

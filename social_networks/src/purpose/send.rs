@@ -44,8 +44,21 @@ pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern:
 				std::fs::remove_file(&due.path).unwrap_or_else(|e| panic!("sent {}, but could not remove it, so the next run would send it again: {e}", due.path.display()));
 				sent += 1;
 			}
-			Err(e) if e.downcast_ref::<Unreachable>().is_some() => println!("   {} {} ({}): {e}", "✗".red(), person.name, due.at),
-			Err(e) => return Err(e),
+			Err(e) => {
+				if let Some(partly) = e.downcast_ref::<dm::PartlySent>() {
+					std::fs::write(&due.path, &partly.rest).unwrap_or_else(|w| {
+						panic!(
+							"{} went out, but {} could not be cut down to the rest, so the next run would send them again: {w}",
+							partly.sent,
+							due.path.display()
+						)
+					});
+				}
+				match e.downcast_ref::<Unreachable>() {
+					Some(_) => println!("   {} {} ({}): {e:#}", "✗".red(), person.name, due.at),
+					None => return Err(e),
+				}
+			}
 		}
 	}
 	if sent < n {
