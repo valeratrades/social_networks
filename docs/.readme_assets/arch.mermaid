@@ -1,0 +1,17 @@
+graph LR
+    platforms["Discord / Telegram / Skool / Facebook / Twitter / GitHub / LinkedIn / YouTube / Gmail"]
+    subgraph daemons["daemons: always on"]
+        listen["Client::listen"]
+    end
+    subgraph hand["hand-run"]
+        recon["recon: venues, members, posts"]
+        pull["purpose pull"]
+        rank["purpose rank"]
+        send["purpose dm / send"]
+    end
+    platforms --> listen --> tg["Telegram alerts / output"]
+    platforms --> recon --> venues["venues/platform/slug/year.md"]
+    venues --> procure["purpose procure"] --> people
+    platforms --> pull --> people["person/year.md + __main__.nix"]
+    people --> rank --> send --> platforms
+    send -->|"facebook: our lines"| people

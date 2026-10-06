@@ -36,6 +36,7 @@ to add people (`procure`), and a ranking (`rank`). The config names them under `
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex prune` | Remove each person that left every group and holds no conversation. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
+| `rolodex send -n <n> [pattern]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
 
 For another purpose, write `purpose <name>` in place of `rolodex`.
 
@@ -56,6 +57,16 @@ from the messages: `interactions` (the days they wrote to you), `last_interactio
 or `venue_activity` (their lines in the groups). A term gives 0 if the person has no value for it. A
 `decay` on a term sets how much it decreases the weight of an old line. With `decay = 0`, each line
 has the same weight.
+
+```
+score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while their newest line is ours
+         └ terms ┘   └──── on the whole result ────┘
+         just sent ×0 · 1w ×½ · 2w ×¾ · 4w ×15/16 · they reply → ×1
+```
+
+So a person you wrote to drops out of the top, and comes back as the decay wears off or as soon as
+they answer. `stale_half_life` sets how fast what a `pull` refreshes goes out of date: `stale` in
+`rank` is how far a `pull` could move the score, and `pull --top <n>` takes the `n` stalest.
 
 Each `pull` reads the groups a person is in from their profile and writes them to their file. `cold`
 removes each person that is in no group you keep, and shows their names. `prune` deletes those files

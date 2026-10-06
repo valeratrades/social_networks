@@ -1,5 +1,5 @@
 ```sh
-cargo install --git https://github.com/valeratrades/social_networks --branch master
+cargo install --git https://github.com/valeratrades/social_networks --branch main
 ```
 
 ## Email Setup

@@ -7,9 +7,11 @@
 [<img alt="ci errors" src="https://img.shields.io/github/actions/workflow/status/valeratrades/social_networks/errors.yml?branch=main&style=for-the-badge&style=flat-square&label=errors&labelColor=420d09" height="20">](https://github.com/valeratrades/social_networks/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
 [<img alt="ci warnings" src="https://img.shields.io/github/actions/workflow/status/valeratrades/social_networks/warnings.yml?branch=main&style=for-the-badge&style=flat-square&label=warnings&labelColor=d16002" height="20">](https://github.com/valeratrades/social_networks/actions?query=branch%3Amain) <!--NB: Won't find it if repo is private-->
 
-scripts to automate scraping from or certain parts of interactions with social networks.
+Monitoring daemons and on-demand outreach over Discord, Telegram, Skool, Facebook, Twitter, GitHub, LinkedIn, YouTube and Gmail.
 
-has aggregators of sentiment polls from Twitter and Telegram, interpretation of Hamaha's video titles, discord /ping notifier, etc
+- **Daemons** watch DMs, channels, polls, videos and email, and route what matters to Telegram.
+- **`purpose`** keeps a folder of people per use (your rolodex, review leads, …): their transcripts, typed tags and a ranking, then writes to them in order.
+- **`recon`** reads groups (members, posts) so `purpose` can procure people out of them.
 <!-- markdownlint-disable -->
 <details>
 <summary>
@@ -17,7 +19,7 @@ has aggregators of sentiment polls from Twitter and Telegram, interpretation of 
 </summary>
 
 ```sh
-cargo install --git https://github.com/valeratrades/social_networks --branch master
+cargo install --git https://github.com/valeratrades/social_networks --branch main
 ```
 
 ### Email Setup
@@ -97,6 +99,7 @@ to add people (`procure`), and a ranking (`rank`). The config names them under `
 | `rolodex lines [pattern]` | Show what each person wrote in the groups. |
 | `rolodex prune` | Remove each person that left every group and holds no conversation. |
 | `rolodex dm <--platform> <pattern> <text>` | Send one message to one person. |
+| `rolodex send -n <n> [pattern]` | Send what is due in the `outbox/` of exactly `n` people, best ranked first. |
 
 For another purpose, write `purpose <name>` in place of `rolodex`.
 
@@ -117,6 +120,16 @@ from the messages: `interactions` (the days they wrote to you), `last_interactio
 or `venue_activity` (their lines in the groups). A term gives 0 if the person has no value for it. A
 `decay` on a term sets how much it decreases the weight of an old line. With `decay = 0`, each line
 has the same weight.
+
+```
+score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while their newest line is ours
+         └ terms ┘   └──── on the whole result ────┘
+         just sent ×0 · 1w ×½ · 2w ×¾ · 4w ×15/16 · they reply → ×1
+```
+
+So a person you wrote to drops out of the top, and comes back as the decay wears off or as soon as
+they answer. `stale_half_life` sets how fast what a `pull` refreshes goes out of date: `stale` in
+`rank` is how far a `pull` could move the score, and `pull --top <n>` takes the `n` stalest.
 
 Each `pull` reads the groups a person is in from their profile and writes them to their file. `cold`
 removes each person that is in no group you keep, and shows their names. `prune` deletes those files
@@ -197,6 +210,27 @@ one request for each member on it, so it is slow and it waits between requests. 
 each group. The `zone` column is a second signal, but the person sets it in the browser, so it can
 disagree with the position.
 
+## Architecture
+
+```mermaid
+graph LR
+    platforms["Discord / Telegram / Skool / Facebook / Twitter / GitHub / LinkedIn / YouTube / Gmail"]
+    subgraph daemons["daemons: always on"]
+        listen["Client::listen"]
+    end
+    subgraph hand["hand-run"]
+        recon["recon: venues, members, posts"]
+        pull["purpose pull"]
+        rank["purpose rank"]
+        send["purpose dm / send"]
+    end
+    platforms --> listen --> tg["Telegram alerts / output"]
+    platforms --> recon --> venues["venues/platform/slug/year.md"]
+    venues --> procure["purpose procure"] --> people
+    platforms --> pull --> people["person/year.md + __main__.nix"]
+    people --> rank --> send --> platforms
+    send -->|"facebook: our lines"| people
+```
 
 
 <br>
