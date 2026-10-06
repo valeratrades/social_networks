@@ -184,6 +184,14 @@ Skool is the platform that shapes the most around it, because it publishes no AP
 outside a shared group. What that costs, and why a browser sits on the login path and nowhere else,
 is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 
+## Ranking
+
+```
+score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while their newest line is ours
+         └ terms ┘   └──── on the whole result ────┘
+         just sent ×0 · 1w ×½ · 2w ×¾ · 4w ×15/16 · they reply → ×1
+```
+
 ## Key Entities
 
 - `AppConfig` (bin::config): root config with per-service sections. Wrapped in `LiveSettings` for update awareness.

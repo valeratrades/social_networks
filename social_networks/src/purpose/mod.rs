@@ -316,7 +316,7 @@ fn print_ranked(purpose: &Purpose, ranked: &[Ranked]) {
 		let handles: Vec<String> = r.person.handles.iter().map(|(platform, handle)| format!("{platform}/{handle}")).collect();
 		let backfilling = if r.backfilling { " backfilling".yellow().to_string() } else { String::new() };
 		let unanswered = match r.unanswered {
-			Some(c) => format!("{:>10.2}", c),
+			Some(c) => format!("{c:>10.2}"),
 			None => format!("{:>10}", "·"),
 		};
 		println!(
