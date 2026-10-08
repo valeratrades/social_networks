@@ -245,10 +245,14 @@ fn prompt(delta: &Delta<'_>, asked: &BTreeMap<&str, (&TagType, &str)>) -> String
 			"Also respond with `tags`: an object holding every tag listed under Tags below, each set to \
 			 its value as of everything you now know, or null when nothing supports one. Like the \
 			 summary, it is rewritten whole — carry a current value forward unless something \
-			 contradicts it, and never guess: a gap costs less than a wrong value. A birthday is the \
-			 exception: it is never carried forward. Report only the newest statement of their age or \
-			 birth year that you see, with `said_on` the date of the message it is in, or null when it \
-			 is in a platform text; null when nothing states one.\n\n",
+			 contradicts it, and never guess: a gap costs less than a wrong value.\n\n",
+		);
+	}
+	if asked.values().any(|(kind, _)| matches!(kind, TagType::Birthday { .. })) {
+		p.push_str(
+			"A birthday is the exception: it is never carried forward. Report only the newest statement \
+			 of their age or birth year that you see, with `said_on` the date of the message it is in, \
+			 or null when it is in a platform text; null when nothing states one.\n\n",
 		);
 	}
 
