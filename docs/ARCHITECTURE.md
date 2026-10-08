@@ -145,6 +145,8 @@ When an adapter's `listen()` returns an error:
 The email daemon is the one daemon that writes back: a thread its account's `scripts` key opened is
 answered by the LLM toward the script's goal, until it answers that the goal is reached, which goes
 to the alerts channel instead. `--dry-run` sends the drafts there too.
+`--delay <a>..=<b>` holds each reply for a span drawn from the range, in memory: a restart decides
+its message afresh.
 
 `purpose` (and `rolodex`, which is `purpose rolodex`) and `recon` are the commands that are not daemons and notify nobody — they read the same
 sessions on demand and write to disk, and `dm` is the only place anything goes *out* over them (`send` is `dm` over what is due in the outboxes):

@@ -1,4 +1,12 @@
-use std::{convert::Infallible, future::Future, io::Cursor, path::Path, pin::Pin, sync::Arc};
+use std::{
+	collections::BTreeMap,
+	convert::Infallible,
+	future::Future,
+	io::Cursor,
+	path::Path,
+	pin::Pin,
+	sync::{Arc, Mutex},
+};
 
 use clap::Args;
 use color_eyre::eyre::{Context, ContextCompat, Result, eyre};
@@ -7,8 +15,9 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use imap::{ImapConnection, Session};
 use imap_proto::NameAttribute;
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
+use rand::RngExt as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
@@ -17,7 +26,7 @@ use tokio::{
 	time::{self, Duration},
 };
 use tracing::{debug, error, info, instrument};
-use v_utils::{log, macros::MyConfigPrimitives};
+use v_utils::{TimeframeRange, log, macros::MyConfigPrimitives};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
 pub use self::script::Scripts;
@@ -43,6 +52,9 @@ pub struct EmailArgs {
 	/// Post what a script would send to the Telegram alerts channel instead of mailing it
 	#[arg(long)]
 	pub dry_run: bool,
+	/// Hold each scripted reply for a span drawn from this range before sending it, eg `5m..=3h`
+	#[arg(long)]
+	pub delay: Option<TimeframeRange>,
 }
 #[derive(Clone, Debug, MyConfigPrimitives)]
 #[primitives(skip_serialize)]
@@ -130,9 +142,20 @@ pub struct EmailMonitor {
 	rules: CompiledRules,
 	breakers: CircuitBreakers,
 	dry_run: bool,
+	delay: Option<TimeframeRange>,
+	/// by message id
+	held: Arc<Mutex<BTreeMap<String, Held>>>,
 }
 impl EmailMonitor {
-	fn try_new(config: EmailConfig, llm_config: LlmConfig, notifier: TelegramNotifier, db: Database, breakers: CircuitBreakers, dry_run: bool) -> Result<Self> {
+	fn try_new(
+		config: EmailConfig,
+		llm_config: LlmConfig,
+		notifier: TelegramNotifier,
+		db: Database,
+		breakers: CircuitBreakers,
+		dry_run: bool,
+		delay: Option<TimeframeRange>,
+	) -> Result<Self> {
 		let rules = CompiledRules::try_new(&config.rules)?;
 		Ok(Self {
 			config,
@@ -142,15 +165,24 @@ impl EmailMonitor {
 			rules,
 			breakers,
 			dry_run,
+			delay,
+			held: Arc::default(),
 		})
 	}
 
-	pub async fn try_from_configs(email_config: EmailConfig, llm_config: LlmConfig, telegram_config: TelegramConfig, breakers: CircuitBreakers, dry_run: bool) -> Result<Self> {
+	pub async fn try_from_configs(
+		email_config: EmailConfig,
+		llm_config: LlmConfig,
+		telegram_config: TelegramConfig,
+		breakers: CircuitBreakers,
+		dry_run: bool,
+		delay: Option<TimeframeRange>,
+	) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
 		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
-		Self::try_new(email_config, llm_config, notifier, db, breakers, dry_run)
+		Self::try_new(email_config, llm_config, notifier, db, breakers, dry_run, delay)
 	}
 
 	/// Main entry point - dispatches to IMAP or OAuth based on config
@@ -213,7 +245,7 @@ impl EmailMonitor {
 			let mut new = Vec::new();
 			for uid in uids.iter() {
 				let id = format!("{}/imap-{uid}", this.config.email);
-				if !rt.block_on(this.db.is_email_processed(&id))? {
+				if !this.is_held(&id) && !rt.block_on(this.db.is_email_processed(&id))? {
 					new.push((*uid, id));
 				}
 			}
@@ -235,6 +267,20 @@ impl EmailMonitor {
 					error!("Failed to process message {uid}: {e:#}");
 				}
 			}
+			for held in this.take_due() {
+				let Backend::Imap(uid) = held.at else {
+					unreachable!("an IMAP account holds only IMAP messages")
+				};
+				let to = held.decided.verdict.send.as_ref().expect("only replies are held").to.clone();
+				if let Err(e) = this.settle_imap(&rt, &mut session, uid, held.decided) {
+					if classify_email_auth_error(&e).is_some() {
+						return Err(e);
+					}
+					error!("Failed to send the held reply to {to}: {e:#}");
+					continue;
+				}
+				info!("Sent the held reply to {to}");
+			}
 
 			// the run is over either way; a failed LOGOUT leaves nothing behind
 			session.logout().ok();
@@ -251,14 +297,22 @@ impl EmailMonitor {
 		let thread = self.thread_imap(all_mail, latest)?;
 		let latest = thread.last().expect("pushed last");
 
-		let verdict = rt.block_on(self.decide(&thread, latest))?;
-		if let Some(reply) = &verdict.send {
+		let decided = Decided::new(latest, rt.block_on(self.decide(&thread, latest))?);
+		if self.delay.is_some() && decided.verdict.send.is_some() {
+			self.hold_back(decided, Backend::Imap(uid));
+			return Ok(());
+		}
+		self.settle_imap(rt, inbox, uid, decided)
+	}
+
+	fn settle_imap(&self, rt: &Handle, inbox: &mut ImapSession, uid: u32, decided: Decided) -> Result<()> {
+		if let Some(reply) = &decided.verdict.send {
 			rt.block_on(self.send_smtp(reply))?;
 		}
-		if verdict.mark_read {
+		if decided.verdict.mark_read {
 			self.mark_as_read_imap(inbox, uid)?;
 		}
-		rt.block_on(self.db.mark_email_processed(&latest.id, &latest.from, &latest.subject, verdict.action))
+		rt.block_on(self.db.mark_email_processed(&decided.id, &decided.from, &decided.subject, decided.verdict.action))
 	}
 
 	/// Oldest first, in the order `References` lists them. A referenced message this account never held
@@ -371,7 +425,8 @@ impl EmailMonitor {
 		let unread = self.list_unread_oauth(&hub).await?;
 		let mut new = Vec::new();
 		for (gmail_id, thread_id) in &unread {
-			if !self.db.is_email_processed(&format!("{}/{gmail_id}", self.config.email)).await? {
+			let id = format!("{}/{gmail_id}", self.config.email);
+			if !self.is_held(&id) && !self.db.is_email_processed(&id).await? {
 				new.push((gmail_id, thread_id));
 			}
 		}
@@ -387,6 +442,20 @@ impl EmailMonitor {
 				}
 				error!("Failed to process message {gmail_id}: {e:#}");
 			}
+		}
+		for held in self.take_due() {
+			let Backend::Oauth { gmail_id, thread_id } = held.at else {
+				unreachable!("an OAuth account holds only OAuth messages")
+			};
+			let to = held.decided.verdict.send.as_ref().expect("only replies are held").to.clone();
+			if let Err(e) = self.settle_oauth(&hub, &gmail_id, &thread_id, held.decided).await {
+				if classify_email_auth_error(&e).is_some() {
+					return Err(e);
+				}
+				error!("Failed to send the held reply to {to}: {e:#}");
+				continue;
+			}
+			info!("Sent the held reply to {to}");
 		}
 
 		Ok(())
@@ -445,14 +514,28 @@ impl EmailMonitor {
 		let thread = self.thread_oauth(hub, thread_id).await?;
 		let email = thread.iter().find(|m| m.id == id).context("thread does not hold the message listed under it")?;
 
-		let verdict = self.decide(&thread, email).await?;
-		if let Some(reply) = &verdict.send {
+		let decided = Decided::new(email, self.decide(&thread, email).await?);
+		if self.delay.is_some() && decided.verdict.send.is_some() {
+			self.hold_back(
+				decided,
+				Backend::Oauth {
+					gmail_id: gmail_id.to_owned(),
+					thread_id: thread_id.to_owned(),
+				},
+			);
+			return Ok(());
+		}
+		self.settle_oauth(hub, gmail_id, thread_id, decided).await
+	}
+
+	async fn settle_oauth(&self, hub: &Hub, gmail_id: &str, thread_id: &str, decided: Decided) -> Result<()> {
+		if let Some(reply) = &decided.verdict.send {
 			self.send_oauth(hub, thread_id, reply).await?;
 		}
-		if verdict.mark_read {
+		if decided.verdict.mark_read {
 			self.mark_as_read_oauth(hub, gmail_id).await?;
 		}
-		self.db.mark_email_processed(&email.id, &email.from, &email.subject, verdict.action).await
+		self.db.mark_email_processed(&decided.id, &decided.from, &decided.subject, decided.verdict.action).await
 	}
 
 	async fn send_oauth(&self, hub: &Hub, thread_id: &str, reply: &Reply) -> Result<()> {
@@ -509,6 +592,33 @@ impl EmailMonitor {
 	}
 
 	// ==================== Common Logic ====================
+
+	fn hold_back(&self, decided: Decided, at: Backend) {
+		let delay = self.delay.clone().expect("held only under --delay");
+		let wait = SignedDuration::try_from(rand::rng().random_range(delay).duration()).expect("a Timeframe fits a SignedDuration");
+		let to = &decided.verdict.send.as_ref().expect("only replies are held").to;
+		info!("Replying to {to} in {wait:#}");
+		let held = Held {
+			due: Timestamp::now() + wait,
+			at,
+			decided,
+		};
+		self.held.lock().expect("never poisoned: no panics under the lock").insert(held.decided.id.clone(), held);
+	}
+
+	fn is_held(&self, id: &str) -> bool {
+		self.held.lock().expect("never poisoned: no panics under the lock").contains_key(id)
+	}
+
+	fn take_due(&self) -> Vec<Held> {
+		let now = Timestamp::now();
+		let mut held = self.held.lock().expect("never poisoned: no panics under the lock");
+		held.extract_if(.., |_, h| h.due <= now).map(|(_, h)| h).collect()
+	}
+
+	fn next_due(&self) -> Option<Timestamp> {
+		self.held.lock().expect("never poisoned: no panics under the lock").values().map(|h| h.due).min()
+	}
 
 	/// `email` is the unread message that brought the thread up.
 	async fn decide(&self, thread: &[EmailMessage], email: &EmailMessage) -> Result<Verdict> {
@@ -649,6 +759,35 @@ struct Verdict {
 	mark_read: bool,
 }
 
+struct Decided {
+	id: String,
+	from: String,
+	subject: String,
+	verdict: Verdict,
+}
+impl Decided {
+	fn new(email: &EmailMessage, verdict: Verdict) -> Self {
+		Self {
+			id: email.id.clone(),
+			from: email.from.clone(),
+			subject: email.subject.clone(),
+			verdict,
+		}
+	}
+}
+
+/// A reply waiting out `--delay`. In memory only: after a restart its message is decided afresh.
+struct Held {
+	due: Timestamp,
+	at: Backend,
+	decided: Decided,
+}
+
+enum Backend {
+	Imap(u32),
+	Oauth { gmail_id: String, thread_id: String },
+}
+
 fn fetch_raw(session: &mut ImapSession, uid: u32) -> Result<Vec<u8>> {
 	let fetches = session.uid_fetch(uid.to_string(), "BODY.PEEK[]").context("Failed to fetch message")?;
 	Ok(fetches.iter().next().context("Message not found")?.body().context("fetch carries no body")?.to_vec())
@@ -726,7 +865,12 @@ impl AdapterClient for EmailMonitor {
 						info!(failures, "Email monitor reconnected");
 						failures = 0;
 					}
-					time::sleep(Duration::from_secs(60)).await;
+					let tick = Duration::from_secs(60);
+					let sleep = match self.next_due() {
+						Some(due) => tick.min(Timestamp::now().duration_until(due).max(SignedDuration::ZERO).try_into().expect("clamped non-negative")),
+						None => tick,
+					};
+					time::sleep(sleep).await;
 				}
 				Err(e) => {
 					if let Some(detail) = classify_email_auth_error(&e) {
@@ -805,6 +949,7 @@ impl std::fmt::Debug for EmailMonitor {
 			.field("notifier", &self.notifier)
 			.field("db", &self.db)
 			.field("dry_run", &self.dry_run)
+			.field("delay", &self.delay)
 			.finish()
 	}
 }
