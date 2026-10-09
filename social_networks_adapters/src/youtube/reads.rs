@@ -13,6 +13,8 @@ const WATCH: &str = "https://www.youtube.com/watch?v=";
 const CHAPTER_FETCHES: usize = 6;
 /// A session youtube SABR-locks, or a media URL it 403s partway, clears on a fresh one.
 const DOWNLOAD_ATTEMPTS: u64 = 4;
+/// Youtube answers a burst of reads with a 429 or a bot check on the whole IP, which lifts within the hour.
+const THROTTLE_WAITS_MINS: [u64; 4] = [5, 10, 20, 40];
 
 #[derive(Clone, Debug)]
 pub struct Listed {
@@ -253,9 +255,25 @@ fn date(yyyymmdd: &str) -> Result<Date> {
 }
 
 async fn yt_dlp(args: &[&str]) -> Result<String> {
-	let out = Command::new("yt-dlp").arg("--no-update").args(args).output().await.wrap_err("yt-dlp — is it on PATH?")?;
-	if !out.status.success() {
-		bail!("yt-dlp {args:?} failed:\n{}", String::from_utf8_lossy(&out.stderr));
+	//LOOP: bounded by the waits
+	for wait in THROTTLE_WAITS_MINS.into_iter().map(Some).chain([None]) {
+		let out = Command::new("yt-dlp")
+			.args(["--no-update", "--sleep-requests", "1"])
+			.args(args)
+			.output()
+			.await
+			.wrap_err("yt-dlp — is it on PATH?")?;
+		if out.status.success() {
+			return String::from_utf8(out.stdout).wrap_err("yt-dlp prints utf-8");
+		}
+		let stderr = String::from_utf8_lossy(&out.stderr);
+		match wait {
+			Some(mins) if stderr.contains("Sign in to confirm you") || stderr.contains("HTTP Error 429") => {
+				tracing::warn!(mins, "youtube is throttling this IP, waiting it out");
+				tokio::time::sleep(std::time::Duration::from_secs(mins * 60)).await;
+			}
+			_ => bail!("yt-dlp {args:?} failed:\n{stderr}"),
+		}
 	}
-	String::from_utf8(out.stdout).wrap_err("yt-dlp prints utf-8")
+	unreachable!("the last attempt returns or bails")
 }
