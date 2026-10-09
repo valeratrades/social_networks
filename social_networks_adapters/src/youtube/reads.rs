@@ -99,9 +99,10 @@ pub async fn video(id: &str) -> Result<Video> {
 pub async fn download(id: &str, out: &Path) -> Result<()> {
 	yt_dlp(&[
 		// the default client hands back URLs that 403 on download, and the mobile ones are offered
-		// nothing above 360p, at which a dashboard in a screen-share stops being readable
+		// nothing above 360p, at which a dashboard in a screen-share stops being readable. Youtube puts
+		// some sessions of a client on SABR-only streaming, which offers none, so two clients are asked.
 		"--extractor-args",
-		"youtube:player_client=web_embedded",
+		"youtube:player_client=web_embedded,android_vr",
 		// the floor is what makes on-screen text legible and the ceiling is what keeps the pull cheap;
 		// a video offering neither is refused rather than pulled illegible
 		"-f",
