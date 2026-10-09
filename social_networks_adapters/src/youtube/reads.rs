@@ -11,6 +11,8 @@ const WATCH: &str = "https://www.youtube.com/watch?v=";
 /// Youtube serves its chapter markers on about half the fetches of a watch page, so a chapterless
 /// answer is asked again this many times over before it is believed.
 const CHAPTER_FETCHES: usize = 6;
+/// A session youtube SABR-locks, or a media URL it 403s partway, clears on a fresh one.
+const DOWNLOAD_ATTEMPTS: u64 = 4;
 
 #[derive(Clone, Debug)]
 pub struct Listed {
@@ -97,6 +99,24 @@ pub async fn video(id: &str) -> Result<Video> {
 /// One capped pull. Youtube binds a media URL to the player client that asked for it, so anything
 /// seeking into a video has to do it on a local file.
 pub async fn download(id: &str, out: &Path) -> Result<()> {
+	let path = out.to_str().ok_or_else(|| eyre!("{} is not utf-8", out.display()))?;
+	//LOOP: bounded by the attempts
+	for attempt in 1..=DOWNLOAD_ATTEMPTS {
+		if out.exists() {
+			std::fs::remove_file(out).wrap_err_with(|| format!("clearing a cut-short pull at {}", out.display()))?; // `--no-part` leaves it where yt-dlp would read it as done
+		}
+		match pull(id, path).await {
+			Err(e) if attempt < DOWNLOAD_ATTEMPTS => {
+				tracing::warn!(id, attempt, "youtube download failed, retrying on a fresh session: {e}");
+				tokio::time::sleep(std::time::Duration::from_secs(30 * attempt)).await;
+			}
+			done => return done,
+		}
+	}
+	unreachable!("the last attempt returns")
+}
+
+async fn pull(id: &str, out: &str) -> Result<()> {
 	yt_dlp(&[
 		// the default client hands back URLs that 403 on download, and the mobile ones are offered
 		// nothing above 360p, at which a dashboard in a screen-share stops being readable. Youtube puts
@@ -110,7 +130,7 @@ pub async fn download(id: &str, out: &Path) -> Result<()> {
 		"--no-part",
 		"-q",
 		"-o",
-		out.to_str().ok_or_else(|| eyre!("{} is not utf-8", out.display()))?,
+		out,
 		&format!("{WATCH}{id}"),
 	])
 	.await?;
