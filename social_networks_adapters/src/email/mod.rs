@@ -26,7 +26,7 @@ use tokio::{
 	time::{self, Duration},
 };
 use tracing::{debug, error, info, instrument};
-use v_utils::{TimeframeRange, log, macros::MyConfigPrimitives};
+use v_utils::{TimeframeRange, log, macros::MyConfigPrimitives, memory_lease::Lease};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
 pub use self::script::Scripts;
@@ -644,11 +644,13 @@ impl EmailMonitor {
 
 	/// Unread until a human reads it: a reached goal and a dry-run draft are both theirs to act on.
 	async fn hold(&self, script: &Script, thread: &[EmailMessage], email: &EmailMessage) -> Result<Verdict> {
+		let lease = Lease::acquire().await?;
 		let response = ask_llm::Client::new((&self.llm_config).into())
 			.model(ask_llm::Model::Slow)
 			.ask(&script.prompt(&self.config.email, thread))
 			.await
 			.with_context(|| format!("script `{}` on `{}`", script.name(), email.subject))?;
+		drop(lease);
 		debug!("script `{}` on `{}` (cost: {:.4} cents)", script.name(), email.subject, response.cost_cents);
 
 		let verdict = Verdict {
@@ -734,11 +736,13 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 		);
 
 		debug!("Calling LLM for email from: {}", message.from);
+		let lease = Lease::acquire().await?;
 		let response = ask_llm::Client::new((&self.llm_config).into())
 			.model(ask_llm::Model::Medium)
 			.ask(&prompt)
 			.await
 			.with_context(|| format!("Failed to classify email from {}", message.from))?;
+		drop(lease);
 
 		let action = if response.text.trim().to_lowercase().starts_with("yes") {
 			Action::Important

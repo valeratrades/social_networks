@@ -530,9 +530,11 @@ impl Skool {
 			dir: xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("skool")?.join("browser_captures"),
 			retention: Duration::from_secs(14 * 24 * 3600),
 		};
+		let lease = v_utils::memory_lease::Lease::acquire().await?;
 		let browser = Browser::launch(launch, Robot, Some(captures)).await.map_err(crate::browser_failure)?;
 		let cookies = login(&browser, &creds).await;
 		let closed = browser.close().await;
+		drop(lease);
 		std::fs::remove_dir_all(&profile).wrap_err_with(|| format!("failed to remove {}", profile.display()))?;
 		let cookies = cookies?;
 		closed.map_err(crate::browser_failure)?;

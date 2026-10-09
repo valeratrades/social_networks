@@ -226,7 +226,9 @@ async fn analyze_sentiment(title: &str, llm_config: &LlmConfig) -> Result<String
 		Title of the video: {title}"
 	);
 
+	let lease = v_utils::memory_lease::Lease::acquire().await?;
 	let response = ask_llm::Client::new(llm_config.into()).model(ask_llm::Model::Slow).ask(&prompt).await?;
+	drop(lease);
 
 	let sentiment = response.text.split_whitespace().next().ok_or_else(|| eyre!("LLM returned an empty sentiment for {title:?}"))?;
 
