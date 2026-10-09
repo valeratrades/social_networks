@@ -13,8 +13,9 @@ const WATCH: &str = "https://www.youtube.com/watch?v=";
 const CHAPTER_FETCHES: usize = 6;
 /// A session youtube SABR-locks, or a media URL it 403s partway, clears on a fresh one.
 const DOWNLOAD_ATTEMPTS: u64 = 4;
-/// Youtube answers a burst of reads with a 429 or a bot check on the whole IP, which lifts within the hour.
-const THROTTLE_WAITS_MINS: [u64; 4] = [5, 10, 20, 40];
+/// Once youtube says to slow down, no read is sent for this long: persisting past its 429 or bot check is
+/// how a throttled IP becomes a banned one.
+const HOLD: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
 
 #[derive(Clone, Debug)]
 pub struct Listed {
@@ -22,7 +23,6 @@ pub struct Listed {
 	pub uploaded: Date,
 	pub title: String,
 }
-
 #[derive(Clone, Debug)]
 pub struct Video {
 	pub title: String,
@@ -37,13 +37,11 @@ pub struct Video {
 	/// `None` for a video youtube never captioned.
 	pub captions: Option<Vec<Cue>>,
 }
-
 #[derive(Clone, Debug)]
 pub struct Chapter {
 	pub at: f64,
 	pub title: String,
 }
-
 /// One cue of the track. Auto-captions arrive as a rolling two-line window, a few words per cue,
 /// re-sent as the window scrolls.
 #[derive(Clone, Debug)]
@@ -51,14 +49,12 @@ pub struct Cue {
 	pub at: f64,
 	pub text: String,
 }
-
 /// The flat listing is one request and carries no per-video metadata, which is why it is only ever
 /// used for the ids.
 pub async fn uploads(channel: &str) -> Result<Vec<String>> {
 	let out = yt_dlp(&["--flat-playlist", "--print", "%(id)s", channel]).await?;
 	Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
 }
-
 pub async fn listing(ids: &[&str]) -> Result<Vec<Listed>> {
 	if ids.is_empty() {
 		return Ok(Vec::new());
@@ -85,7 +81,6 @@ pub async fn listing(ids: &[&str]) -> Result<Vec<Listed>> {
 	ensure!(listed.len() == ids.len(), "yt-dlp was asked about {ids:?}, and answered:\n{out}");
 	Ok(listed)
 }
-
 pub async fn video(id: &str) -> Result<Video> {
 	let tmp = std::env::temp_dir().join(format!("social_networks-yt-{id}"));
 	// a caption file from an earlier run would be read as this one's
@@ -97,7 +92,6 @@ pub async fn video(id: &str) -> Result<Video> {
 	std::fs::remove_dir_all(&tmp).wrap_err_with(|| format!("removing {}", tmp.display()))?;
 	read
 }
-
 /// One capped pull. Youtube binds a media URL to the player client that asked for it, so anything
 /// seeking into a video has to do it on a local file.
 pub async fn download(id: &str, out: &Path) -> Result<()> {
@@ -108,7 +102,7 @@ pub async fn download(id: &str, out: &Path) -> Result<()> {
 			std::fs::remove_file(out).wrap_err_with(|| format!("clearing a cut-short pull at {}", out.display()))?; // `--no-part` leaves it where yt-dlp would read it as done
 		}
 		match pull(id, path).await {
-			Err(e) if attempt < DOWNLOAD_ATTEMPTS => {
+			Err(e) if attempt < DOWNLOAD_ATTEMPTS && e.downcast_ref::<Hold>().is_none() => {
 				tracing::warn!(id, attempt, "youtube download failed, retrying on a fresh session: {e}");
 				tokio::time::sleep(std::time::Duration::from_secs(30 * attempt)).await;
 			}
@@ -116,6 +110,12 @@ pub async fn download(id: &str, out: &Path) -> Result<()> {
 		}
 	}
 	unreachable!("the last attempt returns")
+}
+#[derive(Debug, thiserror::Error)]
+#[error("youtube said to slow down: no read is sent until {until} — {file}")]
+struct Hold {
+	until: jiff::Timestamp,
+	file: PathBuf,
 }
 
 async fn pull(id: &str, out: &str) -> Result<()> {
@@ -255,25 +255,28 @@ fn date(yyyymmdd: &str) -> Result<Date> {
 }
 
 async fn yt_dlp(args: &[&str]) -> Result<String> {
-	//LOOP: bounded by the waits
-	for wait in THROTTLE_WAITS_MINS.into_iter().map(Some).chain([None]) {
-		let out = Command::new("yt-dlp")
-			.args(["--no-update", "--sleep-requests", "1"])
-			.args(args)
-			.output()
-			.await
-			.wrap_err("yt-dlp — is it on PATH?")?;
-		if out.status.success() {
-			return String::from_utf8(out.stdout).wrap_err("yt-dlp prints utf-8");
-		}
-		let stderr = String::from_utf8_lossy(&out.stderr);
-		match wait {
-			Some(mins) if stderr.contains("Sign in to confirm you") || stderr.contains("HTTP Error 429") => {
-				tracing::warn!(mins, "youtube is throttling this IP, waiting it out");
-				tokio::time::sleep(std::time::Duration::from_secs(mins * 60)).await;
-			}
-			_ => bail!("yt-dlp {args:?} failed:\n{stderr}"),
+	let file = xdg::BaseDirectories::with_prefix("social_networks").place_state_file("youtube_hold")?;
+	if file.exists() {
+		let text = std::fs::read_to_string(&file)?;
+		let until: jiff::Timestamp = text.trim().parse().wrap_err_with(|| format!("{} holds {text:?}, not a timestamp", file.display()))?;
+		if jiff::Timestamp::now() < until {
+			return Err(Hold { until, file }.into());
 		}
 	}
-	unreachable!("the last attempt returns or bails")
+	let out = Command::new("yt-dlp")
+		.args(["--no-update", "--sleep-requests", "1"])
+		.args(args)
+		.output()
+		.await
+		.wrap_err("yt-dlp — is it on PATH?")?;
+	if out.status.success() {
+		return String::from_utf8(out.stdout).wrap_err("yt-dlp prints utf-8");
+	}
+	let stderr = String::from_utf8_lossy(&out.stderr);
+	if stderr.contains("Sign in to confirm you") || stderr.contains("HTTP Error 429") {
+		let until = jiff::Timestamp::now() + HOLD;
+		std::fs::write(&file, until.to_string())?;
+		return Err(Hold { until, file }).wrap_err(format!("yt-dlp {args:?}:\n{stderr}"));
+	}
+	bail!("yt-dlp {args:?} failed:\n{stderr}")
 }
