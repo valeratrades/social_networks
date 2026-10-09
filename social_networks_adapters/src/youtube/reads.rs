@@ -12,12 +12,14 @@ const WATCH: &str = "https://www.youtube.com/watch?v=";
 /// answer is asked again this many times over before it is believed.
 const CHAPTER_FETCHES: usize = 6;
 
+#[derive(Clone, Debug)]
 pub struct Listed {
 	pub id: String,
 	pub uploaded: Date,
 	pub title: String,
 }
 
+#[derive(Clone, Debug)]
 pub struct Video {
 	pub title: String,
 	pub uploaded: Date,
@@ -32,6 +34,7 @@ pub struct Video {
 	pub captions: Option<Vec<Cue>>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Chapter {
 	pub at: f64,
 	pub title: String,
@@ -39,6 +42,7 @@ pub struct Chapter {
 
 /// One cue of the track. Auto-captions arrive as a rolling two-line window, a few words per cue,
 /// re-sent as the window scrolls.
+#[derive(Clone, Debug)]
 pub struct Cue {
 	pub at: f64,
 	pub text: String,
@@ -116,7 +120,6 @@ async fn read(id: &str, tmp: &Path) -> Result<Video> {
 		"--skip-download",
 		// `--print` alone implies `--simulate`, and a simulated run writes no caption file
 		"--no-simulate",
-		"--write-auto-subs",
 		"--write-subs",
 		"--sub-langs",
 		"en.*",
@@ -135,6 +138,21 @@ async fn read(id: &str, tmp: &Path) -> Result<Video> {
 		.collect::<Vec<_>>()
 		.try_into()
 		.map_err(|v| eyre!("yt-dlp was asked for six fields on {id}, and answered {v:?}"))?;
+	// youtube's own `en` track is machine translations of the other tracks, which it answers with a 429
+	if tracks(tmp)?.is_empty() {
+		yt_dlp(&[
+			"--skip-download",
+			"--write-auto-subs",
+			"--sub-langs",
+			"en-orig",
+			"--sub-format",
+			"json3",
+			"-o",
+			tmp.join("%(id)s").to_str().expect("the temp dir is utf-8"),
+			&format!("{WATCH}{id}"),
+		])
+		.await?;
+	}
 	let mut chapters = parse_chapters(chapters, id)?;
 	for _ in 1..CHAPTER_FETCHES {
 		if chapters.is_some() {
@@ -177,9 +195,7 @@ fn parse_chapters(field: &str, id: &str) -> Result<Option<Vec<Chapter>>> {
 		.map(Some)
 }
 
-/// yt-dlp names the track by the language it found, and asks for both the uploader's and youtube's
-/// own. A hand-written track is the better read, and sorting puts its shorter name first.
-fn captions(tmp: &Path) -> Result<Option<Vec<Cue>>> {
+fn tracks(tmp: &Path) -> Result<Vec<PathBuf>> {
 	let mut tracks: Vec<PathBuf> = std::fs::read_dir(tmp)?
 		.map(|e| Ok(e?.path()))
 		.collect::<std::io::Result<Vec<_>>>()?
@@ -187,6 +203,13 @@ fn captions(tmp: &Path) -> Result<Option<Vec<Cue>>> {
 		.filter(|p| p.extension().is_some_and(|e| e == "json3"))
 		.collect();
 	tracks.sort();
+	Ok(tracks)
+}
+
+/// The uploader's track where there is one, else youtube's transcription of the spoken language. Of
+/// several English ones the uploader wrote, sorting puts the plainest name first.
+fn captions(tmp: &Path) -> Result<Option<Vec<Cue>>> {
+	let tracks = tracks(tmp)?;
 	let Some(track) = tracks.first() else { return Ok(None) };
 	let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(track)?).wrap_err_with(|| format!("{} is not json3", track.display()))?;
 	let events = json["events"].as_array().ok_or_else(|| eyre!("{} carries no events", track.display()))?;
