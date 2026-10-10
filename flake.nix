@@ -97,6 +97,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes."browser_manipulation-0.3.0" = "sha256-FCTGZIbAXeq26EuHwa8Rw6yfOKF4NUFdvQ5rSmpoD/4=";
+            outputHashes."derivs-0.1.0" = "sha256-U9l3eEyGiRJV4icpKGFCpR/g8S2CEd9jctmv8TVnNOA=";
           };
           src = pkgs.lib.cleanSource ./.;
         };
