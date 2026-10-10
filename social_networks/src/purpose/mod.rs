@@ -58,6 +58,13 @@ pub enum PurposeCommand {
 		#[arg(long)]
 		noise: Option<dm::Noise>,
 	},
+	/// Record the ranking of matching people as it is computed, and open the page drawing it
+	Graph {
+		pattern: Option<String>,
+		/// The person the page opens on, rather than on the whole cohort
+		#[arg(long)]
+		at: Option<String>,
+	},
 	/// Print what matching people said in every venue, straight out of the transcripts
 	Lines { pattern: Option<String> },
 	/// Open a person file in $EDITOR, creating it when the pattern names nobody yet
@@ -117,6 +124,7 @@ pub async fn main(name: &str, command: PurposeCommand, config: AppConfig) -> Res
 			multi_message,
 			noise,
 		} => dm::send(&config, purpose, (&messenger).into(), &pattern, &text, multi_message, noise.as_ref()).await,
+		PurposeCommand::Graph { pattern, at } => graph(purpose, venues()?, pattern.as_deref(), at.as_deref()),
 		PurposeCommand::Lines { pattern } => lines(purpose, venues()?, pattern.as_deref()),
 		PurposeCommand::Open { pattern } => open(purpose, pattern.as_deref()).await,
 		PurposeCommand::Procure(args) => procure::main(purpose, venues()?, args).await,
@@ -250,6 +258,49 @@ async fn open(purpose: &Purpose, pattern: Option<&str>) -> Result<()> {
 
 fn select(purpose: &Purpose, pattern: Option<&str>) -> Result<Vec<Person>> {
 	Ok(person::load_dir(purpose)?.into_values().filter(|p| pattern.is_none_or(|pattern| p.matches(pattern))).collect())
+}
+
+/// The tape lands in `<state>/graphs/` with its page beside it; the page is opened on `at` when given.
+fn graph(purpose: &Purpose, venues: &Path, pattern: Option<&str>, at: Option<&str>) -> Result<()> {
+	let selected = select(purpose, pattern)?;
+	if selected.is_empty() {
+		bail!("no people in {} matching {}", purpose.path.display(), pattern.unwrap_or("anything"));
+	}
+	let at = match at {
+		None => None,
+		Some(at) => {
+			let matches: Vec<&String> = selected.iter().filter(|p| p.matches(at)).map(|p| &p.name).collect();
+			Some(match matches.len() {
+				0 => bail!("nobody graphed matches `{at}`"),
+				1 => matches[0].clone(),
+				_ => fzf(matches.into_iter(), at)?.ok_or_else(|| eyre!("nobody selected"))?,
+			})
+		}
+	};
+	let mut tape = rank::graph(purpose, venues, selected)?;
+	let mut config = std::hash::DefaultHasher::new();
+	std::hash::Hash::hash(&format!("{purpose:?}"), &mut config);
+	tape.stamp = format!(
+		"{} {} ({}) · purpose `{}` config {:016x}",
+		env!("CARGO_PKG_NAME"),
+		env!("CARGO_PKG_VERSION"),
+		env!("GIT_HASH"),
+		purpose.name,
+		std::hash::Hasher::finish(&config)
+	);
+	let dir = xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("graphs")?;
+	let stem = dir.join(format!("{}-{}", purpose.name, Timestamp::now().strftime("%Y-%m-%dT%H-%M-%SZ")));
+	let (json, html) = (stem.with_extension("json"), stem.with_extension("html"));
+	std::fs::write(&json, serde_json::to_string(&tape)?)?;
+	std::fs::write(&html, derivs_view::html(&tape))?;
+	println!("   {}\n   {}", json.display(), html.display());
+	// the page reads its cursor off the fragment, so the html stays exactly what the tape renders to
+	let url = format!("file://{}{}", html.display(), at.map(|at| format!("#{at}")).unwrap_or_default());
+	let status = Command::new("xdg-open").arg(&url).status().wrap_err("running xdg-open")?;
+	if !status.success() {
+		bail!("xdg-open {url} exited {status}");
+	}
+	Ok(())
 }
 
 /// What they said in a venue, in their own words rather than through the labels a pull made of them.

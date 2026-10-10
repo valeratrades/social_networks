@@ -26,7 +26,8 @@ browser_manipulation = { git = "https://github.com/valeratrades/browser_manipula
 clap = { version = "=4.6.7", features = ["derive", "string"] }
 color-eyre = "=0.6.5"
 colored = "=3.1.1"
-derivs = { path = "/home/v/s/derivs/derivs" }
+derivs = { git = "https://github.com/valeratrades/derivs", tag = "v0.1.0" }
+derivs_view = { git = "https://github.com/valeratrades/derivs", tag = "v0.1.0" }
 derive_more = { version = "=2.1.1", features = ["display"] }
 exchange_interactions = { version = "=0.20.0", default-features = false, features = ["binance"] }
 futures = "=0.3.34"
