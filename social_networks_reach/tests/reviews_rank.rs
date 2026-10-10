@@ -9,8 +9,14 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use derivs::{Kind, Tape};
 use jiff::{SignedDuration, Timestamp, tz::TimeZone};
-use social_networks_reach::{history::ME, person, purpose::Purposes, rank};
+use social_networks_reach::{
+	history::ME,
+	person::{self, Person},
+	purpose::{Purpose, Purposes},
+	rank,
+};
 
 const MINE: bool = true;
 const THEIRS: bool = false;
@@ -44,6 +50,12 @@ fn day_ago(ago: SignedDuration, seconds: i8) -> Timestamp {
 
 /// Best first, with the score each got.
 fn check(cohort: &str, leads: &[Lead]) -> Vec<(String, f64)> {
+	let ranked = on_disk(cohort, leads, |purpose, venues, people| rank::rank(purpose, venues, people).unwrap());
+	ranked.into_iter().map(|r| (r.person.name, r.score)).collect()
+}
+
+/// `leads` written out as person files and year files, loaded and handed to `f` the way a command does.
+fn on_disk<T>(cohort: &str, leads: &[Lead], f: impl FnOnce(&Purpose, &Path, Vec<Person>) -> T) -> T {
 	let dir = std::env::temp_dir().join(format!("social_networks_reviews_rank_{}_{cohort}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
 	let people = dir.join("people");
@@ -71,12 +83,12 @@ fn check(cohort: &str, leads: &[Lead]) -> Vec<(String, f64)> {
 
 	let purpose = reviews(&people);
 	let loaded = person::load_dir(&purpose).unwrap().into_values().collect();
-	let ranked = rank::rank(&purpose, &dir.join("venues"), loaded).unwrap();
+	let out = f(&purpose, &dir.join("venues"), loaded);
 	std::fs::remove_dir_all(&dir).unwrap();
-	ranked.into_iter().map(|r| (r.person.name, r.score)).collect()
+	out
 }
 
-fn reviews(path: &Path) -> social_networks_reach::purpose::Purpose {
+fn reviews(path: &Path) -> Purpose {
 	let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/purposes/reviews.nix");
 	let out = std::process::Command::new("nix")
 		.args(["eval", "--impure", "--json", "--file"])
@@ -187,4 +199,66 @@ fn our_last_message_cools_a_lead_until_it_decays_or_they_answer() {
 	assert_eq!(score(&ranked, "answered"), score(&ranked, "never_messaged"), "their reply lifts it");
 	let (cooled, warm) = (score(&ranked, "messaged_a_month_ago"), score(&ranked, "silent_a_month"));
 	assert!(cooled < warm && cooled > 0.9 * warm, "a month is four half-lives of a week: {cooled} against {warm}");
+}
+
+fn graph(cohort: &str) -> Tape {
+	on_disk(
+		cohort,
+		&[
+			lead(
+				"owner",
+				r#"business = true; birthday = { min = 1999; max = 2001; }; lives_in = { name = "Paris"; lat = 48.8566; lon = 2.3522; };"#,
+			),
+			Lead {
+				name: "talker",
+				tags: "interest = 0.5; last_login = \"2026-01-01T00:00:00Z\";",
+				lines: vec![(at("2026-03-01T10:00:00Z"), THEIRS), (at("2026-03-05T10:00:00Z"), MINE)],
+			},
+			lead("unknown", ""),
+		],
+		|purpose, venues, people| rank::graph(purpose, venues, people).unwrap(),
+	)
+}
+
+/// The shape of the computation, never its values: a node appearing, vanishing or reading something else is what this pins.
+#[test]
+fn the_reviews_ranking_is_this_graph() {
+	let tape = graph("graph_shape");
+	let lines: Vec<String> = tape
+		.nodes()
+		.iter()
+		.map(|node| {
+			let kind = match &node.kind {
+				Kind::Source { writer, .. } => format!("Source by {writer}"),
+				Kind::Reduce { names } => format!("Reduce to {}", names.join(", ")),
+				Kind::Map { .. } => "Map".to_string(),
+				Kind::Cohort => "Cohort".to_string(),
+				Kind::WeightedMean { weights } => format!("WeightedMean {weights:?}"),
+				Kind::Gate => "Gate".to_string(),
+			};
+			let deps: Vec<&str> = node.deps.iter().map(|id| tape.node(*id).name.as_str()).collect();
+			match deps.is_empty() {
+				true => format!("{:<22} {kind}", node.name),
+				false => format!("{:<22} {kind} <- {}", node.name, deps.join(", ")),
+			}
+		})
+		.collect();
+	insta::assert_snapshot!(lines.join("\n"));
+}
+
+/// A term relative to the cohort reads the cohort: its `v` has an edge from what it reduced everybody to.
+#[test]
+fn every_cohort_coupled_term_reads_a_reduction() {
+	let tape = graph("graph_reductions");
+	for of in ["interactions", "last_interaction", "last_login"] {
+		let v = tape.nodes().iter().find(|n| n.name == format!("{of}.v")).unwrap_or_else(|| panic!("{of}.v is recorded"));
+		assert!(v.deps.iter().any(|id| matches!(tape.node(*id).kind, Kind::Reduce { .. })), "{of}.v reads no reduction");
+	}
+}
+
+#[test]
+fn a_tape_round_trips_through_json() {
+	let tape = graph("graph_json");
+	let json = serde_json::to_string(&tape).unwrap();
+	assert_eq!(serde_json::from_str::<Tape>(&json).unwrap(), tape);
 }

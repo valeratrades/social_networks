@@ -1,0 +1,28 @@
+---
+source: social_networks_reach/tests/reviews_rank.rs
+expression: "lines.join(\"\\n\")"
+---
+business               Source by extraction
+business.v             Map <- business
+interactions           Source by pull
+interactions.max       Reduce to max <- interactions
+interactions.v         Map <- interactions, interactions.max
+last_interaction       Source by pull
+last_interaction.span  Reduce to newest, width <- last_interaction
+last_interaction.v     Map <- last_interaction, last_interaction.span
+last_login             Source by human
+last_login.span        Reduce to newest, width <- last_login
+last_login.v           Map <- last_login, last_login.span
+interest               Source by extraction
+interest.v             Map <- interest
+birthday               Source by pull
+birthday.v             Map <- birthday
+lives_in               Source by pull
+lives_in.v             Map <- lives_in
+Σw·v/Σw                WeightedMean [7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0] <- business.v, interactions.v, last_interaction.v, last_login.v, interest.v, birthday.v, lives_in.v
+ours_unanswered        Source by send
+unanswered             Map <- ours_unanswered
+score                  Gate <- Σw·v/Σw, unanswered
+fetched                Source by pull
+reasoned               Source by pull
+stale                  Cohort <- business.v, interactions.v, last_interaction.v, last_login.v, interest.v, birthday.v, lives_in.v, fetched, reasoned
