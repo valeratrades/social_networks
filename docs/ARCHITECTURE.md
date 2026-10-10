@@ -57,7 +57,7 @@ social_networks/
 │   │   ├── venue.rs                        # `<venues>/<platform>/<slug>/`, the line reader, roster selection
 │   │   ├── person.rs                       # `<person>/__main__.nix`, typed tag values
 │   │   ├── purpose.rs                      # `purposes.<name>`: folder, tag vocabulary, procurement, ranking — checked at load
-│   │   ├── rank.rs                         # the one ranking formula, the log-age recency axis, the decay over a lead whose last line is ours
+│   │   ├── rank.rs                         # the one ranking formula, computed through a `derivs::Tape`; the log-age recency axis, the decay over a lead whose last line is ours
 │   │   └── recon.rs                        # the venue axis, hand-run
 │   └── tests/                              # the ranking's invariants over `examples/purposes/reviews.nix`; groups; facts
 │
@@ -204,7 +204,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
 - `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
-- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `stale_half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it. The score as a whole is then ×`(1 − 2^(−Δt / unanswered_half_life))` while their newest line is ours.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `stale_half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it. The score as a whole is then ×`(1 − 2^(−Δt / unanswered_half_life))` while their newest line is ours. Evaluated through a [derivs](https://github.com/valeratrades/derivs) `Tape`, which `purpose <name> graph` writes out and draws.
 
 ## Invariants
 
@@ -219,6 +219,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
 - **`recon` is never invoked by a daemon**: rate-limit and account-safety exposure stays human-initiated, which is why it is a binary of `social_networks_reach` rather than a subcommand of the app. `procure` fetches nothing — it selects over what `recon` wrote.
+- **The ranking is computed through its tape**: `rank` reads every value off a `derivs::Tape`, so the graph `purpose <name> graph` draws is the computation itself, never a description of it.
 - **A purpose is checked whole at load**: no command holds a purpose whose ranking, procurement or people disagree with its vocabulary.
 - **A fact outranks its seed**: `lives_in` and `birthday` are tags platforms state. `procure` seeds `lives_in` from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.

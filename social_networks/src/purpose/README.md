@@ -177,6 +177,12 @@ stale = Σ_t  (w_t / Σw)  ·  (1 − 2^(−Δt / stale_half_life))  ·  E|v_t �
 V_t  t's values across those already synced, plus one uniform draw on [0,1] — so an empty cohort still spreads
 ```
 
+`graph [pattern] [--at <person>]` is `rank` recorded as it is computed: a
+[derivs](https://github.com/valeratrades/derivs) tape at `<state>/graphs/<purpose>-<UTC>.json`, and beside it
+the page drawing it, opened on `--at` when given. The graph is the computation, never a description of it,
+so what it shows is what ranked them: what each term was allocated against what it delivered, what reorders
+the cohort, every shape with where the cohort sits on it, and one person's 100 points.
+
 `cold [pattern]` is `rank` restricted to everybody no conversation is on record with, on any platform
 that could hold one. A venue line is not one — it never entered their year files — so a member
 `procure` wrote a file for stays cold until they are written to.
