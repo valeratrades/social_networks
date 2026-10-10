@@ -16,7 +16,7 @@ use social_networks_adapters::{
 };
 use social_networks_reach::{
 	history,
-	person::{self, Person},
+	person::{self, Person, Refused},
 	purpose::Purpose,
 };
 use social_networks_utils::db::Database;
@@ -200,11 +200,16 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	let mut person = person.clone();
 	let was = person.unreachable.remove(platform);
 	if let Err(e) = &sent
-		&& let Some(refusal) = e.downcast_ref::<Unreachable>()
+		&& let Some(Unreachable { refusal, said }) = e.downcast_ref::<Unreachable>()
 	{
-		person.unreachable.insert(platform.to_string(), refusal.to_string());
+		let refused = Refused {
+			why: *refusal,
+			said: said.clone(),
+			at: Timestamp::now(),
+		};
+		person.unreachable.insert(platform.to_string(), refused);
 	}
-	if was != person.unreachable.get(platform).cloned() {
+	if was.is_some() || person.unreachable.contains_key(platform) {
 		person.write(dir)?;
 	}
 	let read_back = match messenger {

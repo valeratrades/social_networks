@@ -225,7 +225,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - **Facebook**:
   - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;
   - reads click nothing: pages are loaded by URL and read from the JSON they embed and the GraphQL they fetch. A send is the one thing that clicks buttons and types: through the prompts Messenger stands in front of the composer of a conversation loaded by URL, then into the composer, then Enter. Noise (`Browsing`) clicks links and types into the search field, and nothing else: it presses no button, so nothing it does outlives the next load by URL;
-  - a message counts as sent only once the conversation shows it; a refusal about the recipient is `Unreachable`, anything else the page says is an error;
+  - a message counts as sent only once the conversation shows it; a refusal about the recipient is `Unreachable`, typed by its `Refusal` (`closed`, `dormant`, `absent`, `unshared`) and kept on the person with when it was said; anything else the page says is an error;
   - no request is ours: resuming a city query partway rewrites the `cursor` variable of the page's own next pagination request (`Tab::route`), and nothing else;
   - `city` never launches a browser, and `group`, profile visits and sends never use the user's;
   - messages go out from `facebook.send`'s own chrome profile and state, or from the launched session's when it is unset;

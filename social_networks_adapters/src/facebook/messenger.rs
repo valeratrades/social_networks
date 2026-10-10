@@ -12,7 +12,7 @@ use tracing::info;
 use super::{FEED, Facebook, Session};
 use crate::{
 	behaviour::Action,
-	reach::{Direct, Page, Unreachable, Window},
+	reach::{Direct, Page, Refusal, Unreachable, Window},
 };
 
 const COMPOSER: &str = r#"[role="main"] [role="textbox"][contenteditable="true"][aria-label^="Write to "]"#;
@@ -24,14 +24,14 @@ const PASSES: usize = 8;
 /// What the line under a bubble starts with once it went out.
 const SENT: &[&str] = &["Sent", "Delivered"];
 /// About them: nothing from this account reaches them.
-const REFUSED: &[&str] = &[
-	"you can't message",
-	"can't reply to this conversation",
-	"isn't available on messenger",
-	"not available on messenger",
-	"unavailable on messenger",
-	"isn't receiving messages",
-	"can't access this chat yet", // until they next log into messenger
+const REFUSED: &[(&str, Refusal)] = &[
+	("you can't message", Refusal::Closed), // "you can't message this account. it may help to add them as a friend on facebook."
+	("can't reply to this conversation", Refusal::Closed),
+	("isn't receiving messages", Refusal::Closed),
+	("isn't available on messenger", Refusal::Absent),
+	("not available on messenger", Refusal::Absent),
+	("unavailable on messenger", Refusal::Absent),
+	("can't access this chat yet", Refusal::Dormant), // "you'll be able to send messages when <name> next logs into messenger"
 ];
 /// About us, or about nobody we can tell: a send after it would meet the same.
 const FAILED: &[&str] = &[
@@ -103,8 +103,12 @@ impl Facebook<'_, '_> {
 				}
 				Err(e) => return Err(e),
 			};
-			if let Some(m) = REFUSED.iter().find(|m| seen.text.contains(**m)) {
-				return Err(Unreachable(format!("facebook says \"{m}\"")).into());
+			if let Some((m, refusal)) = REFUSED.iter().find(|(m, _)| seen.text.contains(m)) {
+				return Err(Unreachable {
+					refusal: *refusal,
+					said: seen.text.lines().find(|l| l.contains(m)).expect("a marker holds no line break").trim().to_string(),
+				}
+				.into());
 			}
 			if let Some(m) = FAILED.iter().find(|m| seen.text.contains(**m)) {
 				bail!("facebook says \"{m}\"; stop and look at the conversation before sending again");

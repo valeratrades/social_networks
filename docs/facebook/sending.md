@@ -23,7 +23,7 @@ Each point is **observed** (seen on the burner, 2026-10-05/06, with `examples/fa
 - The composer is clicked into, typed at ~180 ms a key with the odd corrected typo; then the recipients must still be the ones read before typing and the composer must hold the text, or nothing is sent. Enter sends.
 - A bubble cannot hold a line break (Enter sends), so a multi-paragraph message needs `--multi-message`, which sends each paragraph as its own bubble 2–6 s apart.
 - Sent = the composer is empty again, the conversation shows the text once more than before, and the line under its last bubble starts with "Sent" or "Delivered".
-- A burst's next bubble after a new message view's first one loads the conversation afresh, since that view is about to turn into the thread. A refusal phrase (`you can't message`, `unavailable on messenger`, …) is `Unreachable` on the person; a limit or `not sent` phrase stops the run.
+- A burst's next bubble after a new message view's first one loads the conversation afresh, since that view is about to turn into the thread. A refusal phrase is `Unreachable` with its `Refusal`: `closed` (`you can't message`, `isn't receiving messages`, `can't reply to this conversation`), `absent` (`… available on messenger`), `dormant` (`can't access this chat yet`: an encrypted chat with no key of theirs until they next open Messenger), on the person; a limit or `not sent` phrase stops the run.
 
 ## Unverified
 - the wording of refusals and limits: an unlisted wording times out as an error rather than passing, but it is not recorded as `Unreachable` either.

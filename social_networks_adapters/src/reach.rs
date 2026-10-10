@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, path::Path, str::FromStr, time::Duration};
 use color_eyre::eyre::{Result, bail, eyre};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use strum::{AsRefStr, EnumIter, EnumString};
+use strum::{AsRefStr, Display, EnumIter, EnumString};
 use tracing::warn;
 
 /// The window the extraction prompt reads, and therefore how much of a conversation a first
@@ -331,12 +331,30 @@ impl Author {
 	}
 }
 
-/// The platform answered about *them*: there is no path to this person, and asking again cannot make
-/// one. Carried as its own type so the caller can tell it from a transport failure, which says
-/// nothing about them and must not be recorded against them.
+/// The platform answered about *them*: there is no path to this person now. Carried as its own type
+/// so the caller can tell it from a transport failure, which says nothing about them and must not be
+/// recorded against them.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Unreachable(pub String);
+#[error("{refusal}: {said}")]
+pub struct Unreachable {
+	pub refusal: Refusal,
+	/// the platform's own words
+	pub said: String,
+}
+/// Why a platform will not carry a message to somebody; each is about them, none about our session.
+#[derive(AsRefStr, Clone, Copy, Debug, Deserialize, Display, EnumString, Eq, PartialEq, Serialize)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum Refusal {
+	/// their settings, or a block, keep us out
+	Closed,
+	/// nothing of theirs to deliver to until they next open the messenger
+	Dormant,
+	/// no account there to carry it: deactivated, or never on the messenger
+	Absent,
+	/// a chat needs a place in common, and there is none
+	Unshared,
+}
 
 /// An image is kept: converted once, under a name its own id determines, so a re-download costs
 /// nothing. Everything else is named and not kept — a transcript that says a file went by is worth

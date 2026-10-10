@@ -40,8 +40,17 @@ pub async fn main(config: &AppConfig, purpose: &Purpose, venues: &Path, pattern:
 	for ranked in rank::rank(purpose, venues, select(purpose, pattern)?)? {
 		let Some(due) = outbox::due(&ranked.person.dir(&purpose.path), now)? else { continue };
 		let messenger = Messenger::from_str(&due.messenger).wrap_err_with(|| format!("{} is not under a messenger's directory", due.path.display()))?;
-		if let Some(why) = ranked.person.unreachable.get(messenger.as_ref()) {
-			println!("   {} {} ({}): unreachable on {}: {why}", "·".dimmed(), ranked.person.name, due.at, messenger.as_ref());
+		if let Some(refused) = ranked.person.unreachable.get(messenger.as_ref()) {
+			println!(
+				"   {} {} ({}): {} on {} since {}: {}",
+				"·".dimmed(),
+				ranked.person.name,
+				due.at,
+				refused.why,
+				messenger.as_ref(),
+				refused.at,
+				refused.said
+			);
 			continue;
 		}
 		sendable.push((ranked.person, messenger, due));

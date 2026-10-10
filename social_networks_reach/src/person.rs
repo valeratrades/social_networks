@@ -6,7 +6,7 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr, bail};
 use jiff::{Timestamp, civil::Date};
 use serde::Deserialize;
-use social_networks_adapters::reach::Place;
+use social_networks_adapters::reach::{Place, Refusal};
 
 use crate::purpose::{Purpose, snake, snake_keys};
 
@@ -49,11 +49,11 @@ pub struct Person {
 	/// been asked about must not read as one who has left everywhere.
 	#[serde(default)]
 	pub venues: Option<Vec<String>>,
-	/// Platform → what it said when it refused to carry a message to them. Only ever written from an
+	/// Platform → its last refusal to carry a message to them. Only ever written from an
 	/// [`Unreachable`](social_networks_adapters::reach::Unreachable), so a network failure or an
 	/// expired session cannot strand somebody here; cleared the moment a send to them lands.
 	#[serde(default)]
-	pub unreachable: BTreeMap<String, String>,
+	pub unreachable: BTreeMap<String, Refused>,
 }
 impl Person {
 	pub fn skeleton(name: &str) -> Self {
@@ -129,7 +129,7 @@ impl Person {
 	/// an unchanged `discord:note` from reading as changed on every pull.
 	fn normalize(&mut self) {
 		self.summary = self.summary.trim_end().to_string();
-		for value in self.sources.values_mut().chain(self.unreachable.values_mut()) {
+		for value in self.sources.values_mut().chain(self.unreachable.values_mut().map(|r| &mut r.said)) {
 			*value = value.trim_end().to_string();
 		}
 	}
@@ -140,6 +140,15 @@ impl Person {
 		let path = self.path(root);
 		std::fs::write(&path, render(self)).wrap_err_with(|| format!("failed to write {}", path.display()))
 	}
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Refused {
+	pub why: Refusal,
+	/// the platform's own words
+	pub said: String,
+	pub at: Timestamp,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -326,8 +335,14 @@ fn render(person: &Person) -> String {
 
 	if !person.unreachable.is_empty() {
 		s.push_str("  unreachable = {\n");
-		for (platform, reason) in &person.unreachable {
-			s.push_str(&format!("    {} = {};\n", nix_attr(platform), nix_str(reason, 4)));
+		for (platform, Refused { why, said, at }) in &person.unreachable {
+			s.push_str(&format!(
+				"    {} = {{ why = {}; at = {}; said = {}; }};\n",
+				nix_attr(platform),
+				nix_dq(why.as_ref()),
+				nix_dq(&at.to_string()),
+				nix_str(said, 4)
+			));
 		}
 		s.push_str("  };\n");
 	}
@@ -473,7 +488,14 @@ mod tests {
 				("telegram:about".to_string(), "lol. 🧉. jenat.\n  indented second line".to_string()),
 			]),
 			venues: Some(vec!["skool:20kmodrop".to_string(), "telegram:some/chat".to_string()]),
-			unreachable: BTreeMap::from([("skool".to_string(), "no group of mine opens a chat with them:\n400: not a member".to_string())]),
+			unreachable: BTreeMap::from([(
+				"skool".to_string(),
+				Refused {
+					why: Refusal::Unshared,
+					said: "no group of mine opens a chat with them:\n400: not a member".to_string(),
+					at: "2026-10-09T10:00:00Z".parse().unwrap(),
+				},
+			)]),
 		};
 
 		let _ = std::fs::remove_dir_all(&dir);
