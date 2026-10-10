@@ -646,6 +646,16 @@ fn next_after(ids: &[u64], limit: usize) -> Option<u64> {
 	(ids.len() == limit).then(|| ids.iter().copied().max().expect("a full page is non-empty"))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct DiscordMessage {
+	op: u8,
+	d: Option<serde_json::Value>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	s: Option<u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	t: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -710,14 +720,4 @@ mod tests {
 		let blip = now - SignedDuration::from_mins(2);
 		assert_eq!(backfill_cutoff(blip, now, horizon), blip);
 	}
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct DiscordMessage {
-	op: u8,
-	d: Option<serde_json::Value>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	s: Option<u64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	t: Option<String>,
 }
