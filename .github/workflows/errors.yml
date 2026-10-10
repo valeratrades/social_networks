@@ -46,7 +46,7 @@ jobs:
 
         # Use nix-shell which properly sets up env vars like PKG_CONFIG_PATH
 
-        nix-shell -p mold pkg-config openssl.out openssl.dev --run "echo packages
+        nix-shell -p mold pkg-config openssl.out openssl.dev git --run "echo packages
         cached"
 
         '
@@ -104,7 +104,7 @@ jobs:
       run: echo "RUSTFLAGS=-Dwarnings" >> $GITHUB_ENV
     - if: matrix.rust == 'nightly'
       name: Enable type layout randomization
-      run: 'nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+      run: 'nix-shell -p mold pkg-config openssl.out openssl.dev git --command "export
         LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
@@ -121,19 +121,19 @@ jobs:
       uses: actions/download-artifact@v7
       with:
         name: modified-cargo-files
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev git --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo update"
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev git --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo check"
-    - run: nix-shell -p mold pkg-config openssl.out openssl.dev --command "export
+    - run: nix-shell -p mold pkg-config openssl.out openssl.dev git --command "export
         LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
