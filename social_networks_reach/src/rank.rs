@@ -325,7 +325,7 @@ fn record(tape: &mut Tape, purpose: &Purpose, term: &Term, people: &[Person], fa
 			recency(tape, of, raw, *decay)
 		}
 		Signal::Interactions => {
-			let cells = facts.iter().map(|f| (f.days > 0 && !f.backfilling).then(|| Cell::At(f.days as f64))).collect();
+			let cells = facts.iter().map(|f| (f.days > 0 && !f.backfilling).then_some(Cell::At(f.days as f64))).collect();
 			let raw = tape.source(of, writer, Some("days with a line by them"), transcripts, cells);
 			let top = tape.reduce(&format!("{of}.max"), &[raw], ["max"], |c| c[0].iter().flatten().map(point).reduce(f64::max).map(|top| [top]));
 			tape.map(&v, raw, &[top], Some([0.0, 1.0]), |c, s| point(c) / s[0])
