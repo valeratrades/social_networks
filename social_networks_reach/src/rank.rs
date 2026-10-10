@@ -18,10 +18,12 @@
 //! whatever cohort `Span::over` was handed, so ranking somebody alone would place their oldest
 //! line at the same recency as anybody else's newest.
 
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, path::Path, time::Duration};
 
 use color_eyre::eyre::Result;
+use derivs::{Cell, Fidelity, Id, Tape};
 use jiff::{Timestamp, tz::TimeZone};
+use v_utils::Timeframe;
 
 use crate::{
 	history::{self, ME},
@@ -48,8 +50,18 @@ pub struct Ranked {
 /// Best first. Every cohort-relative term is relative to `people`, so the same person ranks
 /// differently among different people.
 pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec<Ranked>> {
+	Ok(evaluate(purpose, venues, people)?.0)
+}
+
+/// The ranking of `people` as it was computed, one row per person in the order given.
+pub fn graph(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Tape> {
+	Ok(evaluate(purpose, venues, people)?.1)
+}
+
+fn evaluate(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<(Vec<Ranked>, Tape)> {
 	let reads = |f: fn(&Signal) -> bool| purpose.rank.iter().any(|term| f(&term.signal));
 	let in_venues = reads(|s| matches!(s, Signal::VenueActivity { .. }));
+	let now = Timestamp::now();
 
 	let mut facts = Vec::with_capacity(people.len());
 	for person in &people {
@@ -76,37 +88,58 @@ pub fn rank(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<Vec
 		});
 	}
 
-	let columns: Vec<Vec<Option<f64>>> = purpose.rank.iter().map(|term| column(term, &people, &facts)).collect();
-	let total: f64 = purpose.rank.iter().map(|term| term.weight).sum();
-	let stale = staleness(purpose, &columns, &facts, total);
-	let now = Timestamp::now();
+	let mut tape = Tape::new(people.iter().map(|p| p.name.clone()).collect(), String::new());
+	let since = |at: Timestamp| {
+		let since = now.duration_since(at);
+		assert!(!since.is_negative(), "{at} is after now");
+		since.unsigned_abs().as_secs_f64()
+	};
+	let terms: Vec<Id> = purpose.rank.iter().map(|term| record(&mut tape, purpose, term, &people, &facts, now)).collect();
+	let mean = tape.weighted_mean("Σw·v/Σw", &purpose.rank.iter().zip(&terms).map(|(term, id)| (*id, term.weight)).collect::<Vec<_>>());
+	let ours = tape.source(
+		"ours_unanswered",
+		"send",
+		Some("seconds since our line, when it is the newest"),
+		Fidelity::Exact,
+		facts.iter().map(|f| f.last_ours.map(|at| Cell::At(since(at)))).collect(),
+	);
+	let half_life = purpose.unanswered_half_life;
+	let four = 4.0
+		* half_life
+			.to_string()
+			.parse::<Timeframe>()
+			.expect("a half-life is written as a timeframe")
+			.duration()
+			.as_secs_f64();
+	let unanswered = tape.map("unanswered", ours, &[], Some([0.0, four]), |c, _| 1.0 - half_life.left(Duration::from_secs_f64(point(c))));
+	let score = tape.gate("score", mean, unanswered);
+	let synced = [("fetched", Refresh::Fetch), ("reasoned", Refresh::Reasoning)].map(|(name, by)| {
+		let cells = facts.iter().map(|f| synced(f, by).map(|at| Cell::At(since(at)))).collect();
+		tape.source(name, "pull", Some("seconds since"), Fidelity::Exact, cells)
+	});
+	let stale = staleness(&mut tape, purpose, &terms, synced);
+
+	let columns: Vec<Vec<Option<f64>>> = terms.iter().map(|id| tape.at(*id)).collect();
+	let (means, scores, unanswered, stale) = (tape.at(mean), tape.at(score), tape.at(unanswered), tape.at(stale));
 	let mut ranked: Vec<Ranked> = people
 		.into_iter()
 		.zip(facts)
-		.zip(stale)
 		.enumerate()
-		.map(|(i, ((person, facts), stale))| {
-			let terms: Vec<Option<f64>> = columns.iter().map(|column| column[i]).collect();
-			// absent is no credit, which makes every term a bonus
-			let score = purpose.rank.iter().zip(&terms).map(|(term, v)| term.weight * v.unwrap_or(0.0)).sum::<f64>() / total;
-			assert!((0.0..=1.0).contains(&score), "{}: a weighted mean of values in [0, 1] came out {score}", person.name);
-			let unanswered = facts.last_ours.map(|at| {
-				let since = now.duration_since(at);
-				assert!(!since.is_negative(), "{}: our last line is at {at}, which is after now", person.name);
-				1.0 - purpose.unanswered_half_life.left(since.unsigned_abs())
-			});
+		.map(|(i, (person, facts))| {
+			let mean = means[i].expect("a mean is on every row");
+			assert!((0.0..=1.0).contains(&mean), "{}: a weighted mean of values in [0, 1] came out {mean}", person.name);
 			Ranked {
 				person,
-				score: score * unanswered.unwrap_or(1.0), // their line is the newest, nothing to decay
-				terms,
+				score: scores[i].expect("a gate is on every row"),
+				terms: columns.iter().map(|column| column[i]).collect(),
 				backfilling: facts.backfilling,
-				stale,
-				unanswered,
+				stale: stale[i].expect("staleness is on every row"),
+				unanswered: unanswered[i],
 			}
 		})
 		.collect();
 	ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).expect("a score is finite"));
-	Ok(ranked)
+	Ok((ranked, tape))
 }
 
 /// What their transcripts say, derived at rank time and never stored.
@@ -124,156 +157,229 @@ struct Facts {
 	reasoned_at: Option<Timestamp>,
 }
 
-/// Per person, `Σ_t share_t · P(changed since the pull that refreshes t) · E|v_t − V_t|`, `V_t` being the
-/// values of those that pull already reached plus one uniform draw, so an empty cohort still spreads.
-fn staleness(purpose: &Purpose, columns: &[Vec<Option<f64>>], facts: &[Facts], total: f64) -> Vec<f64> {
-	let now = Timestamp::now();
-	let refresh: Vec<Refresh> = purpose.rank.iter().map(|term| purpose.refreshed_by(term)).collect();
-	let synced = |f: &Facts, by: Refresh| match by {
+fn synced(f: &Facts, by: Refresh) -> Option<Timestamp> {
+	match by {
 		Refresh::Fetch => f.fetched_at,
 		Refresh::Reasoning => f.reasoned_at,
 		Refresh::Never => None,
-	};
-	// sorted, with running sums, so `Σ_c |v − c|` is a binary search rather than a pass over the cohort
-	let cohorts: Vec<(Vec<f64>, Vec<f64>)> = columns
-		.iter()
-		.zip(&refresh)
-		.map(|(column, by)| {
-			let mut sorted: Vec<f64> = column.iter().zip(facts).filter(|(_, f)| synced(f, *by).is_some()).map(|(v, _)| v.unwrap_or(0.0)).collect();
-			sorted.sort_by(f64::total_cmp);
-			let sums = std::iter::once(0.0)
-				.chain(sorted.iter().scan(0.0, |sum, v| {
-					*sum += v;
-					Some(*sum)
-				}))
-				.collect();
-			(sorted, sums)
-		})
-		.collect();
-	(0..facts.len())
-		.map(|i| {
-			let stale = purpose
-				.rank
-				.iter()
-				.zip(&refresh)
-				.zip(columns.iter().zip(&cohorts))
-				.filter(|((_, by), _)| **by != Refresh::Never)
-				.map(|((term, by), (column, (sorted, sums)))| {
-					let changed = match synced(&facts[i], *by) {
-						None => 1.0,
-						Some(at) => {
-							let since = now.duration_since(at);
-							assert!(!since.is_negative(), "synced at {at}, which is after now");
-							1.0 - purpose.stale_half_life.left(since.unsigned_abs())
-						}
-					};
-					let v = column[i].unwrap_or(0.0);
-					let (k, m) = (sorted.partition_point(|c| *c < v), sorted.len());
-					let (below, all) = (sums[k], sums[m]);
-					let apart = v * k as f64 - below + (all - below) - v * (m - k) as f64;
-					let far = (apart + v * v - v + 0.5) / (m + 1) as f64;
-					term.weight / total * changed * far
-				})
-				.sum::<f64>();
-			assert!((0.0..=1.0).contains(&stale), "a weighted mean of values in [0, 1] came out {stale}");
-			stale
-		})
-		.collect()
+	}
 }
 
-fn column(term: &Term, people: &[Person], facts: &[Facts]) -> Vec<Option<f64>> {
-	let tags = || people.iter().map(|person| person.tags.get(&term.of).and_then(Option::as_ref));
-	let mistyped = |v: &Value| -> ! { unreachable!("`{}` = {} was typed against the purpose at load", term.of, v.nix()) };
+/// Per person, `Σ_t share_t · P(changed since the pull that refreshes t) · E|v_t − V_t|`, `V_t` being the
+/// values of those that pull already reached plus one uniform draw, so an empty cohort still spreads.
+fn staleness(tape: &mut Tape, purpose: &Purpose, terms: &[Id], [fetched, reasoned]: [Id; 2]) -> Id {
+	let refresh: Vec<Refresh> = purpose.rank.iter().map(|term| purpose.refreshed_by(term)).collect();
+	let total: f64 = purpose.rank.iter().map(|term| term.weight).sum();
+	let deps: Vec<Id> = terms.iter().copied().chain([fetched, reasoned]).collect();
+	tape.cohort("stale", &deps, |columns| {
+		let (columns, [fetched, reasoned]) = columns.split_at(terms.len()) else { unreachable!() };
+		let since = |i: usize, by: Refresh| match by {
+			Refresh::Fetch => fetched[i].as_ref().map(point),
+			Refresh::Reasoning => reasoned[i].as_ref().map(point),
+			Refresh::Never => None,
+		};
+		let v = |column: &[Option<Cell>], i: usize| column[i].as_ref().map_or(0.0, point);
+		// sorted, with running sums, so `Σ_c |v − c|` is a binary search rather than a pass over the cohort
+		let cohorts: Vec<(Vec<f64>, Vec<f64>)> = columns
+			.iter()
+			.zip(&refresh)
+			.map(|(column, by)| {
+				let mut sorted: Vec<f64> = (0..column.len()).filter(|i| since(*i, *by).is_some()).map(|i| v(column, i)).collect();
+				sorted.sort_by(f64::total_cmp);
+				let sums = std::iter::once(0.0)
+					.chain(sorted.iter().scan(0.0, |sum, v| {
+						*sum += v;
+						Some(*sum)
+					}))
+					.collect();
+				(sorted, sums)
+			})
+			.collect();
+		(0..fetched.len())
+			.map(|i| {
+				let stale = purpose
+					.rank
+					.iter()
+					.zip(&refresh)
+					.zip(columns.iter().zip(&cohorts))
+					.filter(|((_, by), _)| **by != Refresh::Never)
+					.map(|((term, by), (column, (sorted, sums)))| {
+						let changed = match since(i, *by) {
+							None => 1.0,
+							Some(since) => 1.0 - purpose.stale_half_life.left(Duration::from_secs_f64(since)),
+						};
+						let v = v(column, i);
+						let (k, m) = (sorted.partition_point(|c| *c < v), sorted.len());
+						let (below, all) = (sums[k], sums[m]);
+						let apart = v * k as f64 - below + (all - below) - v * (m - k) as f64;
+						let far = (apart + v * v - v + 0.5) / (m + 1) as f64;
+						term.weight / total * changed * far
+					})
+					.sum::<f64>();
+				assert!((0.0..=1.0).contains(&stale), "a weighted mean of values in [0, 1] came out {stale}");
+				Some(stale)
+			})
+			.collect()
+	})
+}
+
+/// `term` onto the tape: its raw values as a source, whatever it reduces the cohort to, and its `v`.
+fn record(tape: &mut Tape, purpose: &Purpose, term: &Term, people: &[Person], facts: &[Facts], now: Timestamp) -> Id {
+	let of = term.of.as_str();
+	let writer = match (purpose.refreshed_by(term), &term.signal) {
+		(Refresh::Fetch, _) => "pull",
+		(Refresh::Reasoning, _) => "extraction",
+		(Refresh::Never, Signal::VenueActivity { .. }) => "recon",
+		(Refresh::Never, _) => "human",
+	};
+	let tags = |f: &dyn Fn(&Value) -> Cell| -> Vec<Option<Cell>> { people.iter().map(|person| person.tags.get(of).and_then(Option::as_ref).map(f)).collect() };
+	let mistyped = |v: &Value| -> ! { unreachable!("`{of}` = {} was typed against the purpose at load", v.nix()) };
+	let backfilling = facts.iter().filter(|f| f.backfilling).count();
+	let transcripts = match backfilling {
+		0 => Fidelity::Exact,
+		n => Fidelity::Partial(format!("{n} backfilling, read as absent")),
+	};
+	let v = format!("{of}.v");
 	match &term.signal {
-		Signal::Bool => tags()
-			.map(|v| {
-				v.map(|v| match v {
-					Value::Bool(b) => f64::from(u8::from(*b)),
+		Signal::Bool | Signal::Present => {
+			let raw = tape.source(
+				of,
+				writer,
+				None,
+				Fidelity::Exact,
+				tags(&|v| match v {
+					Value::Bool(b) => Cell::At(f64::from(u8::from(*b))),
+					Value::Text(_) => Cell::At(1.0),
 					v => mistyped(v),
-				})
-			})
-			.collect(),
-		Signal::Present => tags()
-			.map(|v| {
-				v.map(|v| match v {
-					Value::Text(_) => 1.0,
-					v => mistyped(v),
-				})
-			})
-			.collect(),
-		Signal::Number { min, max } => tags()
-			.map(|v| {
-				v.map(|v| match v {
-					Value::Number(n) => (n - min) / (max - min),
-					v => mistyped(v),
-				})
-			})
-			.collect(),
-		Signal::Age { lo, hi } => {
-			let today = Timestamp::now().to_zoned(TimeZone::UTC).date();
-			tags()
-				.map(|v| {
-					v.map(|v| match v {
-						Value::Birthday(birthday) => {
-							let (min, max) = birthday.ages(today);
-							let (min, max) = (f64::from(min), f64::from(max));
-							match min == max {
-								true => f64::from(u8::from((lo..=hi).contains(&&min))),
-								false => (max.min(*hi) - min.max(*lo)).max(0.0) / (max - min),
-							}
-						}
-						v => mistyped(v),
-					})
-				})
-				.collect()
+				}),
+			);
+			tape.map(&v, raw, &[], Some([0.0, 1.0]), |c, _| point(c))
 		}
-		Signal::Place(near) => tags()
-			.map(|v| {
-				v.map(|v| match v {
-					Value::Place { lat, lon, .. } => closeness(near, *lat, *lon),
+		Signal::Number { min, max } => {
+			let raw = tape.source(
+				of,
+				writer,
+				None,
+				Fidelity::Exact,
+				tags(&|v| match v {
+					Value::Number(n) => Cell::At(*n),
 					v => mistyped(v),
-				})
+				}),
+			);
+			tape.map(&v, raw, &[], Some([*min, *max]), |c, _| (point(c) - min) / (max - min))
+		}
+		Signal::Age { lo, hi } => {
+			let today = now.to_zoned(TimeZone::UTC).date();
+			let raw = tape.source(
+				of,
+				writer,
+				Some("years old"),
+				Fidelity::Exact,
+				tags(&|v| match v {
+					Value::Birthday(birthday) => {
+						let (min, max) = birthday.ages(today);
+						let (min, max) = (f64::from(min), f64::from(max));
+						match min == max {
+							true => Cell::At(min),
+							false => Cell::Within(min, max),
+						}
+					}
+					v => mistyped(v),
+				}),
+			);
+			tape.map(&v, raw, &[], Some([*lo, *hi]), |c, _| match c {
+				Cell::At(age) => f64::from(u8::from((lo..=hi).contains(&age))),
+				Cell::Within(min, max) => (max.min(*hi) - min.max(*lo)).max(0.0) / (max - min),
+				Cell::Each(_) => unreachable!("an age is a point or a range"),
 			})
-			.collect(),
-		Signal::Timestamp { decay } => recency(
-			tags()
-				.map(|v| {
-					v.map(|v| match v {
-						Value::Timestamp(at) => *at,
-						v => mistyped(v),
-					})
-				})
-				.collect(),
-			*decay,
-		),
-		Signal::LastInteraction { decay } => recency(facts.iter().map(|f| f.last.filter(|_| !f.backfilling)).collect(), *decay),
+		}
+		Signal::Place(near) => {
+			let raw = tape.source(
+				of,
+				writer,
+				Some(&format!("km from {}, {}", near.lat, near.lon)),
+				Fidelity::Exact,
+				tags(&|v| match v {
+					Value::Place { lat, lon, .. } => Cell::At(haversine_km((near.lat, near.lon), (*lat, *lon))),
+					v => mistyped(v),
+				}),
+			);
+			tape.map(&v, raw, &[], Some([0.0, near.radius_km + near.halving_km]), |c, _| closeness(near, point(c)))
+		}
+		Signal::Timestamp { decay } => {
+			let raw = tape.source(
+				of,
+				writer,
+				Some("unix seconds"),
+				Fidelity::Exact,
+				tags(&|v| match v {
+					Value::Timestamp(at) => Cell::At(at.as_second() as f64),
+					v => mistyped(v),
+				}),
+			);
+			recency(tape, of, raw, *decay)
+		}
+		Signal::LastInteraction { decay } => {
+			let cells = facts.iter().map(|f| f.last.filter(|_| !f.backfilling).map(|at| Cell::At(at.as_second() as f64))).collect();
+			let raw = tape.source(of, writer, Some("unix seconds"), transcripts, cells);
+			recency(tape, of, raw, *decay)
+		}
 		Signal::Interactions => {
-			let top = facts.iter().map(|f| f.days).max().unwrap_or(0);
-			facts.iter().map(|f| (f.days > 0 && !f.backfilling).then(|| f.days as f64 / top as f64)).collect()
+			let cells = facts.iter().map(|f| (f.days > 0 && !f.backfilling).then(|| Cell::At(f.days as f64))).collect();
+			let raw = tape.source(of, writer, Some("days with a line by them"), transcripts, cells);
+			let top = tape.reduce(&format!("{of}.max"), &[raw], ["max"], |c| c[0].iter().flatten().map(point).reduce(f64::max).map(|top| [top]));
+			tape.map(&v, raw, &[top], Some([0.0, 1.0]), |c, s| point(c) / s[0])
 		}
 		Signal::VenueActivity { decay } => {
-			let span = Span::over(facts.iter().flat_map(|f| f.spoke.iter().copied()), *decay);
-			let activity: Vec<Option<f64>> = facts
+			let cells = facts
 				.iter()
-				.map(|f| (!f.spoke.is_empty()).then(|| span.expect("somebody spoke, so the cohort has an axis").activity(f.spoke.iter().copied())))
+				.map(|f| (!f.spoke.is_empty()).then(|| Cell::Each(f.spoke.iter().map(|at| at.as_second() as f64).collect())))
 				.collect();
-			let top = activity.iter().flatten().copied().fold(0.0, f64::max);
-			activity.into_iter().map(|a| a.map(|a| a / top)).collect()
+			let raw = tape.source(of, writer, Some("unix seconds of each line"), Fidelity::Exact, cells);
+			let span = tape.reduce(&format!("{of}.span"), &[raw], ["newest", "width"], |c| {
+				Span::over(
+					c[0].iter().flatten().flat_map(|c| match c {
+						Cell::Each(items) => items.iter().copied(),
+						c => unreachable!("lines are many, got {c:?}"),
+					}),
+					*decay,
+				)
+				.map(Span::scalars)
+			});
+			let activity = tape.map(&format!("{of}.activity"), raw, &[span], None, |c, s| {
+				let span = Span::new(s, *decay);
+				match c {
+					Cell::At(at) => span.weight(*at),
+					Cell::Each(items) => span.activity(items.iter().copied()),
+					Cell::Within(..) => unreachable!("lines are instants"),
+				}
+			});
+			let top = tape.reduce(&format!("{of}.max"), &[activity], ["max"], |c| {
+				let activity: Vec<f64> = c[0].iter().flatten().map(point).collect();
+				(!activity.is_empty()).then(|| [activity.into_iter().fold(0.0, f64::max)])
+			});
+			tape.map(&v, activity, &[top], Some([0.0, 0.0]), |c, s| point(c) / s[0])
 		}
 	}
 }
 
 /// Over the cohort rather than per person: scored alone, somebody whose last line was two years ago
 /// sits at the same recency as anybody else's newest.
-fn recency(at: Vec<Option<Timestamp>>, decay: f64) -> Vec<Option<f64>> {
-	let span = Span::over(at.iter().flatten().copied(), decay);
-	at.into_iter()
-		.map(|at| at.map(|at| span.expect("somebody has a value, so the cohort has an axis").weight(at)))
-		.collect()
+fn recency(tape: &mut Tape, of: &str, raw: Id, decay: f64) -> Id {
+	let span = tape.reduce(&format!("{of}.span"), &[raw], ["newest", "width"], |c| {
+		Span::over(c[0].iter().flatten().map(point), decay).map(Span::scalars)
+	});
+	tape.map(&format!("{of}.v"), raw, &[span], None, |c, s| Span::new(s, decay).weight(point(c)))
 }
 
-fn closeness(near: &Near, lat: f64, lon: f64) -> f64 {
-	let d = haversine_km((near.lat, near.lon), (lat, lon));
+fn point(cell: &Cell) -> f64 {
+	match cell {
+		Cell::At(v) => *v,
+		cell => unreachable!("read as a point, holds {cell:?}"),
+	}
+}
+
+fn closeness(near: &Near, d: f64) -> f64 {
 	match d <= near.radius_km {
 		true => 1.0,
 		false => 0.5f64.powf((d - near.radius_km) / near.halving_km),
@@ -290,44 +396,60 @@ fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// The cohort a score is relative to: its newest point, and the width of it.
 #[derive(Clone, Copy, Debug)]
 struct Span {
-	newest: Timestamp,
-	/// `ln(1 + seconds)`. `None` when the cohort is one instant wide and every weight is therefore 1.
-	log_width: Option<f64>,
+	/// Unix seconds.
+	newest: f64,
+	/// Seconds. `0` when the cohort is one instant wide and every weight is therefore 1.
+	width: f64,
 	decay: f64,
 }
 impl Span {
 	/// `None` when the cohort did nothing at all, which is not a score of zero — there is no axis to
 	/// put anybody on.
-	fn over(at: impl IntoIterator<Item = Timestamp>, decay: f64) -> Option<Self> {
+	fn over(at: impl IntoIterator<Item = f64>, decay: f64) -> Option<Self> {
 		assert!(decay.is_finite() && decay >= 0.0, "a decay is a finite discount of age, got {decay}");
-		let (mut newest, mut oldest): (Option<Timestamp>, Option<Timestamp>) = (None, None);
+		let (mut newest, mut oldest): (Option<f64>, Option<f64>) = (None, None);
 		for at in at {
-			newest = newest.max(Some(at));
-			oldest = Some(oldest.map_or(at, |old: Timestamp| old.min(at)));
+			newest = Some(newest.map_or(at, |new: f64| new.max(at)));
+			oldest = Some(oldest.map_or(at, |old: f64| old.min(at)));
 		}
 		let (newest, oldest) = (newest?, oldest.expect("set alongside `newest`"));
-		let width = (newest.as_second() - oldest.as_second()) as f64;
 		Some(Self {
 			newest,
-			log_width: (width > 0.0).then(|| (1.0 + width).ln()),
+			width: newest - oldest,
 			decay,
 		})
 	}
 
+	/// Off the tape, as [`Self::scalars`] put it there.
+	fn new(scalars: &[f64], decay: f64) -> Self {
+		let [newest, width] = scalars else {
+			unreachable!("a span is recorded as its newest point and its width")
+		};
+		Self {
+			newest: *newest,
+			width: *width,
+			decay,
+		}
+	}
+
+	fn scalars(self) -> [f64; 2] {
+		[self.newest, self.width]
+	}
+
 	/// What one item is worth, in `(0, 1]` — `1` at the cohort's newest point.
-	fn weight(&self, at: Timestamp) -> f64 {
-		let age = (self.newest.as_second() - at.as_second()) as f64;
+	fn weight(&self, at: f64) -> f64 {
+		let age = self.newest - at;
 		assert!(age >= 0.0, "{at} is above the cohort the span was built over");
-		let u = match self.log_width {
-			Some(log_width) => (1.0 + age).ln() / log_width,
-			None => 0.0,
+		let u = match self.width > 0.0 {
+			true => (1.0 + age).ln() / (1.0 + self.width).ln(),
+			false => 0.0,
 		};
 		(-self.decay * u).exp()
 	}
 
 	/// How much somebody did, discounted by when they did it. Unbounded above and comparable only
 	/// within the cohort, so a caller ranking people divides by the largest it gets back.
-	fn activity(&self, at: impl IntoIterator<Item = Timestamp>) -> f64 {
+	fn activity(&self, at: impl IntoIterator<Item = f64>) -> f64 {
 		at.into_iter().map(|at| self.weight(at)).sum()
 	}
 }
@@ -336,8 +458,8 @@ impl Span {
 mod tests {
 	use super::*;
 
-	fn at(rfc3339: &str) -> Timestamp {
-		rfc3339.parse().expect("a test timestamp")
+	fn at(rfc3339: &str) -> f64 {
+		rfc3339.parse::<Timestamp>().expect("a test timestamp").as_second() as f64
 	}
 
 	/// The knob is the whole interface, so what its ends mean is the thing worth pinning: at `0` a
@@ -347,7 +469,7 @@ mod tests {
 	fn the_decay_trades_volume_against_recency() {
 		let loud = ["2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-03T00:00:00Z", "2024-01-04T00:00:00Z"];
 		let recent = ["2026-01-01T00:00:00Z"];
-		let cohort: Vec<Timestamp> = loud.iter().chain(&recent).map(|s| at(s)).collect();
+		let cohort: Vec<f64> = loud.iter().chain(&recent).map(|s| at(s)).collect();
 
 		let counting = Span::over(cohort.clone(), 0.0).expect("a non-empty cohort");
 		assert_eq!(counting.activity(loud.map(at)), 4.0, "every item weighs 1 when age is not discounted");

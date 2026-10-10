@@ -1246,6 +1246,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "derivs"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5526,9 +5533,11 @@ dependencies = [
  "color-eyre",
  "colored",
  "derive_more",
+ "derivs",
  "futures",
  "grammers-client",
  "heck 0.5.0",
+ "insta",
  "jiff",
  "libsql",
  "serde",
