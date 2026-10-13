@@ -170,7 +170,12 @@ fn main() {
 		}
 	};
 
-	exit_on_error(result);
+	if let Err(e) = result {
+		match e.downcast::<AdapterError>() {
+			Ok(adapter) => exit_on_error(Err::<(), _>(adapter)), // its own exit code
+			Err(other) => exit_on_error(Err::<(), _>(other)),
+		}
+	}
 }
 
 /// Build a multi-thread runtime with a 8 MiB worker stack (telegram TL types are deep)

@@ -31,6 +31,12 @@ pub enum AdapterError {
 	#[error("{surface}: unhandled error: {detail}")]
 	Unhandled { surface: &'static str, detail: String },
 }
+/// Exits `EX_CONFIG`, which devops' observer answers by holding the deployment instead of restarting it: neither class is fixed by a restart.
+impl v_utils::utils::SysexitCode for AdapterError {
+	fn sysexit(&self) -> v_utils::utils::Sysexit {
+		v_utils::utils::Sysexit::Config
+	}
+}
 
 /// Send a max-importance (`error`) notification via the `v_notify` CLI.
 /// Failures to spawn `v_notify` are logged but never escalated: a broken alerting path

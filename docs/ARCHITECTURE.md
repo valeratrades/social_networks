@@ -117,7 +117,7 @@ pub trait Client {
 - `AdapterError::Auth { surface, detail }`: credentials are no longer valid; retrying cannot help.
 - `AdapterError::Unhandled { surface, detail }`: everything else. Retrying an unknown error is how a revoked key gets hammered for weeks.
 
-Both variants end `listen`: the binary calls `alert()` and exits non-zero.
+Both variants end `listen`: the binary calls `alert()` and exits 78 (`EX_CONFIG`), which devops' observer answers by holding the deployment and paging its channel instead of restarting it.
 
 ### Per-adapter classification
 
@@ -219,7 +219,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - **Two-channel routing**: alerts (pings, DMs) vs output (content) are separate Telegram destinations.
 - **One telegram auth key, one live connection**: a second concurrent connection on a key — a copied session counts — gets `AUTH_KEY_DUPLICATED` on both ends. So each daemon logs in its own session (`dms` on `<user>`, `telegram-channel-watch` on `<user>_channel_watch`), and no key is shared with another host's process, e.g. the laptop's `tg`.
 - **A daemon's state is the db**: sessions, cursors and caches are rows of `db.sqlite3`, the one file the cluster replicates (litestream, devops). A daemon writing a file of its own beside it loses that state on every failover.
-- **Auth = exit**: an auth-class failure on any surface brings the process down non-zero. Nothing retries past it in-process; recovery is a human fixing creds and restarting.
+- **Auth = exit**: an auth-class failure on any surface brings the process down with 78, and the cluster holds it rather than restart it. Nothing retries past it; recovery is a human fixing creds and resuming.
 - **Provider keys**: carried by `[llm]`, each optional — the `claude` CLI's own login is one — and resolved per request, never at load. A daemon that reasons (youtube, email) exits when no model answers; a purpose's `pull` saves what it fetched and says that nothing reasoned over it.
 - **One place per platform**: everything that knows a platform's endpoints, payloads and auth lives in `social_networks_adapters` and nowhere else. The waist is the only seam.
 - **The transcript is the artifact**: a person's and a venue's year files are what a read is for. Nothing is derived from them that cannot be rebuilt from them, and there is no index.
@@ -250,7 +250,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 
 - **Error recovery**: adapters retry only errors explicitly classified transient; anything unknown ends the surface.
 - **Telegram keys are host-bound**: a session is named `<username><suffix>@<host>` (`NODE_NAME`, else the hostname), and a row is only ever opened under that name. Telegram revokes a key live on two hosts at once (`AUTH_KEY_DUPLICATED`), and the db is replicated between hosts. A host's key comes from `telegram.sessions`, minted by `examples/telegram_mint.rs`, and replaces whatever key its row holds; nothing copies a key between names.
-- **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
+- **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the observer's hold on exit 78 is what alerts.
 - **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched,send}/` and `skool/`; facebook's session drops and our chrome profiles beside them; a failed skool login's page in `skool/browser_captures/`; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.
