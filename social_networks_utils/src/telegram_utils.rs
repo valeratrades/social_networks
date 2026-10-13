@@ -32,26 +32,30 @@ pub struct ConnectionConfig<'a> {
 	pub phone: &'a str,
 	pub api_id: i32,
 	pub api_hash: &'a str,
-	/// Session name suffix (e.g., "_dm" for DM monitor, "" for main)
+	/// e.g. "_channel_watch"; "" for the `dms` daemon's
 	pub session_suffix: &'a str,
-	/// Suffix of the session to copy from when this one does not exist yet. The auth key travels
-	/// with the copy, so it is authorized without a login code and without registering a new device.
-	pub seed_from: Option<&'a str>,
+	/// Minted keys, for [`DbSession::open`].
+	pub sessions: Option<&'a str>,
 }
 
 /// Establishes a Telegram connection with proper session handling.
 ///
 /// This handles:
-/// - Session load from the db (importing or seeding one on first use)
+/// - Session load from the db (importing a minted one on first use)
 /// - Authentication (including 2FA)
 /// - Dialog pre-fetching for peer cache warming
 ///
 /// Returns a `TelegramConnection` with the runner as a pinned future for structured concurrency.
 /// The caller should use `select` to poll the runner alongside their main logic.
 pub async fn connect(config: ConnectionConfig<'_>) -> Result<TelegramConnection> {
-	let name = format!("{}{}", config.username, config.session_suffix);
-	let seed = config.seed_from.map(|seed| format!("{}{seed}", config.username));
-	let session = Arc::new(DbSession::open(Database::try_new().await?, &name, seed.as_deref()).await?);
+	// Telegram revokes a key live on two hosts at once (`AUTH_KEY_DUPLICATED`), and the db travels between hosts.
+	let host = match std::env::var("NODE_NAME") {
+		Ok(node) => node,
+		Err(std::env::VarError::NotPresent) => std::fs::read_to_string("/proc/sys/kernel/hostname")?.trim().to_owned(),
+		Err(e) => return Err(e.into()),
+	};
+	let name = format!("{}{}@{host}", config.username, config.session_suffix);
+	let session = Arc::new(DbSession::open(Database::try_new().await?, &name, config.sessions).await?);
 
 	info!("Connecting to Telegram with api_id: {}", config.api_id);
 	let pool = SenderPool::new(Arc::clone(&session), config.api_id);

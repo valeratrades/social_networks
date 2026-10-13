@@ -5501,6 +5501,7 @@ dependencies = [
  "futures-util",
  "google-gmail1",
  "grammers-client",
+ "grammers-mtproto",
  "grammers-session",
  "grammers-tl-types",
  "hmac 0.13.0",
@@ -5582,6 +5583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
  "xdg",
 ]

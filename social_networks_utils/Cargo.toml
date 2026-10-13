@@ -35,5 +35,8 @@ thiserror.workspace = true
 tracing.workspace = true
 xdg.workspace = true
 
+[dev-dependencies]
+tokio.workspace = true
+
 [lints]
 workspace = true

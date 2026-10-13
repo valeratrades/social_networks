@@ -7,11 +7,11 @@ use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
 use social_networks_utils::{db::Database, utils::btc_price};
 use tokio::time::{self, Duration};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
-	client::{AdapterError, Client},
+	client::{AdapterError, Client, Fault, ok_or_classify},
 	llm::LlmConfig,
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
@@ -59,39 +59,12 @@ impl Client for YoutubeMonitor {
 		info!("Monitoring channels: {:?}", self.youtube_config.channels.keys());
 
 		loop {
-			match run_youtube_monitor(&self.youtube_config, &self.telegram_config, &self.llm_config).await {
-				Err(YoutubeError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
-				Err(YoutubeError::Recoverable(e)) => {
-					error!("YouTube monitor error: {e:#}");
-					error!("Reconnecting in 5 minutes...");
-					time::sleep(Duration::from_secs(5 * 60)).await;
-				}
-			}
+			let Err(fault) = run_youtube_monitor(&self.youtube_config, &self.telegram_config, &self.llm_config).await;
+			let e = fault.retry(SURFACE)?;
+			warn!("YouTube monitor error: {e}, retrying in 5 minutes");
+			time::sleep(Duration::from_secs(5 * 60)).await;
 		}
 	}
-}
-
-enum YoutubeError {
-	Auth(String),
-	Recoverable(color_eyre::eyre::Report),
-}
-
-impl<E: Into<color_eyre::eyre::Report>> From<E> for YoutubeError {
-	fn from(e: E) -> Self {
-		YoutubeError::Recoverable(e.into())
-	}
-}
-
-async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, YoutubeError> {
-	let status = response.status();
-	if status.is_success() {
-		return Ok(response);
-	}
-	let body = response.text().await.map_err(color_eyre::eyre::Report::from)?;
-	if matches!(status.as_u16(), 401 | 403) {
-		return Err(YoutubeError::Auth(format!("{op}: {status}: {body}")));
-	}
-	Err(YoutubeError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -100,7 +73,7 @@ struct LastUploadedTitles {
 }
 
 #[instrument(skip_all)]
-async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig, llm_config: &LlmConfig) -> Result<Infallible, YoutubeError> {
+async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &TelegramConfig, llm_config: &LlmConfig) -> Result<Infallible, Fault> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
@@ -114,8 +87,8 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 		for (channel_name, channel_id) in &youtube_config.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram, llm_config).await {
 				Ok(_) => debug!("Checked channel: {channel_name}"),
-				Err(YoutubeError::Auth(detail)) => return Err(YoutubeError::Auth(detail)),
-				Err(YoutubeError::Recoverable(e)) => error!("Error checking channel {channel_name}: {e:#}"),
+				Err(Fault::Transient(e)) => warn!("Error checking channel {channel_name}: {e}"),
+				Err(fault) => return Err(fault),
 			}
 		}
 
@@ -133,13 +106,13 @@ async fn check_channel(
 	last_uploaded: &mut LastUploadedTitles,
 	telegram: &TelegramNotifier,
 	llm_config: &LlmConfig,
-) -> Result<(), YoutubeError> {
+) -> Result<(), Fault> {
 	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
 
-	let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed")?;
+	let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed").map_err(Fault::transient)?;
 	let response = ok_or_classify(response, "youtube_rss").await?;
 
-	let xml_content = response.text().await.map_err(color_eyre::eyre::Report::from)?;
+	let xml_content = response.text().await.map_err(Fault::transient)?;
 
 	let (video_id, title, published) = parse_youtube_rss(&xml_content)?;
 

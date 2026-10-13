@@ -173,12 +173,13 @@ pub fn all(venues: &Path) -> Result<Vec<VenueRef>> {
 			match slug.join("meta.json").exists() {
 				true => out.push(VenueRef::new(platform_source, relative(&platform, &slug))),
 				// an owner directory, whose repos are one level down
-				false =>
+				false => {
 					for repo in read_dirs(&slug)? {
 						if repo.join("meta.json").exists() {
 							out.push(VenueRef::new(platform_source, relative(&platform, &repo)));
 						}
-					},
+					}
+				}
 			}
 		}
 	}

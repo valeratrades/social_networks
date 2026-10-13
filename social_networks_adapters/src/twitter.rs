@@ -6,11 +6,11 @@ use jiff::{Timestamp, fmt::strtime};
 use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
-	client::{AdapterError, Client},
+	client::{AdapterError, Client, Fault, ok_or_classify},
 	reach::{Direct, Page, Window},
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
@@ -61,14 +61,10 @@ impl Client for TwitterMonitor {
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		println!("Twitter: Listening...");
 		loop {
-			match run_twitter_monitor(&self.twitter_config, &self.telegram_config).await {
-				Err(TwitterError::Auth(detail)) => return Err(AdapterError::Auth { surface: SURFACE, detail }),
-				Err(TwitterError::Recoverable(e)) => {
-					error!("Twitter monitor error: {e}");
-					error!("Reconnecting in 5 minutes...");
-					time::sleep(Duration::from_secs(5 * 60)).await;
-				}
-			}
+			let Err(fault) = run_twitter_monitor(&self.twitter_config, &self.telegram_config).await;
+			let e = fault.retry(SURFACE)?;
+			warn!("Twitter monitor error: {e}, retrying in 5 minutes");
+			time::sleep(Duration::from_secs(5 * 60)).await;
 		}
 	}
 }
@@ -116,33 +112,7 @@ async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()>
 	}
 	Ok(())
 }
-#[derive(Debug)]
-enum TwitterError {
-	Auth(String),
-	Recoverable(color_eyre::eyre::Report),
-}
-
-impl<E: Into<color_eyre::eyre::Report>> From<E> for TwitterError {
-	fn from(e: E) -> Self {
-		TwitterError::Recoverable(e.into())
-	}
-}
-
-/// Check the response status; return `Auth` for 401/403, `Recoverable` for other
-/// non-2xx, or pass through the response untouched on success.
-async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, TwitterError> {
-	let status = response.status();
-	if status.is_success() {
-		return Ok(response);
-	}
-	let body = response.text().await.unwrap_or_default();
-	if matches!(status.as_u16(), 401 | 403) {
-		return Err(TwitterError::Auth(format!("{op}: {status}: {body}")));
-	}
-	Err(TwitterError::Recoverable(color_eyre::eyre::eyre!("{op}: {status}: {body}")))
-}
-
-async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &TelegramConfig) -> Result<Infallible, TwitterError> {
+async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &TelegramConfig) -> Result<Infallible, Fault> {
 	let client = reqwest::Client::new();
 	let telegram = TelegramNotifier::new(telegram_config.clone());
 
@@ -168,8 +138,8 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 		.await
 		{
 			Ok(()) => {}
-			Err(TwitterError::Auth(d)) => return Err(TwitterError::Auth(d)),
-			Err(TwitterError::Recoverable(e)) => error!("Error processing everytime polls list: {e}"),
+			Err(Fault::Transient(e)) => warn!("Error processing everytime polls list: {e}"),
+			Err(fault) => return Err(fault),
 		}
 
 		// Process sometimes polls list
@@ -184,8 +154,8 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 		.await
 		{
 			Ok(()) => {}
-			Err(TwitterError::Auth(d)) => return Err(TwitterError::Auth(d)),
-			Err(TwitterError::Recoverable(e)) => error!("Error processing sometimes polls list: {e}"),
+			Err(Fault::Transient(e)) => warn!("Error processing sometimes polls list: {e}"),
+			Err(fault) => return Err(fault),
 		}
 
 		db.set_state(STATE_KEY, &parsed_state).await?;
@@ -205,7 +175,7 @@ async fn process_list(
 	telegram: &TelegramNotifier,
 	user_last_tweets: &mut HashMap<String, String>,
 	parsed_tweets: &mut Vec<String>,
-) -> Result<(), TwitterError> {
+) -> Result<(), Fault> {
 	// Get list members
 	let url = format!("https://api.twitter.com/2/lists/{list_id}/members");
 	let response = client
@@ -214,7 +184,8 @@ async fn process_list(
 		.header("Content-Type", "application/json")
 		.send()
 		.await
-		.context("Failed to get list members")?;
+		.context("Failed to get list members")
+		.map_err(Fault::transient)?;
 	let response = ok_or_classify(response, "list_members").await?;
 
 	let list_response: TwitterListResponse = response.json().await.context("Failed to parse list response")?;
@@ -230,8 +201,8 @@ async fn process_list(
 
 		match check_for_updates(client, twitter_config, member, &parsed_id, telegram, user_last_tweets, parsed_tweets, user_idx).await {
 			Ok(()) => {}
-			Err(TwitterError::Auth(d)) => return Err(TwitterError::Auth(d)),
-			Err(TwitterError::Recoverable(e)) => error!("Error checking updates for user {}: {e}", member.name),
+			Err(Fault::Transient(e)) => warn!("Error checking updates for user {}: {e}", member.name),
+			Err(fault) => return Err(fault),
 		}
 	}
 
@@ -248,7 +219,7 @@ async fn check_for_updates(
 	_user_last_tweets: &mut HashMap<String, String>,
 	parsed_tweets: &mut [String],
 	user_idx: usize,
-) -> Result<(), TwitterError> {
+) -> Result<(), Fault> {
 	// Get user's latest tweets
 	let url = format!("https://api.twitter.com/2/users/{}/tweets", member.id);
 	let response = client
@@ -257,7 +228,8 @@ async fn check_for_updates(
 		.header("Content-Type", "application/json")
 		.send()
 		.await
-		.context("Failed to get user tweets")?;
+		.context("Failed to get user tweets")
+		.map_err(Fault::transient)?;
 	let response = ok_or_classify(response, "user_tweets").await?;
 
 	let tweets_response: UserTweetsResponse = response.json().await.context("Failed to parse tweets response")?;
@@ -282,7 +254,8 @@ async fn check_for_updates(
 		.header("Content-Type", "application/json")
 		.send()
 		.await
-		.context("Failed to get tweet details")?;
+		.context("Failed to get tweet details")
+		.map_err(Fault::transient)?;
 	let response = ok_or_classify(response, "tweet_details").await?;
 
 	let tweet_response: TweetResponse = response.json().await.context("Failed to parse tweet response")?;

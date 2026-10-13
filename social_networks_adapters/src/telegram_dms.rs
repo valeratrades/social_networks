@@ -1,8 +1,9 @@
 use std::{convert::Infallible, path::Path};
 
-use color_eyre::eyre::{Result, WrapErr, eyre};
+use color_eyre::eyre::{Report, Result, WrapErr, eyre};
 use futures::future::{Either, select};
 use grammers_client::{
+	InvocationError,
 	media::Media,
 	message::Message,
 	peer::{Peer, Role},
@@ -32,6 +33,8 @@ use crate::{
 
 const SURFACE: &str = "telegram_dms";
 
+pub(crate) const RECONNECT: Duration = Duration::from_secs(30);
+pub(crate) const RUNNER_EXITED: &str = "MTProto runner exited";
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TelegramConfig {
 	pub bot_token: String,
@@ -47,6 +50,10 @@ pub struct TelegramConfig {
 	pub poll_channels: Vec<String>,
 	#[primitives(skip)]
 	pub info_channels: Vec<String>,
+	/// JSON `{ "<session name>": {home_dc, dc_options} }`, minted by `examples/telegram_mint.rs`.
+	#[serde(default)]
+	#[private_value]
+	pub sessions: Option<String>,
 }
 
 pub struct TelegramDms {
@@ -66,14 +73,13 @@ impl TelegramDms {
 			api_id: self.telegram_config.api_id,
 			api_hash: &self.telegram_config.api_hash,
 			session_suffix: "",
-			seed_from: None,
+			sessions: self.telegram_config.sessions.as_deref(),
 		})
 		.await
 	}
 
-	/// Run a single connect+listen cycle. Returns `Ok(())` on a recoverable disconnect,
-	/// `Err(AdapterError::Auth)` on auth-class failures.
-	async fn run_session(&mut self) -> Result<(), AdapterError> {
+	/// One connect+listen cycle: `Ok(wait)` before the next one.
+	async fn run_session(&mut self) -> Result<Duration, AdapterError> {
 		let TelegramConnection {
 			client,
 			updates,
@@ -81,13 +87,7 @@ impl TelegramDms {
 			session,
 		} = match self.connect().await {
 			Ok(c) => c,
-			Err(e) => {
-				if let Some(detail) = classify_telegram_auth_error(&e) {
-					return Err(AdapterError::Auth { surface: SURFACE, detail });
-				}
-				error!("Telegram connection error: {e:#}");
-				return Ok(());
-			}
+			Err(e) => return end_session(SURFACE, classify_report(&e), format!("connect: {e:#}")),
 		};
 
 		info!("--Telegram DM Commands-- connected and authorized");
@@ -97,7 +97,7 @@ impl TelegramDms {
 
 		loop {
 			if telegram_utils::should_reconnect_for_stack() {
-				return Ok(());
+				return Ok(RECONNECT);
 			}
 			telegram_utils::log_stack("dms telegram before select");
 
@@ -118,26 +118,15 @@ impl TelegramDms {
 			telegram_utils::log_stack("dms telegram after select");
 
 			match event {
-				Event::RunnerExited => {
-					error!("MTProto runner exited unexpectedly, reconnecting...");
-					return Ok(());
-				}
+				Event::RunnerExited => return end_session(SURFACE, Class::Transient(RECONNECT), RUNNER_EXITED.into()),
 				Event::Update(result) => match *result {
-					Err(e) => {
-						let s = format!("{e:#}");
-						if classify_invocation_auth(&s) {
-							return Err(AdapterError::Auth { surface: SURFACE, detail: s });
-						}
-						error!("Error getting next update: {s}, reconnecting...");
-						return Ok(());
-					}
+					Err(e) => return end_session(SURFACE, classify(&e), format!("next update: {e}")),
 					// Resolving a caller costs an RPC, which the runner has to answer: awaiting the
 					// handler on its own hangs the adapter on the first incoming call, forever.
 					Ok(update) => {
 						let handle_fut = std::pin::pin!(self.handle_update(&client, &session, update));
 						if let Either::Right(((), _)) = select(handle_fut, runner.as_mut()).await {
-							error!("MTProto runner exited unexpectedly, reconnecting...");
-							return Ok(());
+							return end_session(SURFACE, Class::Transient(RECONNECT), RUNNER_EXITED.into());
 						}
 					}
 				},
@@ -185,7 +174,7 @@ impl TelegramDms {
 			}
 			// Call still ringing: the server sends `phoneCallRequested` to the callee.
 			// Outgoing calls surface as `Waiting`, so matching `Requested` naturally filters to calls TO me.
-			Update::Raw(raw) =>
+			Update::Raw(raw) => {
 				if let tl::enums::Update::PhoneCall(tl::types::UpdatePhoneCall {
 					phone_call: tl::enums::PhoneCall::Requested(call),
 				}) = &raw.raw
@@ -193,7 +182,8 @@ impl TelegramDms {
 					let admin_id = grammers_session::types::PeerId::user(call.admin_id).expect("`admin_id` of an incoming call is a user");
 					let caller = resolve_username(client, session, admin_id).await;
 					let _ = self.tx.send(DmEvent::IncomingCall { platform: "Telegram", caller });
-				},
+				}
+			}
 			_ => {}
 		}
 	}
@@ -335,9 +325,7 @@ impl AdapterClient for TelegramDms {
 
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		loop {
-			self.run_session().await?;
-			error!("Telegram DMs reconnecting in 30s...");
-			time::sleep(Duration::from_secs(30)).await;
+			time::sleep(self.run_session().await?).await;
 		}
 	}
 }
@@ -454,28 +442,69 @@ fn at(message: &Message) -> Result<Timestamp> {
 	Timestamp::from_second(message.date().timestamp()).wrap_err("a telegram message date is a unix second")
 }
 
-/// Inspect a `color_eyre` connect-time error string for auth-class failures.
-/// `SignInError` non-`PasswordRequired` variants and known unauthorized RPC
-/// errors all surface as text containing one of these tokens.
-pub(crate) fn classify_telegram_auth_error(e: &color_eyre::eyre::Report) -> Option<String> {
-	let s = format!("{e:#}");
-	if classify_invocation_auth(&s) || s.to_lowercase().contains("sign in failed") {
-		Some(s)
-	} else {
-		None
+/// What a failed MTProto call means for the session that made it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Class {
+	Transient(Duration),
+	Auth,
+	Unhandled,
+}
+
+pub(crate) fn classify(e: &InvocationError) -> Class {
+	use grammers_mtproto::transport;
+	const AUTH: [&str; 5] = ["AUTH_KEY_*", "SESSION_*", "USER_DEACTIVATED*", "API_ID_INVALID", "PHONE_NUMBER_BANNED"];
+	match e {
+		InvocationError::Io(_) | InvocationError::Dropped => Class::Transient(RECONNECT),
+		InvocationError::Transport(transport::Error::BadStatus { status: 404 }) => Class::Auth, // the server no longer knows our key
+		InvocationError::Transport(_) => Class::Transient(RECONNECT),
+		InvocationError::Rpc(rpc) if rpc.code == 420 => Class::Transient(Duration::from_secs(rpc.value.expect("420s are FLOOD_WAIT_<seconds>").into())),
+		InvocationError::Rpc(rpc) if rpc.code >= 500 => Class::Transient(RECONNECT),
+		InvocationError::Rpc(rpc) if rpc.code == 401 || AUTH.iter().any(|name| rpc.is(name)) => Class::Auth,
+		_ => Class::Unhandled,
 	}
 }
 
-/// Match the canonical RPC error names that grammers stringifies for codes 401/403/303.
-/// String-matching is required because grammers 0.9 doesn't expose typed variants.
-pub(crate) fn classify_invocation_auth(s: &str) -> bool {
-	let lc = s.to_lowercase();
-	lc.contains("auth_key_unregistered")
-		|| lc.contains("session_revoked")
-		|| lc.contains("session_expired")
-		|| lc.contains("user_deactivated")
-		|| lc.contains("auth_key_invalid")
-		|| lc.contains("user_deactivated_ban")
-		|| lc.contains("api_id_invalid")
-		|| lc.contains("phone_number_banned")
+/// Connect fails through `eyre`, with the MTProto error, if any, somewhere in the chain.
+pub(crate) fn classify_report(e: &Report) -> Class {
+	match e.chain().find_map(|c| c.downcast_ref::<InvocationError>()) {
+		Some(e) => classify(e),
+		None if format!("{e:#}").contains("Sign in failed") => Class::Auth,
+		None => Class::Unhandled,
+	}
+}
+
+/// `Ok(wait)` before reconnecting, or the error that ends the surface.
+pub(crate) fn end_session(surface: &'static str, class: Class, detail: String) -> Result<Duration, AdapterError> {
+	match class {
+		Class::Transient(wait) => {
+			warn!("{surface}: {detail}, reconnecting in {wait:?}");
+			Ok(wait)
+		}
+		Class::Auth => Err(AdapterError::Auth { surface, detail }),
+		Class::Unhandled => Err(AdapterError::Unhandled { surface, detail }),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn only_known_rpc_errors_are_retried() {
+		let rpc = |code, name: &str| {
+			InvocationError::Rpc(
+				tl::types::RpcError {
+					error_code: code,
+					error_message: name.into(),
+				}
+				.into(),
+			)
+		};
+		assert_eq!(classify(&rpc(406, "AUTH_KEY_DUPLICATED")), Class::Auth);
+		assert_eq!(classify(&rpc(401, "AUTH_KEY_UNREGISTERED")), Class::Auth);
+		assert_eq!(classify(&rpc(400, "CHANNEL_INVALID")), Class::Unhandled);
+		assert_eq!(classify(&rpc(420, "FLOOD_WAIT_31")), Class::Transient(Duration::from_secs(31)));
+		assert_eq!(classify(&rpc(500, "INTERDC_2_CALL_ERROR")), Class::Transient(RECONNECT));
+		assert_eq!(classify(&InvocationError::Dropped), Class::Transient(RECONNECT));
+	}
 }

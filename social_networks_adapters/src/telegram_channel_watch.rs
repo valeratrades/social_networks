@@ -16,7 +16,7 @@ use tracing::{debug, error, info};
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
-	telegram_dms::{TelegramConfig, TelegramDestination, classify_invocation_auth, classify_telegram_auth_error},
+	telegram_dms::{Class, RECONNECT, RUNNER_EXITED, TelegramConfig, TelegramDestination, classify, classify_report, end_session},
 };
 
 const SURFACE: &str = "telegram_channel_watch";
@@ -33,69 +33,43 @@ impl TelegramChannelWatch {
 		Self { telegram_config }
 	}
 
-	/// One connect+listen cycle: `Ok(())` on a recoverable disconnect, `Err` on an auth-class failure.
-	async fn run_session(&self) -> Result<(), AdapterError> {
-		let auth = |e: &color_eyre::eyre::Report| classify_telegram_auth_error(e).map(|detail| AdapterError::Auth { surface: SURFACE, detail });
+	/// One connect+listen cycle: `Ok(wait)` before the next one.
+	async fn run_session(&self) -> Result<Duration, AdapterError> {
+		let runner_exited = || end_session(SURFACE, Class::Transient(RECONNECT), RUNNER_EXITED.into());
 		let TelegramConnection { client, updates, mut runner, .. } = match telegram_utils::connect(ConnectionConfig {
 			username: &self.telegram_config.username,
 			phone: &self.telegram_config.phone,
 			api_id: self.telegram_config.api_id,
 			api_hash: &self.telegram_config.api_hash,
 			session_suffix: "_channel_watch",
-			seed_from: None,
+			sessions: self.telegram_config.sessions.as_deref(),
 		})
 		.await
 		{
 			Ok(c) => c,
-			Err(e) => {
-				if let Some(err) = auth(&e) {
-					return Err(err);
-				}
-				error!("Telegram connection error: {e:#}");
-				return Ok(());
-			}
+			Err(e) => return end_session(SURFACE, classify_report(&e), format!("connect: {e:#}")),
 		};
 		info!("--Telegram Channel Watch-- connected and authorized");
 
 		let mut watch = match select(std::pin::pin!(ChannelWatch::resolve(&client, &self.telegram_config)), runner.as_mut()).await {
 			Either::Left((Ok(watch), _)) => watch,
-			Either::Left((Err(e), _)) => {
-				if let Some(err) = auth(&e) {
-					return Err(err);
-				}
-				error!("Telegram channel watch setup failed: {e:#}, reconnecting...");
-				return Ok(());
-			}
-			Either::Right(((), _)) => {
-				error!("MTProto runner exited unexpectedly, reconnecting...");
-				return Ok(());
-			}
+			Either::Left((Err(e), _)) => return end_session(SURFACE, classify_report(&e), format!("setup: {e:#}")),
+			Either::Right(((), _)) => return runner_exited(),
 		};
 
 		let mut updates = Box::new(updates);
 		loop {
 			if telegram_utils::should_reconnect_for_stack() {
-				return Ok(());
+				return Ok(RECONNECT);
 			}
 			let update = match select(std::pin::pin!(updates.next()), runner.as_mut()).await {
 				Either::Left((Ok(update), _)) => update,
-				Either::Left((Err(e), _)) => {
-					let s = format!("{e:#}");
-					if classify_invocation_auth(&s) {
-						return Err(AdapterError::Auth { surface: SURFACE, detail: s });
-					}
-					error!("Error getting next update: {s}, reconnecting...");
-					return Ok(());
-				}
-				Either::Right(((), _)) => {
-					error!("MTProto runner exited unexpectedly, reconnecting...");
-					return Ok(());
-				}
+				Either::Left((Err(e), _)) => return end_session(SURFACE, classify(&e), format!("next update: {e}")),
+				Either::Right(((), _)) => return runner_exited(),
 			};
 			// forwarding is an RPC, which only a driven runner answers
 			if let Either::Right(((), _)) = select(std::pin::pin!(watch.handle(&client, &update)), runner.as_mut()).await {
-				error!("MTProto runner exited unexpectedly, reconnecting...");
-				return Ok(());
+				return runner_exited();
 			}
 		}
 	}
@@ -108,9 +82,7 @@ impl AdapterClient for TelegramChannelWatch {
 
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		loop {
-			self.run_session().await?;
-			error!("Telegram channel watch reconnecting in 30s...");
-			time::sleep(Duration::from_secs(30)).await;
+			time::sleep(self.run_session().await?).await;
 		}
 	}
 }

@@ -111,22 +111,26 @@ pub trait Client {
 }
 ```
 
-`listen` runs forever in the happy path and only returns on an error class the adapter does not know how to recover from in-process. Recoverable errors (network blips, transient HTTP, known retriable RPC codes) are handled internally with backoff. Anything that escapes is treated as terminal: the binary calls `alert()` and exits non-zero.
+`listen` runs forever in the happy path. Every error is classified at the site that raised it, into one of three:
+- **Transient**: retried inside `listen` with backoff, logged at `warn`. Only what is listed below.
+- `AdapterError::Auth { surface, detail }`: credentials are no longer valid; retrying cannot help.
+- `AdapterError::Unhandled { surface, detail }`: everything else. Retrying an unknown error is how a revoked key gets hammered for weeks.
 
-`AdapterError` has two variants:
-- `Auth { surface, detail }` — credentials are no longer valid. Retrying cannot help.
-- `Unhandled { surface, detail }` — an error class the adapter has not classified as recoverable. Treated the same as `Auth` (alert + exit) by policy.
+Both variants end `listen`: the binary calls `alert()` and exits non-zero.
 
 ### Per-adapter classification
 
-| Surface | Recoverable inside `listen` | `AdapterError::Auth` |
+| Surface | Transient | `AdapterError::Auth` |
 |---|---|---|
-| Discord DMs | network errors, codes 1000-1011, 4000-4003, 4005-4009 | **4004, 4010, 4011, 4012, 4013, 4014** |
-| Telegram DMs / channel watch | network errors, generic RPC failures, runner exit | RPC `AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`, `USER_DEACTIVATED`, `AUTH_KEY_INVALID`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED` |
-| Twitter monitor / schedule | 429, 5xx, network errors | **401, 403** |
-| Email (IMAP + OAuth) | network errors, transient IMAP errors | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
-| YouTube | 429, 5xx | 401/403 |
+| Discord DMs | network errors, close codes 1000-1011, 4000-4003, 4005-4009 | close codes 4004, 4010-4014 |
+| Telegram DMs / channel watch | io, dropped, transport errors, RPC 5xx, `FLOOD_WAIT` (sleeps its value), runner exit | RPC 401, `AUTH_KEY_*` (incl. `AUTH_KEY_DUPLICATED`), `SESSION_*`, `USER_DEACTIVATED*`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED`; transport 404; not authorized with no terminal |
+| Twitter monitor | 429, 5xx, request not sent | 401, 403 |
+| Twitter schedule | — up to `num_of_retries` attempts per post | 401, 403 |
+| Email (IMAP + OAuth) | io, IMAP connection lost / BYE, Gmail transport and 429/5xx, transient SMTP | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
+| YouTube | 429, 5xx, request not sent | 401, 403 |
 | Skool chat | any refused poll, up to 5 in a row | — a dead cookie is re-minted in-process |
+
+Email counts attempts per mail before working on it; past 3 the mail is quarantined (processed as `quarantined`, left unread, one `error!`), so a mail that kills the process is not retried on every restart.
 
 ## Data Flow
 
@@ -243,8 +247,9 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 
 ## Cross-Cutting Concerns
 
-- **Error recovery**: adapters loop with backoff on recoverable errors; auth/unknown errors propagate.
+- **Error recovery**: adapters retry only errors explicitly classified transient; anything unknown ends the surface.
+- **Telegram keys are host-bound**: a session is named `<username><suffix>@<host>` (`NODE_NAME`, else the hostname), and a row is only ever opened under that name. Telegram revokes a key live on two hosts at once (`AUTH_KEY_DUPLICATED`), and the db is replicated between hosts. A host's first key comes from `telegram.sessions`, minted by `examples/telegram_mint.rs`; nothing copies a key between names.
 - **Out-of-band alerting**: when a surface dies, the error is traced (and, with `OTEL_EXPORTER_OTLP_ENDPOINT` set, flushed to OTLP before exit). `alert()` also shells to `v_notify` where it exists; in the cluster it does not, and the crashloop is what alerts.
-- **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` or `<name>.session` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched,send}/` and `skool/`; facebook's session drops and our chrome profiles beside them; a failed skool login's page in `skool/browser_captures/`; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
+- **State persistence**: the daemons' in `~/.local/state/social_networks/db.sqlite3` — telegram sessions (`DbSession`), the `state` table's cursors and the skool cookie; a legacy `<key>.json` beside it is imported on first read and removed. The hand-run axis keeps a paced session's logs (`views`, `scrolls`) and `phase.toml` under `facebook/{attached,launched,send}/` and `skool/`; facebook's session drops and our chrome profiles beside them; a failed skool login's page in `skool/browser_captures/`; the city walk's name order seed and its per-query records, `facebook/attached/searched/<city id>/<name>.toml`, the query → account map the roster does not keep. A person's state is co-located with them, under their purpose's folder — a person's messages and cursors are worth as much as the labels over them and are synced with them.
 - **LLM integration**: email classification, YouTube sentiment and a purpose's extraction go through `ask_llm` at `Model::Slow`, the tier backed by the provider whose key we hold. Another tier means another key in `[llm]`.
 - **Deployment**: one container image (`nix build .#social_networks-container`, pushed to GHCR on tag), one k3s Deployment per daemon subcommand in the `personal` namespace, labelled `app.kubernetes.io/part-of: social-networks`; state and config sit on a shared PVC. The manifests live in `ev_invest/devops` (`daemonDoc`), as does the config (`nix/platform/social_networks.nix`). Auth = exit there reads: the pod crashloops, devops' tenant-health alert fires, the cause is in Loki under `k8s_deployment_name`, and after the creds are fixed the Deployments dashboard's Restart brings it back.

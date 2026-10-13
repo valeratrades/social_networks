@@ -155,18 +155,19 @@ impl DiscordDms {
 					};
 					let msg = match serde_json::to_string(&heartbeat) {
 						Ok(m) => m,
-						Err(e) =>
+						Err(e) => {
 							return Err(AdapterError::Unhandled {
 								surface: SURFACE,
 								detail: format!("heartbeat serialization: {e}"),
-							}),
+							});
+						}
 					};
 					if write.lock().await.send(Message::Text(msg.into())).await.is_err() {
 						error!("Failed to send Discord heartbeat, reconnecting...");
 						return Ok(());
 					}
 				}
-				Event::Message(Some(Ok(Message::Text(text)))) =>
+				Event::Message(Some(Ok(Message::Text(text)))) => {
 					if let Ok(event) = serde_json::from_str::<DiscordMessage>(&text) {
 						self.message_counter += 1;
 
@@ -177,7 +178,7 @@ impl DiscordDms {
 								info!("Heartbeat received. Time: {now}. Since last heartbeat processed: {} messages", self.message_counter);
 								self.message_counter = 0;
 							}
-							0 =>
+							0 => {
 								if let Some(d) = &event.d {
 									let event_type = event.t.as_deref();
 									let result = match event_type {
@@ -189,10 +190,12 @@ impl DiscordDms {
 									if let Err(e) = result {
 										error!("Error handling {}: {e}", event_type.unwrap_or("unknown"));
 									}
-								},
+								}
+							}
 							_ => {}
 						}
-					},
+					}
+				}
 				Event::Message(Some(Ok(Message::Close(frame)))) => {
 					return classify_close(frame);
 				}
@@ -200,11 +203,11 @@ impl DiscordDms {
 					// Non-text non-close message (Ping/Pong/Binary), ignore
 				}
 				Event::Message(Some(Err(e))) => {
-					error!("Discord WebSocket error: {e}, reconnecting...");
+					warn!("Discord WebSocket error: {e}, reconnecting...");
 					return Ok(());
 				}
 				Event::Message(None) => {
-					error!("Discord WebSocket closed (no frame), reconnecting...");
+					warn!("Discord WebSocket closed (no frame), reconnecting...");
 					return Ok(());
 				}
 			}
@@ -492,27 +495,24 @@ fn reconnect_delay(attempt: u32) -> Duration {
 	Duration::from_secs_f64(delay_secs)
 }
 
-/// Map a Discord WS close frame to either a recoverable reconnect (`Ok(())`) or a fatal
-/// auth-class error. Codes 4004/4010-4014 are documented as fatal in the Discord
-/// gateway docs (invalid token, invalid intent, datacenter blocked, etc.).
+/// `Ok(())` to reconnect. Codes per the Discord gateway docs; 4004/4010-4014 say the token or intents are bad.
 fn classify_close(frame: Option<tokio_tungstenite::tungstenite::protocol::frame::CloseFrame>) -> Result<(), AdapterError> {
 	let Some(frame) = frame else {
-		error!("Discord WS closed with no frame, reconnecting...");
+		warn!("Discord WS closed with no frame, reconnecting...");
 		return Ok(());
 	};
 	let code: u16 = match frame.code {
 		CloseCode::Library(n) => n,
 		other => u16::from(other),
 	};
+	let detail = format!("Discord WS close code {code}: {}", frame.reason);
 	match code {
-		4004 | 4010 | 4011 | 4012 | 4013 | 4014 => Err(AdapterError::Auth {
-			surface: SURFACE,
-			detail: format!("Discord WS close code {code}: {}", frame.reason),
-		}),
-		_ => {
-			error!("Discord WS closed with code {code}: {}, reconnecting...", frame.reason);
+		1000..=1011 | 4000..=4003 | 4005..=4009 => {
+			warn!("{detail}, reconnecting...");
 			Ok(())
 		}
+		4004 | 4010..=4014 => Err(AdapterError::Auth { surface: SURFACE, detail }),
+		_ => Err(AdapterError::Unhandled { surface: SURFACE, detail }),
 	}
 }
 
@@ -709,6 +709,23 @@ mod tests {
 		});
 		discord.handle_message(&mine).unwrap();
 		assert!(rx.try_recv().is_err());
+	}
+
+	#[test]
+	fn unknown_close_codes_end_the_surface() {
+		use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+		let close = |code: u16| {
+			classify_close(Some(CloseFrame {
+				code: code.into(),
+				reason: "".into(),
+			}))
+		};
+		assert!(close(1001).is_ok());
+		assert!(close(4009).is_ok());
+		assert!(classify_close(None).is_ok());
+		assert!(matches!(close(4004), Err(AdapterError::Auth { .. })));
+		assert!(matches!(close(4999), Err(AdapterError::Unhandled { .. })));
+		assert!(matches!(close(1015), Err(AdapterError::Unhandled { .. })));
 	}
 
 	#[test]

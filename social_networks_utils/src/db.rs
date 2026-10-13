@@ -1,5 +1,5 @@
 use std::{
-	collections::hash_map::Entry,
+	collections::{HashMap, hash_map::Entry},
 	path::{Path, PathBuf},
 	sync::Mutex,
 	time::Duration,
@@ -54,7 +54,11 @@ impl Database {
 		.await
 		.wrap_err("failed to create twitter_schedule_attempts table")?;
 		conn.execute_batch(
-			"CREATE TABLE IF NOT EXISTS state (
+			"CREATE TABLE IF NOT EXISTS email_attempts (
+                message_id TEXT PRIMARY KEY,
+                attempts   INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS state (
                 key        TEXT PRIMARY KEY,
                 value      TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -218,6 +222,20 @@ impl Database {
 		Ok(())
 	}
 
+	/// Counted before the message is worked on, so attempts that kill the process add up too. Returns the count including this one.
+	pub async fn attempt_email(&self, message_id: &str) -> Result<u32> {
+		let mut rows = self
+			.conn
+			.query(
+				"INSERT INTO email_attempts (message_id, attempts) VALUES (?1, 1) ON CONFLICT (message_id) DO UPDATE SET attempts = attempts + 1 RETURNING attempts",
+				[message_id],
+			)
+			.await
+			.wrap_err("failed to record email attempt")?;
+		let row = rows.next().await.wrap_err("failed to read attempts")?.expect("RETURNING yields the upserted row");
+		row.get(0).wrap_err("failed to read attempts")
+	}
+
 	/// Crash mid-post leaves the row with neither outcome, and it still counts as an attempt.
 	pub async fn last_twitter_schedule_attempt(&self) -> Result<Option<Timestamp>> {
 		let mut rows = self
@@ -283,34 +301,6 @@ impl Database {
 	async fn has_session(&self, name: &str) -> Result<bool> {
 		let mut rows = self.conn.query("SELECT 1 FROM telegram_session WHERE name = ?1", [name]).await?;
 		Ok(rows.next().await?.is_some())
-	}
-
-	/// `<name>.session` is grammers' own sqlite, from before sessions lived here. Its peers are not enumerable through `Session`; the dialog prefetch on connect re-caches them.
-	async fn import_legacy_session(&self, name: &str) -> Result<bool> {
-		let Some(file) = legacy_state_file(&format!("{name}.session")) else {
-			return Ok(false);
-		};
-		info!("Importing {} into the db", file.display());
-		let legacy = grammers_session::storages::SqliteSession::open(&file).await?;
-		let mut data = SessionData {
-			home_dc: legacy.home_dc_id()?,
-			..Default::default()
-		};
-		for id in data.dc_options.keys().copied().collect::<Vec<_>>() {
-			if let Some(option) = legacy.dc_option(id)? {
-				data.dc_options.insert(id, option);
-			}
-		}
-		data.updates_state = legacy.updates_state().await?;
-		drop(legacy);
-		self.write_session(name, &data).await?;
-		for suffix in ["", "-wal", "-shm", "-journal"] {
-			let f = PathBuf::from(format!("{}{suffix}", file.display()));
-			if f.exists() {
-				std::fs::remove_file(&f)?;
-			}
-		}
-		Ok(true)
 	}
 
 	async fn write_session(&self, name: &str, data: &SessionData) -> Result<()> {
@@ -381,32 +371,23 @@ pub struct DbSession {
 	data: Mutex<SessionData>,
 }
 impl DbSession {
-	/// `seed_from` is the session `name` starts as when it has none: the auth key travels with it, so no login and no new device.
-	pub async fn open(db: Database, name: &str, seed_from: Option<&str>) -> Result<Self> {
-		if !db.has_session(name).await? && !db.import_legacy_session(name).await? {
-			match seed_from {
-				Some(seed) if db.has_session(seed).await? || db.import_legacy_session(seed).await? => {
-					info!("Seeding telegram session {name} from {seed}");
-					let tx = db.conn.transaction().await?;
-					for table in ["telegram_dc_option", "telegram_peer"] {
-						tx.execute(
-							&format!("INSERT INTO {table} (session, id, value) SELECT ?1, id, value FROM {table} WHERE session = ?2"),
-							[name, seed],
-						)
-						.await?;
-					}
-					tx.execute(
-						"INSERT INTO telegram_session (name, home_dc, updates_state) SELECT ?1, home_dc, updates_state FROM telegram_session WHERE name = ?2",
-						[name, seed],
-					)
-					.await?;
-					tx.commit().await?;
+	/// A session with no row starts from its entry in `minted`, JSON `{ "<name>": {home_dc, dc_options} }`, else fresh, which needs a login.
+	pub async fn open(db: Database, name: &str, minted: Option<&str>) -> Result<Self> {
+		if !db.has_session(name).await? {
+			let mut minted: HashMap<String, Minted> = match minted {
+				Some(json) => serde_json::from_str(json).wrap_err("minted telegram sessions are not `{ name: {home_dc, dc_options} }`")?,
+				None => HashMap::new(),
+			};
+			let mut data = SessionData::default();
+			match minted.remove(name) {
+				Some(Minted { home_dc, dc_options }) => {
+					info!("Importing minted telegram session {name}");
+					data.home_dc = home_dc;
+					data.dc_options.extend(dc_options.into_iter().map(|o| (o.id, o)));
 				}
-				_ => {
-					info!("No telegram session {name}, starting a fresh one");
-					db.write_session(name, &SessionData::default()).await?;
-				}
+				None => info!("No telegram session {name}, starting a fresh one"),
 			}
+			db.write_session(name, &data).await?;
 		}
 		let data = db.load_session(name).await?;
 		Ok(Self {
@@ -419,6 +400,12 @@ impl DbSession {
 	fn data(&self) -> std::sync::MutexGuard<'_, SessionData> {
 		self.data.lock().expect("no panic while holding the session lock")
 	}
+}
+
+#[derive(serde::Deserialize)]
+struct Minted {
+	home_dc: i32,
+	dc_options: Vec<DcOption>,
 }
 
 fn legacy_state_file(name: &str) -> Option<PathBuf> {

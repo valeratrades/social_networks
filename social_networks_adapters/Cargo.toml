@@ -29,6 +29,7 @@ futures.workspace = true
 futures-util.workspace = true
 google-gmail1.workspace = true
 grammers-client.workspace = true
+grammers-mtproto.workspace = true
 grammers-session.workspace = true
 grammers-tl-types.workspace = true
 hmac.workspace = true

@@ -25,7 +25,7 @@ use tokio::{
 	runtime::Handle,
 	time::{self, Duration},
 };
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use v_utils::{TimeframeRange, log, macros::MyConfigPrimitives, memory_lease::Lease};
 use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod, authenticator_delegate::InstalledFlowDelegate};
 
@@ -33,7 +33,7 @@ pub use self::script::Scripts;
 use self::script::{Reply, Script, Step};
 use crate::{
 	breaker::CircuitBreakers,
-	client::{AdapterError, Client as AdapterClient},
+	client::{AdapterError, Client as AdapterClient, Fault},
 	llm::LlmConfig,
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
@@ -42,6 +42,8 @@ use crate::{
 mod script;
 
 const SURFACE: &str = "email";
+/// Attempts on one mail before it is quarantined: a mail that kills the process would otherwise be retried on every restart.
+const MAX_ATTEMPTS: u32 = 3;
 type Hub = Gmail<HttpsConnector<HttpConnector>>;
 type ImapSession = Session<Box<dyn ImapConnection>>;
 #[derive(Args)]
@@ -260,25 +262,16 @@ impl EmailMonitor {
 					all_mail = Some(this.connect_all_mail()?);
 				}
 				let all_mail = all_mail.as_mut().expect("connected above");
-				if let Err(e) = this.process_message_imap(&rt, &mut session, all_mail, uid, id) {
-					if classify_email_auth_error(&e).is_some() {
-						return Err(e);
-					}
-					error!("Failed to process message {uid}: {e:#}");
-				}
+				this.process_message_imap(&rt, &mut session, all_mail, uid, id)
+					.with_context(|| format!("Failed to process message {uid}"))?;
 			}
 			for held in this.take_due() {
 				let Backend::Imap(uid) = held.at else {
 					unreachable!("an IMAP account holds only IMAP messages")
 				};
 				let to = held.decided.verdict.send.as_ref().expect("only replies are held").to.clone();
-				if let Err(e) = this.settle_imap(&rt, &mut session, uid, held.decided) {
-					if classify_email_auth_error(&e).is_some() {
-						return Err(e);
-					}
-					error!("Failed to send the held reply to {to}: {e:#}");
-					continue;
-				}
+				this.settle_imap(&rt, &mut session, uid, held.decided)
+					.with_context(|| format!("Failed to send the held reply to {to}"))?;
 				info!("Sent the held reply to {to}");
 			}
 
@@ -436,25 +429,18 @@ impl EmailMonitor {
 		}
 
 		for (gmail_id, thread_id) in new {
-			if let Err(e) = self.process_message_oauth(&hub, gmail_id, thread_id).await {
-				if classify_email_auth_error(&e).is_some() {
-					return Err(e);
-				}
-				error!("Failed to process message {gmail_id}: {e:#}");
-			}
+			self.process_message_oauth(&hub, gmail_id, thread_id)
+				.await
+				.with_context(|| format!("Failed to process message {gmail_id}"))?;
 		}
 		for held in self.take_due() {
 			let Backend::Oauth { gmail_id, thread_id } = held.at else {
 				unreachable!("an OAuth account holds only OAuth messages")
 			};
 			let to = held.decided.verdict.send.as_ref().expect("only replies are held").to.clone();
-			if let Err(e) = self.settle_oauth(&hub, &gmail_id, &thread_id, held.decided).await {
-				if classify_email_auth_error(&e).is_some() {
-					return Err(e);
-				}
-				error!("Failed to send the held reply to {to}: {e:#}");
-				continue;
-			}
+			self.settle_oauth(&hub, &gmail_id, &thread_id, held.decided)
+				.await
+				.with_context(|| format!("Failed to send the held reply to {to}"))?;
 			info!("Sent the held reply to {to}");
 		}
 
@@ -622,6 +608,17 @@ impl EmailMonitor {
 
 	/// `email` is the unread message that brought the thread up.
 	async fn decide(&self, thread: &[EmailMessage], email: &EmailMessage) -> Result<Verdict> {
+		if self.db.attempt_email(&email.id).await? > MAX_ATTEMPTS {
+			error!(
+				"Email {} from {} ({:?}) failed {MAX_ATTEMPTS} attempts; quarantined, left unread",
+				email.id, email.from, email.subject
+			);
+			return Ok(Verdict {
+				action: "quarantined",
+				send: None,
+				mark_read: false,
+			});
+		}
 		if let Some(script) = self.config.scripts.find(thread)? {
 			return self.hold(script, thread, email).await;
 		}
@@ -877,12 +874,9 @@ impl AdapterClient for EmailMonitor {
 					time::sleep(sleep).await;
 				}
 				Err(e) => {
-					if let Some(detail) = classify_email_auth_error(&e) {
-						return Err(AdapterError::Auth { surface: SURFACE, detail });
-					}
+					let e = classify(&e).retry(SURFACE)?;
 					failures += 1;
-					error!("Email monitor error (attempt {failures}): {e:#}");
-					error!("Retrying in 5 minutes...");
+					warn!("Email monitor error (attempt {failures}): {e}, retrying in 5 minutes");
 					time::sleep(Duration::from_secs(5 * 60)).await;
 				}
 			}
@@ -890,21 +884,37 @@ impl AdapterClient for EmailMonitor {
 	}
 }
 
-/// Look at the error chain (string-matched) to decide whether this is an auth-class error.
-/// Returns `Some(detail)` for auth errors so the caller can promote to `AdapterError::Auth`.
-fn classify_email_auth_error(e: &color_eyre::eyre::Report) -> Option<String> {
-	let s = format!("{e:#}");
-	let lc = s.to_lowercase();
-	let is_auth = lc.contains("imap login failed")
-		|| lc.contains("smtp authentication failed")
-		|| lc.contains("authenticationfailed")
-		|| lc.contains("invalid_grant")
-		|| lc.contains("invalid_credentials")
-		|| lc.contains("token expired")
-		|| lc.contains("unauthorized")
-		|| lc.contains(" 401")
-		|| lc.contains(" 403");
-	if is_auth { Some(s) } else { None }
+/// Auth by the error's text, transient by the type of something in its chain; anything else is `Unhandled`.
+fn classify(e: &color_eyre::eyre::Report) -> Fault {
+	const AUTH: [&str; 9] = [
+		"imap login failed",
+		"smtp authentication failed",
+		"authenticationfailed",
+		"invalid_grant",
+		"invalid_credentials",
+		"token expired",
+		"unauthorized",
+		" 401",
+		" 403",
+	];
+	let detail = format!("{e:#}");
+	let lc = detail.to_lowercase();
+	if AUTH.iter().any(|t| lc.contains(t)) {
+		return Fault::Auth(detail);
+	}
+	let transient = e.chain().any(|c| {
+		c.is::<std::io::Error>()
+			|| matches!(c.downcast_ref::<imap::Error>(), Some(imap::Error::Io(_) | imap::Error::ConnectionLost | imap::Error::Bye(_)))
+			|| match c.downcast_ref::<google_gmail1::Error>() {
+				Some(google_gmail1::Error::HttpError(_) | google_gmail1::Error::Io(_)) => true,
+				Some(google_gmail1::Error::Failure(response)) => response.status().is_server_error() || response.status().as_u16() == 429,
+				_ => false,
+			} || c.downcast_ref::<lettre::transport::smtp::Error>().is_some_and(|e| e.is_transient() || e.is_timeout())
+	});
+	match transient {
+		true => Fault::Transient(detail),
+		false => Fault::Unhandled(detail),
+	}
 }
 
 #[derive(Clone)]
