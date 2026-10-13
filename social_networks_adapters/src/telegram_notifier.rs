@@ -1,5 +1,6 @@
 use color_eyre::eyre::{Result, bail, eyre};
 use reqwest::Client;
+use social_networks_utils::db::Database;
 use tracing::{error, instrument};
 
 use crate::telegram_dms::TelegramConfig;
@@ -57,20 +58,28 @@ impl TelegramNotifier {
 	}
 
 	/// The Bot API refuses to resolve a *user* `@name` (`getChat` answers "chat not found"), and
-	/// a user's private chat id is their user id, so we lift it off any update they authored.
-	/// Requires the owner to have messaged the bot within its ~24h update retention.
+	/// a user's private chat id is their user id, so we lift it off any update they authored, once:
+	/// updates are only retained ~24h, so the id is kept in the db past them.
 	async fn owner_chat_id(&self) -> Result<i64> {
+		let owner = self.config.username.trim_start_matches('@');
+		let key = format!("telegram_owner_chat_id:{owner}");
+		let db = Database::try_new().await?;
+		if let Some(chat_id) = db.state(&key).await? {
+			return Ok(chat_id);
+		}
+
 		let url = format!("https://api.telegram.org/bot{}/getUpdates", self.config.bot_token);
 		let response: serde_json::Value = self.client.get(&url).send().await?.json().await?;
 		let updates = response.get("result").and_then(|r| r.as_array()).ok_or_else(|| eyre!("getUpdates returned {response}"))?;
 
-		let owner = self.config.username.trim_start_matches('@');
-		updates
+		let chat_id = updates
 			.iter()
 			.filter_map(|u| u.get("message")?.get("from"))
 			.find(|from| from.get("username").and_then(|u| u.as_str()) == Some(owner))
 			.and_then(|from| from.get("id").and_then(|id| id.as_i64()))
-			.ok_or_else(|| eyre!("no update from @{owner} in the bot's retention window; message the bot once so it learns the chat id"))
+			.ok_or_else(|| eyre!("no update from @{owner} in the bot's retention window; message the bot once so it learns the chat id"))?;
+		db.set_state(&key, &chat_id).await?;
+		Ok(chat_id)
 	}
 
 	#[instrument(skip_all)]

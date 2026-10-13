@@ -24,8 +24,10 @@ pub use reads::{Chapter, Cue, Listed, Video, download, listing, uploads, video};
 
 const SURFACE: &str = "youtube";
 const STATE_KEY: &str = "youtube_last_uploaded";
-/// The feeds endpoint 404s every channel at once, Google's own included, for days at a time.
+/// The feeds endpoint answers 404 at random, per request, any channel.
 pub(crate) const DEGRADED: &[u16] = &[404];
+/// An upload older than this is not announced, so a channel unread for as long may have one missed.
+const ANNOUNCE_WINDOW: SignedDuration = SignedDuration::from_mins(15);
 #[derive(Args)]
 pub struct YoutubeArgs {}
 
@@ -83,33 +85,35 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 	let mut last_uploaded: LastUploadedTitles = db.state(STATE_KEY).await?.unwrap_or_default(); // none yet: nothing announced so far
 
 	let mut degradation = Degradation::default();
+	let started = Timestamp::now();
+	let mut last_read: HashMap<&str, Timestamp> = youtube_config.channels.keys().map(|name| (name.as_str(), started)).collect(); // never read since start: blind since start
 
 	info!("--YouTube-- monitor started");
 
 	//LOOP: daemon - runs until process termination
 	loop {
-		let mut unavailable = Vec::new();
 		for (channel_name, channel_id) in &youtube_config.channels {
 			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram, llm_config).await {
-				Ok(_) => debug!("Checked channel: {channel_name}"),
-				Err(Fault::Transient(e)) => warn!("Error checking channel {channel_name}: {e}"),
-				Err(Fault::Degraded(e)) => {
-					warn!("Feed of {channel_name} unavailable: {e}");
-					unavailable.push(channel_name.as_str());
+				Ok(_) => {
+					debug!("Checked channel: {channel_name}");
+					last_read.insert(channel_name.as_str(), Timestamp::now());
 				}
+				Err(Fault::Transient(e) | Fault::Degraded(e)) => warn!("Error checking channel {channel_name}: {e}"),
 				Err(fault) => return Err(fault),
 			}
 		}
 
 		db.set_state(STATE_KEY, &last_uploaded).await?;
 
-		let pause = match unavailable.is_empty() {
-			true => Duration::from_secs(60),
-			false => Duration::from_secs(5 * 60),
-		};
-		let now = (!unavailable.is_empty()).then(|| format!("RSS feeds answer 404 for {}", unavailable.join(", ")));
+		let now = Timestamp::now();
+		let blind: Vec<&str> = last_read
+			.iter()
+			.filter(|(_, read)| now.duration_since(**read) >= ANNOUNCE_WINDOW)
+			.map(|(name, _)| *name)
+			.collect();
+		let now = (!blind.is_empty()).then(|| format!("no successful RSS read in {ANNOUNCE_WINDOW:#} for {}", blind.join(", ")));
 		degradation.observe(&telegram, SURFACE, now).await;
-		time::sleep(pause).await;
+		time::sleep(Duration::from_secs(60)).await;
 	}
 }
 
@@ -134,7 +138,7 @@ async fn check_channel(
 	let now = Timestamp::now();
 	let time_since_upload: SignedDuration = now.duration_since(published);
 
-	if time_since_upload < SignedDuration::from_mins(15) {
+	if time_since_upload < ANNOUNCE_WINDOW {
 		if let Some(last_title) = last_uploaded.channels.get(channel_name)
 			&& last_title == &title
 		{
