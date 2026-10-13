@@ -330,7 +330,7 @@ impl Database {
 
 	async fn load_session(&self, name: &str) -> Result<SessionData> {
 		let mut rows = self.conn.query("SELECT home_dc, updates_state FROM telegram_session WHERE name = ?1", [name]).await?;
-		let row = rows.next().await?.expect("open() ensured the row");
+		let row = rows.next().await?.expect("callers checked has_session");
 		let mut data = SessionData {
 			home_dc: row.get(0)?,
 			dc_options: Default::default(),
@@ -371,25 +371,31 @@ pub struct DbSession {
 	data: Mutex<SessionData>,
 }
 impl DbSession {
-	/// A session with no row starts from its entry in `minted`, JSON `{ "<name>": {home_dc, dc_options} }`, else fresh, which needs a login.
+	/// `minted`, JSON `{ "<name>": {home_dc, dc_options} }`, is the key `name` holds whenever it has an entry: a row opened before
+	/// its key reached the host would otherwise keep its unauthorized one forever. Without an entry a new row starts fresh, which needs a login.
 	pub async fn open(db: Database, name: &str, minted: Option<&str>) -> Result<Self> {
-		if !db.has_session(name).await? {
-			let mut minted: HashMap<String, Minted> = match minted {
-				Some(json) => serde_json::from_str(json).wrap_err("minted telegram sessions are not `{ name: {home_dc, dc_options} }`")?,
-				None => HashMap::new(),
-			};
-			let mut data = SessionData::default();
-			match minted.remove(name) {
-				Some(Minted { home_dc, dc_options }) => {
-					info!("Importing minted telegram session {name}");
-					data.home_dc = home_dc;
-					data.dc_options.extend(dc_options.into_iter().map(|o| (o.id, o)));
-				}
-				None => info!("No telegram session {name}, starting a fresh one"),
+		let mut minted: HashMap<String, Minted> = match minted {
+			Some(json) => serde_json::from_str(json).wrap_err("minted telegram sessions are not `{ name: {home_dc, dc_options} }`")?,
+			None => HashMap::new(),
+		};
+		let (mut data, mut dirty) = match db.has_session(name).await? {
+			true => (db.load_session(name).await?, false),
+			false => {
+				info!("No telegram session {name}, starting a fresh one");
+				(SessionData::default(), true)
 			}
+		};
+		if let Some(Minted { home_dc, dc_options }) = minted.remove(name)
+			&& (data.home_dc != home_dc || dc_options.iter().any(|o| data.dc_options.get(&o.id).map(|held| held.auth_key) != Some(o.auth_key)))
+		{
+			info!("Telegram session {name} takes its minted key");
+			data.home_dc = home_dc;
+			data.dc_options.extend(dc_options.into_iter().map(|o| (o.id, o)));
+			dirty = true;
+		}
+		if dirty {
 			db.write_session(name, &data).await?;
 		}
-		let data = db.load_session(name).await?;
 		Ok(Self {
 			db,
 			name: name.to_owned(),

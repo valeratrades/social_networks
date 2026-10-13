@@ -21,5 +21,13 @@ async fn minted_key_opens_only_on_its_host() {
 	check("@user_channel_watch@evinvest-fallback", None, SessionData::default().home_dc).await;
 	check("@user@rpi5", None, SessionData::default().home_dc).await;
 
+	// a row opened before its key was minted (or before the secret reached the pod) takes the key once it is
+	let late = "@user_late@rpi5";
+	DbSession::open(Database::try_new().await.unwrap(), late, None).await.unwrap();
+	let minted = serde_json::json!({ late: { "home_dc": 4, "dc_options": [dc] } }).to_string();
+	let session = DbSession::open(Database::try_new().await.unwrap(), late, Some(&minted)).await.unwrap();
+	assert_eq!(session.dc_option(4).unwrap().unwrap().auth_key, Some([7; 256]));
+	assert_eq!(session.home_dc_id().unwrap(), 4);
+
 	std::fs::remove_dir_all(&state).unwrap();
 }
