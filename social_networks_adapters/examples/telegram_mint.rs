@@ -5,7 +5,7 @@
 //! `PHONE_NUMBER_FR=... TELEGRAM_API_HASH=... cargo r -p social_networks_adapters --example telegram_mint -- <host>...`
 use std::sync::Arc;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, bail};
 use futures::future::{Either, select};
 use grammers_client::{Client, SenderPool, client::PasswordToken, tl};
 use grammers_session::{Session as _, SessionData, storages::MemorySession};
