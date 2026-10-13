@@ -21,6 +21,8 @@ use v_utils::{Timeframe, macros::MyConfigPrimitives};
 
 use crate::{
 	client::{AdapterError, Client as AdapterClient},
+	telegram_dms::TelegramConfig,
+	telegram_notifier::TelegramNotifier,
 	twitter::{TwitterConfig, TwitterOauthConfig},
 };
 
@@ -40,10 +42,14 @@ pub struct TwitterPollConfig {
 
 pub struct TwitterSchedule {
 	twitter_config: TwitterConfig,
+	notifier: TelegramNotifier,
 }
 impl TwitterSchedule {
-	pub fn new(twitter_config: TwitterConfig) -> Self {
-		Self { twitter_config }
+	pub fn new(twitter_config: TwitterConfig, telegram_config: TelegramConfig) -> Self {
+		Self {
+			twitter_config,
+			notifier: TelegramNotifier::new(telegram_config),
+		}
 	}
 }
 
@@ -58,14 +64,18 @@ impl AdapterClient for TwitterSchedule {
 
 	async fn listen(&mut self) -> Result<Infallible, AdapterError> {
 		println!("Twitter Schedule: Starting scheduled poll posting...");
-		match schedule_sentiment_poll(&self.twitter_config).await {
+		match schedule_sentiment_poll(&self.twitter_config, &self.notifier).await {
 			Err(ScheduleError::Auth(detail)) => Err(AdapterError::Auth { surface: SURFACE, detail }),
+			Err(ScheduleError::Depleted(detail)) => unreachable!("a depleted slot is skipped where it is raised: {detail}"),
 			Err(ScheduleError::Unhandled(detail)) => Err(AdapterError::Unhandled { surface: SURFACE, detail }),
 		}
 	}
 }
 
+#[derive(Debug)]
 enum ScheduleError {
+	/// The API credits are depleted: no retry can post until more are bought.
+	Depleted(String),
 	Auth(String),
 	Unhandled(String),
 }
@@ -77,8 +87,8 @@ impl<E: Into<color_eyre::eyre::Report>> From<E> for ScheduleError {
 }
 
 /// Posts sentiment polls `schedule_every` after the last attempt on record, so a restart never posts early.
-#[instrument(skip(twitter_config))]
-async fn schedule_sentiment_poll(twitter_config: &TwitterConfig) -> Result<Infallible, ScheduleError> {
+#[instrument(skip_all)]
+async fn schedule_sentiment_poll(twitter_config: &TwitterConfig, notifier: &TelegramNotifier) -> Result<Infallible, ScheduleError> {
 	let poll_config = twitter_config
 		.poll
 		.as_ref()
@@ -116,6 +126,11 @@ async fn schedule_sentiment_poll(twitter_config: &TwitterConfig) -> Result<Infal
 				Err(ScheduleError::Auth(detail)) => {
 					db.finish_twitter_schedule_attempt(row, Err(&detail)).await?;
 					return Err(ScheduleError::Auth(detail));
+				}
+				Err(ScheduleError::Depleted(detail)) => {
+					db.finish_twitter_schedule_attempt(row, Err(&detail)).await?;
+					notifier.report_recoverable(SURFACE, &format!("credits depleted, this slot's poll is skipped: {detail}")).await;
+					break;
 				}
 				Err(ScheduleError::Unhandled(e)) => {
 					db.finish_twitter_schedule_attempt(row, Err(&e)).await?;
@@ -214,16 +229,20 @@ async fn post_tweet(oauth: &TwitterOauthConfig, tweet: &CreateTweetRequest) -> R
 	let response_text = response.text().await.context("Failed to read response body")?;
 
 	if !status.is_success() {
-		let detail = format!("Twitter API error (status {status}): {response_text}");
-		if matches!(status.as_u16(), 401 | 403) {
-			return Err(ScheduleError::Auth(detail));
-		}
-		return Err(ScheduleError::Unhandled(detail));
+		return Err(status_error(status.as_u16(), format!("Twitter API error (status {status}): {response_text}")));
 	}
 
 	let tweet_response: CreateTweetResponse = serde_json::from_str(&response_text).context("Failed to parse tweet response")?;
 
 	Ok(tweet_response)
+}
+
+fn status_error(status: u16, detail: String) -> ScheduleError {
+	match status {
+		401 | 403 => ScheduleError::Auth(detail),
+		402 => ScheduleError::Depleted(detail),
+		_ => ScheduleError::Unhandled(detail),
+	}
 }
 
 /// Variables provider with lazy async evaluation
@@ -376,6 +395,16 @@ struct TweetData {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn depleted_credits_skip_the_slot_instead_of_retrying() {
+		let class = |code| match status_error(code, String::new()) {
+			ScheduleError::Depleted(_) => "depleted",
+			ScheduleError::Auth(_) => "auth",
+			ScheduleError::Unhandled(_) => "unhandled",
+		};
+		assert_eq!([402, 401, 403, 500].map(class), ["depleted", "auth", "auth", "unhandled"]);
+	}
 
 	#[test]
 	fn test_serialize_tweet_request() {

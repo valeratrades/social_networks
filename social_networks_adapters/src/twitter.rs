@@ -10,7 +10,7 @@ use tracing::{error, info, warn};
 use v_utils::macros::MyConfigPrimitives;
 
 use crate::{
-	client::{AdapterError, Client, Fault, ok_or_classify},
+	client::{AdapterError, Client, Degradation, Fault, ok_or_classify},
 	reach::{Direct, Page, Window},
 	telegram_dms::TelegramConfig,
 	telegram_notifier::TelegramNotifier,
@@ -19,6 +19,8 @@ use crate::{
 
 const SURFACE: &str = "twitter";
 const STATE_KEY: &str = "twitter_parsed";
+/// 402: the API credits are depleted, for as long as nobody buys more.
+pub(crate) const DEGRADED: &[u16] = &[402];
 #[derive(Args)]
 pub struct TwitterArgs {}
 
@@ -123,39 +125,24 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 
 	// Track last tweet IDs for each user in each list
 	let mut user_last_tweets: HashMap<String, String> = HashMap::new();
+	let mut degradation = Degradation::default();
 
 	//LOOP: daemon - runs until process termination
 	loop {
-		// Process everytime polls list
-		match process_list(
-			&client,
-			twitter_config,
-			&twitter_config.everytime_polls_list,
-			&telegram,
-			&mut user_last_tweets,
-			&mut parsed_state.poll_tweets,
-		)
-		.await
-		{
-			Ok(()) => {}
-			Err(Fault::Transient(e)) => warn!("Error processing everytime polls list: {e}"),
-			Err(fault) => return Err(fault),
-		}
-
-		// Process sometimes polls list
-		match process_list(
-			&client,
-			twitter_config,
-			&twitter_config.sometimes_polls_list,
-			&telegram,
-			&mut user_last_tweets,
-			&mut parsed_state.maybe_poll_tweets,
-		)
-		.await
-		{
-			Ok(()) => {}
-			Err(Fault::Transient(e)) => warn!("Error processing sometimes polls list: {e}"),
-			Err(fault) => return Err(fault),
+		let mut depleted = None;
+		for (name, list_id, parsed) in [
+			("everytime", &twitter_config.everytime_polls_list, &mut parsed_state.poll_tweets),
+			("sometimes", &twitter_config.sometimes_polls_list, &mut parsed_state.maybe_poll_tweets),
+		] {
+			match process_list(&client, twitter_config, list_id, &telegram, &mut user_last_tweets, parsed).await {
+				Ok(()) => {}
+				Err(Fault::Transient(e)) => warn!("Error processing {name} polls list: {e}"),
+				Err(Fault::Degraded(e)) => {
+					depleted = Some(e);
+					break;
+				}
+				Err(fault) => return Err(fault),
+			}
 		}
 
 		db.set_state(STATE_KEY, &parsed_state).await?;
@@ -163,8 +150,12 @@ async fn run_twitter_monitor(twitter_config: &TwitterConfig, telegram_config: &T
 		let now = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
 		info!("Heartbeat. Time: {}", strtime::format("%m/%d/%y-%H:%M", &now).unwrap());
 
-		// Sleep for 60 seconds
-		time::sleep(Duration::from_secs(60)).await;
+		let pause = match depleted {
+			None => Duration::from_secs(60),
+			Some(_) => Duration::from_secs(60 * 60), // a re-check costs nothing, but nothing changes until credits are bought
+		};
+		degradation.observe(&telegram, SURFACE, depleted).await;
+		time::sleep(pause).await;
 	}
 }
 
@@ -186,7 +177,7 @@ async fn process_list(
 		.await
 		.context("Failed to get list members")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "list_members").await?;
+	let response = ok_or_classify(response, "list_members", DEGRADED).await?;
 
 	let list_response: TwitterListResponse = response.json().await.context("Failed to parse list response")?;
 
@@ -230,7 +221,7 @@ async fn check_for_updates(
 		.await
 		.context("Failed to get user tweets")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "user_tweets").await?;
+	let response = ok_or_classify(response, "user_tweets", DEGRADED).await?;
 
 	let tweets_response: UserTweetsResponse = response.json().await.context("Failed to parse tweets response")?;
 
@@ -256,7 +247,7 @@ async fn check_for_updates(
 		.await
 		.context("Failed to get tweet details")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "tweet_details").await?;
+	let response = ok_or_classify(response, "tweet_details", DEGRADED).await?;
 
 	let tweet_response: TweetResponse = response.json().await.context("Failed to parse tweet response")?;
 

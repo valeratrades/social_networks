@@ -154,7 +154,7 @@ fn main() {
 			Err::<(), AdapterError>(err)
 		}),
 		Commands::TwitterSchedule(_) => run_async("twitter_schedule", || async {
-			let mut adapter = TwitterSchedule::new(config.twitter);
+			let mut adapter = TwitterSchedule::new(config.twitter, config.telegram);
 			let err = adapter.listen().await.unwrap_err();
 			alert(&err).await;
 			Err::<(), AdapterError>(err)

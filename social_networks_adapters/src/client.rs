@@ -5,6 +5,8 @@ use reqwest::StatusCode;
 use thiserror::Error;
 use tracing::error;
 
+use crate::telegram_notifier::TelegramNotifier;
+
 /// A long-running social-network surface.
 ///
 /// `listen` runs forever in the happy path; it retries only errors classified `Transient` at
@@ -65,6 +67,8 @@ pub fn install_panic_alert(surface: &'static str) {
 #[derive(Debug)]
 pub(crate) enum Fault {
 	Transient(String),
+	/// A known condition that lasts until something outside us changes: waited out where it is raised.
+	Degraded(String),
 	Auth(String),
 	Unhandled(String),
 }
@@ -77,6 +81,7 @@ impl Fault {
 	pub(crate) fn retry(self, surface: &'static str) -> Result<String, AdapterError> {
 		match self {
 			Fault::Transient(detail) => Ok(detail),
+			Fault::Degraded(detail) => unreachable!("degraded is waited out at the site that raised it: {detail}"),
 			Fault::Auth(detail) => Err(AdapterError::Auth { surface, detail }),
 			Fault::Unhandled(detail) => Err(AdapterError::Unhandled { surface, detail }),
 		}
@@ -89,21 +94,37 @@ impl<E: Into<Report>> From<E> for Fault {
 	}
 }
 
-/// Pass a successful response through; classify a failed one by its status.
-pub(crate) async fn ok_or_classify(response: reqwest::Response, op: &str) -> Result<reqwest::Response, Fault> {
+/// Pass a successful response through; classify a failed one by its status, `degraded` being the ones this surface knows to persist.
+pub(crate) async fn ok_or_classify(response: reqwest::Response, op: &str, degraded: &[u16]) -> Result<reqwest::Response, Fault> {
 	let status = response.status();
 	if status.is_success() {
 		return Ok(response);
 	}
 	let body = response.text().await.map_err(Fault::transient)?;
-	Err(http_fault(status, format!("{op}: {status}: {body}")))
+	Err(http_fault(status, format!("{op}: {status}: {body}"), degraded))
 }
 
-fn http_fault(status: StatusCode, detail: String) -> Fault {
+fn http_fault(status: StatusCode, detail: String, degraded: &[u16]) -> Fault {
 	match status.as_u16() {
+		code if degraded.contains(&code) => Fault::Degraded(detail),
 		401 | 403 => Fault::Auth(detail),
 		429 | 500..=599 => Fault::Transient(detail),
 		_ => Fault::Unhandled(detail),
+	}
+}
+
+/// A surface waiting out a [`Fault::Degraded`]: reported when it begins and when it ends, never in between.
+#[derive(Default)]
+pub(crate) struct Degradation(Option<String>);
+impl Degradation {
+	/// What the last cycle found: `None` is a cycle the condition did not show in.
+	pub(crate) async fn observe(&mut self, notifier: &TelegramNotifier, surface: &str, now: Option<String>) {
+		match (&self.0, &now) {
+			(None, Some(detail)) => notifier.report_recoverable(surface, &format!("degraded, waiting it out: {detail}")).await,
+			(Some(_), None) => notifier.report_recoverable(surface, "recovered").await,
+			_ => {}
+		}
+		self.0 = now;
 	}
 }
 
@@ -112,12 +133,26 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn only_rate_limits_and_server_errors_are_retried() {
-		let class = |code: u16| http_fault(StatusCode::from_u16(code).unwrap(), String::new());
-		assert!(matches!(class(503), Fault::Transient(_)));
-		assert!(matches!(class(429), Fault::Transient(_)));
-		assert!(matches!(class(401), Fault::Auth(_)));
-		assert!(matches!(class(402), Fault::Unhandled(_)));
-		assert!(matches!(class(404), Fault::Unhandled(_)));
+	fn statuses_classify_per_surface() {
+		let class = |code: u16, degraded: &[u16]| match http_fault(StatusCode::from_u16(code).unwrap(), String::new(), degraded) {
+			Fault::Transient(_) => "transient",
+			Fault::Degraded(_) => "degraded",
+			Fault::Auth(_) => "auth",
+			Fault::Unhandled(_) => "unhandled",
+		};
+		for (code, degraded, expected) in [
+			(503, &[][..], "transient"),
+			(429, &[], "transient"),
+			(401, &[], "auth"),
+			(402, &[], "unhandled"),
+			(404, &[], "unhandled"),
+			(402, crate::twitter::DEGRADED, "degraded"),
+			(404, crate::twitter::DEGRADED, "unhandled"),
+			(404, crate::youtube::DEGRADED, "degraded"),
+			(402, crate::youtube::DEGRADED, "unhandled"),
+			(503, crate::youtube::DEGRADED, "transient"),
+		] {
+			assert_eq!(class(code, degraded), expected, "{code} with degraded {degraded:?}");
+		}
 	}
 }

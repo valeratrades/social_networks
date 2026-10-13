@@ -113,6 +113,7 @@ pub trait Client {
 
 `listen` runs forever in the happy path. Every error is classified at the site that raised it, into one of three:
 - **Transient**: retried inside `listen` with backoff, logged at `warn`. Only what is listed below.
+- **Degraded**: a known condition that lasts until something outside us changes (an upstream outage, an account state). The surface stays up on a slower cadence, and `report_recoverable` says so once when it begins and once when it ends. Only what is listed below.
 - `AdapterError::Auth { surface, detail }`: credentials are no longer valid; retrying cannot help.
 - `AdapterError::Unhandled { surface, detail }`: everything else. Retrying an unknown error is how a revoked key gets hammered for weeks.
 
@@ -120,15 +121,15 @@ Both variants end `listen`: the binary calls `alert()` and exits non-zero.
 
 ### Per-adapter classification
 
-| Surface | Transient | `AdapterError::Auth` |
-|---|---|---|
-| Discord DMs | network errors, close codes 1000-1011, 4000-4003, 4005-4009 | close codes 4004, 4010-4014 |
-| Telegram DMs / channel watch | io, dropped, transport errors, RPC 5xx, `FLOOD_WAIT` (sleeps its value), runner exit | RPC 401, `AUTH_KEY_*` (incl. `AUTH_KEY_DUPLICATED`), `SESSION_*`, `USER_DEACTIVATED*`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED`; transport 404; not authorized with no terminal |
-| Twitter monitor | 429, 5xx, request not sent | 401, 403 |
-| Twitter schedule | — up to `num_of_retries` attempts per post | 401, 403 |
-| Email (IMAP + OAuth) | io, IMAP connection lost / BYE, Gmail transport and 429/5xx, transient SMTP | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
-| YouTube | 429, 5xx, request not sent | 401, 403 |
-| Skool chat | any refused poll, up to 5 in a row | — a dead cookie is re-minted in-process |
+| Surface | Transient | Degraded | `AdapterError::Auth` |
+|---|---|---|---|
+| Discord DMs | network errors, close codes 1000-1011, 4000-4003, 4005-4009 | — | close codes 4004, 4010-4014 |
+| Telegram DMs / channel watch | io, dropped, transport errors, RPC 5xx, `FLOOD_WAIT` (sleeps its value), runner exit | — | RPC 401, `AUTH_KEY_*` (incl. `AUTH_KEY_DUPLICATED`), `SESSION_*`, `USER_DEACTIVATED*`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED`; transport 404; not authorized with no terminal |
+| Twitter monitor | 429, 5xx, request not sent | 402 (credits depleted): re-checked hourly | 401, 403 |
+| Twitter schedule | — up to `num_of_retries` attempts per post | 402 (credits depleted): the slot is skipped, reported once | 401, 403 |
+| Email (IMAP + OAuth) | io, IMAP connection lost / BYE, Gmail transport and 429/5xx, transient SMTP | — | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
+| YouTube | 429, 5xx, request not sent | RSS 404 (the feeds endpoint 404s every channel at once for days): polled every 5 min | 401, 403 |
+| Skool chat | any refused poll, up to 5 in a row | — | — a dead cookie is re-minted in-process |
 
 Email counts attempts per mail before working on it; past 3 the mail is quarantined (processed as `quarantined`, left unread, one `error!`), so a mail that kills the process is not retried on every restart.
 
