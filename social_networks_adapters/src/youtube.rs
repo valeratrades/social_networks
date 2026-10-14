@@ -98,7 +98,8 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 					debug!("Checked channel: {channel_name}");
 					last_read.insert(channel_name.as_str(), Timestamp::now());
 				}
-				Err(Fault::Transient(e) | Fault::Degraded(e)) => warn!("Error checking channel {channel_name}: {e}"),
+				Err(Fault::Transient(e)) => warn!("Error checking channel {channel_name}: {e}"),
+				Err(Fault::Degraded(e)) => debug!("Feed of {channel_name} unavailable: {e}"), // reported by `degradation` when it spans the announce window
 				Err(fault) => return Err(fault),
 			}
 		}

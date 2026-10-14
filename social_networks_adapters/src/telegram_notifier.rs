@@ -1,7 +1,7 @@
 use color_eyre::eyre::{Result, bail, eyre};
 use reqwest::Client;
 use social_networks_utils::db::Database;
-use tracing::{error, instrument};
+use tracing::{instrument, warn};
 
 use crate::telegram_dms::TelegramConfig;
 
@@ -41,19 +41,18 @@ impl TelegramNotifier {
 		self.send_message_to_output(&message).await
 	}
 
-	/// A module reporting "still alive, but something is wrong". Delivery failures are swallowed
-	/// with an `error!`, same policy as [`crate::client::alert`]: a broken alerting path must
-	/// not kill surfaces that still work.
+	/// A module reporting "still alive, but something is wrong": a warning, never an error. A failed
+	/// delivery is logged and swallowed: a broken alerting path must not kill surfaces that still work.
 	#[instrument(skip_all)]
 	pub async fn report_recoverable(&self, surface: &str, detail: &str) {
 		let text = format!("[social_networks] {surface}: {detail}");
-		error!("{text}");
+		warn!("{text}");
 		let delivered = match self.owner_chat_id().await {
 			Ok(chat_id) => self.send_message(&text, vec![("chat_id", chat_id.to_string())]).await,
 			Err(e) => Err(e),
 		};
 		if let Err(e) = delivered {
-			error!("failed to deliver recoverable report: {e:#}");
+			warn!("failed to deliver recoverable report: {e:#}");
 		}
 	}
 
