@@ -331,7 +331,7 @@ impl EmailMonitor {
 		let EmailAuth::Imap(ImapAuth { pass }) = &self.config.auth else {
 			unreachable!("SMTP is how IMAP accounts send")
 		};
-		self.breakers.admit(&self.db, &format!("email:{}", reply.to)).await?;
+		self.breakers.admit(&self.db, &format!("email:{}", reply.to), Timestamp::now()).await?;
 		let transport = AsyncSmtpTransport::<Tokio1Executor>::relay("smtp.gmail.com")?
 			.credentials(Credentials::new(self.config.email.clone(), pass.clone()))
 			.build();
@@ -525,7 +525,7 @@ impl EmailMonitor {
 	}
 
 	async fn send_oauth(&self, hub: &Hub, thread_id: &str, reply: &Reply) -> Result<()> {
-		self.breakers.admit(&self.db, &format!("email:{}", reply.to)).await?;
+		self.breakers.admit(&self.db, &format!("email:{}", reply.to), Timestamp::now()).await?;
 		let raw = lettre::Message::try_from(reply)?.formatted();
 		let request = Message {
 			thread_id: Some(thread_id.to_owned()),

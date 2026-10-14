@@ -1,5 +1,6 @@
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
+use jiff::{SignedDuration, Timestamp};
 use social_networks_adapters::breaker::{CircuitBreakers, PerRecipient};
 use social_networks_utils::db::Database;
 use v_utils::Timeframe;
@@ -13,22 +14,21 @@ async fn a_recipient_over_the_limit_is_refused_until_the_timeout_ends() {
 	let breakers = CircuitBreakers {
 		per_recipient: PerRecipient {
 			max: 3,
-			window: Timeframe(5_000), // wall-clock: a CI runner's db writes can eat a narrower window
+			window: Timeframe(5_000),
 			timeout: Timeframe(10_000),
 		},
 	};
+	let t0 = Timestamp::now();
+	let at = |secs| t0 + SignedDuration::from_secs(secs);
 
 	for _ in 0..3 {
-		breakers.admit(&db, "email:a@x").await.unwrap();
+		breakers.admit(&db, "email:a@x", at(0)).await.unwrap();
 	}
-	assert!(breakers.admit(&db, "email:a@x").await.is_err(), "4th within the window trips");
-	breakers.admit(&db, "email:b@x").await.unwrap();
+	assert!(breakers.admit(&db, "email:a@x", at(0)).await.is_err(), "4th within the window trips");
+	breakers.admit(&db, "email:b@x", at(0)).await.unwrap();
 
-	tokio::time::sleep(Duration::from_millis(6_000)).await;
-	assert!(breakers.admit(&db, "email:a@x").await.is_err(), "window has passed, timeout has not");
-
-	tokio::time::sleep(Duration::from_millis(5_000)).await;
-	breakers.admit(&db, "email:a@x").await.unwrap();
+	assert!(breakers.admit(&db, "email:a@x", at(6)).await.is_err(), "window has passed, timeout has not");
+	breakers.admit(&db, "email:a@x", at(11)).await.unwrap();
 
 	std::fs::remove_dir_all(&state).unwrap();
 }

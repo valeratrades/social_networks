@@ -133,7 +133,10 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 	if (browse.before.is_some() || browse.after.is_some()) && messenger != Messenger::Facebook {
 		bail!("browsing happens in the chrome the message goes out from, and {platform} sends through none");
 	}
-	config.circuit_breakers.admit(&Database::try_new().await?, &format!("{platform}:{handle}")).await?;
+	config
+		.circuit_breakers
+		.admit(&Database::try_new().await?, &format!("{platform}:{handle}"), Timestamp::now())
+		.await?;
 
 	// one `Direct::send`, a session per messenger: the same enum dispatch the reads go through
 	let mut sent_at = Vec::with_capacity(bubbles.len());

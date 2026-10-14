@@ -24,8 +24,7 @@ pub struct PerRecipient {
 
 impl CircuitBreakers {
 	/// `recipient` is `<surface>:<address>`. Recorded before the send: one that errors may still have been delivered.
-	pub async fn admit(&self, db: &Database, recipient: &str) -> Result<()> {
-		let now = Timestamp::now();
+	pub async fn admit(&self, db: &Database, recipient: &str, now: Timestamp) -> Result<()> {
 		let key = format!("breaker/{recipient}");
 		if let Some(until) = db.state::<Timestamp>(&key).await?
 			&& until > now
