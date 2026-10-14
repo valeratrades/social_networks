@@ -7,6 +7,8 @@ use tracing::error;
 
 use crate::telegram_notifier::TelegramNotifier;
 
+/// What a surface knows of its failures from the status and the body; `None` leaves it to the status alone.
+pub(crate) type Known = fn(StatusCode, &str) -> Option<fn(String) -> Fault>;
 /// A long-running social-network surface.
 ///
 /// `listen` runs forever in the happy path; it retries only errors classified `Transient` at
@@ -100,19 +102,21 @@ impl<E: Into<Report>> From<E> for Fault {
 	}
 }
 
-/// Pass a successful response through; classify a failed one by its status, `degraded` being the ones this surface knows to persist.
-pub(crate) async fn ok_or_classify(response: reqwest::Response, op: &str, degraded: &[u16]) -> Result<reqwest::Response, Fault> {
+/// Pass a successful response through; classify a failed one by what the surface knows of it, else by its status.
+pub(crate) async fn ok_or_classify(response: reqwest::Response, op: &str, known: Known) -> Result<reqwest::Response, Fault> {
 	let status = response.status();
 	if status.is_success() {
 		return Ok(response);
 	}
 	let body = response.text().await.map_err(Fault::transient)?;
-	Err(http_fault(status, format!("{op}: {status}: {body}"), degraded))
+	Err(http_fault(status, &body, format!("{op}: {status}: {body}"), known))
 }
 
-fn http_fault(status: StatusCode, detail: String, degraded: &[u16]) -> Fault {
+fn http_fault(status: StatusCode, body: &str, detail: String, known: Known) -> Fault {
+	if let Some(class) = known(status, body) {
+		return class(detail);
+	}
 	match status.as_u16() {
-		code if degraded.contains(&code) => Fault::Degraded(detail),
 		401 | 403 => Fault::Auth(detail),
 		429 | 500..=599 => Fault::Transient(detail),
 		_ => Fault::Unhandled(detail),
@@ -139,26 +143,36 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn statuses_classify_per_surface() {
-		let class = |code: u16, degraded: &[u16]| match http_fault(StatusCode::from_u16(code).unwrap(), String::new(), degraded) {
+	fn responses_classify_per_surface() {
+		let google = |reason: &str| format!(r#"{{"error": {{"code": 403, "errors": [{{"reason": "{reason}"}}], "details": [{{"@type": "type.googleapis.com/google.rpc.Help"}}]}}}}"#);
+		let class = |code: u16, body: &str, known: Known| match http_fault(StatusCode::from_u16(code).unwrap(), body, String::new(), known) {
 			Fault::Transient(_) => "transient",
 			Fault::Degraded(_) => "degraded",
 			Fault::Auth(_) => "auth",
 			Fault::Unhandled(_) => "unhandled",
 		};
-		for (code, degraded, expected) in [
-			(503, &[][..], "transient"),
-			(429, &[], "transient"),
-			(401, &[], "auth"),
-			(402, &[], "unhandled"),
-			(404, &[], "unhandled"),
-			(402, crate::twitter::DEGRADED, "degraded"),
-			(404, crate::twitter::DEGRADED, "unhandled"),
-			(404, crate::youtube::DEGRADED, "degraded"),
-			(402, crate::youtube::DEGRADED, "unhandled"),
-			(503, crate::youtube::DEGRADED, "transient"),
+		let api_key_blocked = r#"{"error": {"code": 403, "errors": [{"reason": "forbidden"}], "details": [{"reason": "API_KEY_SERVICE_BLOCKED"}]}}"#;
+		for (code, body, known, expected) in [
+			(503, "", crate::twitter::known as Known, "transient"),
+			(429, "", crate::twitter::known, "transient"),
+			(401, "", crate::twitter::known, "auth"),
+			(402, "", crate::twitter::known, "degraded"),
+			(404, "", crate::twitter::known, "unhandled"),
+			(404, "", crate::youtube::rss_known, "degraded"),
+			(402, "", crate::youtube::rss_known, "unhandled"),
+			(503, "", crate::youtube::rss_known, "transient"),
+			(403, &google("quotaExceeded"), crate::youtube::api_known, "degraded"),
+			(403, &google("rateLimitExceeded"), crate::youtube::api_known, "degraded"),
+			(400, &google("keyInvalid"), crate::youtube::api_known, "auth"),
+			(403, &google("accessNotConfigured"), crate::youtube::api_known, "auth"),
+			(403, api_key_blocked, crate::youtube::api_known, "auth"),
+			(404, &google("playlistNotFound"), crate::youtube::api_known, "unhandled"),
+			(400, &google("invalidParameter"), crate::youtube::api_known, "unhandled"),
+			(429, "", crate::youtube::api_known, "transient"),
+			(502, "<html>bad gateway</html>", crate::youtube::api_known, "transient"),
+			(404, "", crate::youtube::api_known, "unhandled"),
 		] {
-			assert_eq!(class(code, degraded), expected, "{code} with degraded {degraded:?}");
+			assert_eq!(class(code, body, known), expected, "{code} {body}");
 		}
 	}
 }

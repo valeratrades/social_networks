@@ -73,6 +73,7 @@ Sentiment check: $BTC, how are we feeling?
       hamaha = "UCI3uVtN-W5StRN1RsLNKV6g";
       test = "UCG5YX-fn1-EIv-sOSYMjSmg"; # Q: still relevant?
     };
+    source.api.key = { env = "YOUTUBE_API_KEY"; }; # or `source = "rss";`
   };
 
   venues = "/home/v/s/g/rolodex/venues";

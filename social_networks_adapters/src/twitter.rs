@@ -3,6 +3,7 @@ use std::{collections::HashMap, convert::Infallible, path::Path};
 use clap::Args;
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use jiff::{Timestamp, fmt::strtime};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use social_networks_utils::db::Database;
 use tokio::time::{self, Duration};
@@ -19,11 +20,8 @@ use crate::{
 
 const SURFACE: &str = "twitter";
 const STATE_KEY: &str = "twitter_parsed";
-/// 402: the API credits are depleted, for as long as nobody buys more.
-pub(crate) const DEGRADED: &[u16] = &[402];
 #[derive(Args)]
 pub struct TwitterArgs {}
-
 #[derive(Clone, Debug, Default, MyConfigPrimitives)]
 pub struct TwitterConfig {
 	pub bearer_token: String,
@@ -34,7 +32,6 @@ pub struct TwitterConfig {
 	#[primitives(skip)]
 	pub poll: Option<TwitterPollConfig>,
 }
-
 #[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct TwitterOauthConfig {
 	pub acc_username: String,
@@ -43,16 +40,22 @@ pub struct TwitterOauthConfig {
 	pub access_token: String,
 	pub access_token_secret: String,
 }
-
 pub struct TwitterMonitor {
 	twitter_config: TwitterConfig,
 	telegram_config: TelegramConfig,
 }
-
 impl TwitterMonitor {
 	pub fn new(twitter_config: TwitterConfig, telegram_config: TelegramConfig) -> Self {
 		Self { twitter_config, telegram_config }
 	}
+}
+
+/// Twitter is reachable outbound only: it is no [`Source`](crate::reach::Source), so nothing pulls
+/// from it, and `dm --twitter` is the whole of what it is here for.
+pub struct Reach<'a>(pub &'a TwitterConfig);
+/// 402: the API credits are depleted, for as long as nobody buys more.
+pub(crate) fn known(status: StatusCode, _: &str) -> Option<fn(String) -> Fault> {
+	(status == StatusCode::PAYMENT_REQUIRED).then_some(Fault::Degraded)
 }
 
 impl Client for TwitterMonitor {
@@ -70,10 +73,6 @@ impl Client for TwitterMonitor {
 		}
 	}
 }
-
-/// Twitter is reachable outbound only: it is no [`Source`](crate::reach::Source), so nothing pulls
-/// from it, and `dm --twitter` is the whole of what it is here for.
-pub struct Reach<'a>(pub &'a TwitterConfig);
 
 impl Direct for Reach<'_> {
 	async fn direct(&mut self, _handle: &str, _window: Window, _assets: &Path) -> Result<Page> {
@@ -177,7 +176,7 @@ async fn process_list(
 		.await
 		.context("Failed to get list members")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "list_members", DEGRADED).await?;
+	let response = ok_or_classify(response, "list_members", known).await?;
 
 	let list_response: TwitterListResponse = response.json().await.context("Failed to parse list response")?;
 
@@ -221,7 +220,7 @@ async fn check_for_updates(
 		.await
 		.context("Failed to get user tweets")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "user_tweets", DEGRADED).await?;
+	let response = ok_or_classify(response, "user_tweets", known).await?;
 
 	let tweets_response: UserTweetsResponse = response.json().await.context("Failed to parse tweets response")?;
 
@@ -247,7 +246,7 @@ async fn check_for_updates(
 		.await
 		.context("Failed to get tweet details")
 		.map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "tweet_details", DEGRADED).await?;
+	let response = ok_or_classify(response, "tweet_details", known).await?;
 
 	let tweet_response: TweetResponse = response.json().await.context("Failed to parse tweet response")?;
 

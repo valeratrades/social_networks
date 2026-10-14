@@ -47,7 +47,7 @@ social_networks/
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
 │       ├── telegram_notifier.rs            # central notification hub
 │       ├── skool.rs                        # `__NEXT_DATA__` reads (feed, roster, classroom), chat writes, browser-minted cookie; the chat poller
-│       └── youtube.rs                      # RSS monitoring, sentiment analysis; yt-dlp reads of a channel or a video, on demand (feature `youtube-reads`)
+│       └── youtube.rs                      # upload monitoring over RSS or the Data API, sentiment analysis; yt-dlp reads of a channel or a video, on demand (feature `youtube-reads`)
 │
 ├── social_networks_reach/                  # the transcript format and its store
 │   ├── src/
@@ -128,7 +128,7 @@ Both variants end `listen`: the binary calls `alert()` and exits 78 (`EX_CONFIG`
 | Twitter monitor | 429, 5xx, request not sent | 402 (credits depleted): re-checked hourly | 401, 403 |
 | Twitter schedule | — up to `num_of_retries` attempts per post | 402 (credits depleted): the slot is skipped, reported once | 401, 403 |
 | Email (IMAP + OAuth) | io, IMAP connection lost / BYE, Gmail transport and 429/5xx, transient SMTP | — | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
-| YouTube | 429, 5xx, request not sent; RSS 404 (the feeds endpoint 404s at random, per request) | a channel without a successful read for the 15 min announce window, where an upload can be missed | 401, 403 |
+| YouTube | 429, 5xx, request not sent | RSS: 404 (the feeds endpoint goes dark for hours most nights). API: `quotaExceeded`, `rateLimitExceeded` (the daily quota resets at midnight Pacific). Either is waited out, and reported once a channel has had no successful read for the 15 min announce window, where an upload can be missed | 401, 403; API: `keyInvalid` (a 400), `forbidden`, `accessNotConfigured`, `API_KEY_SERVICE_BLOCKED` |
 | Skool chat | any refused poll, up to 5 in a row | — | — a dead cookie is re-minted in-process |
 
 Email counts attempts per mail before working on it; past 3 the mail is quarantined (processed as `quarantined`, left unread, one `error!`), so a mail that kills the process is not retried on every restart.

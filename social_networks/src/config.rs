@@ -26,7 +26,7 @@ pub struct AppConfig {
 	pub twitter: TwitterConfig,
 	#[settings(skip)]
 	#[serde(default)]
-	pub youtube: YoutubeConfig,
+	pub youtube: Option<YoutubeConfig>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub email: Vec<EmailConfig>,

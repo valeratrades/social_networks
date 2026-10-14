@@ -4,6 +4,7 @@ use clap::Args;
 use color_eyre::eyre::{Context, Result, eyre};
 use jiff::{SignedDuration, Timestamp};
 use quick_xml::{Reader, events::Event};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use social_networks_utils::{db::Database, utils::btc_price};
 use tokio::time::{self, Duration};
@@ -24,17 +25,17 @@ pub use reads::{Chapter, Cue, Listed, Video, download, listing, uploads, video};
 
 const SURFACE: &str = "youtube";
 const STATE_KEY: &str = "youtube_last_uploaded";
-/// The feeds endpoint answers 404 at random, per request, any channel.
-pub(crate) const DEGRADED: &[u16] = &[404];
 /// An upload older than this is not announced, so a channel unread for as long may have one missed.
 const ANNOUNCE_WINDOW: SignedDuration = SignedDuration::from_mins(15);
 #[derive(Args)]
 pub struct YoutubeArgs {}
 
-#[derive(Clone, Debug, Default, MyConfigPrimitives)]
+#[derive(Clone, Debug, MyConfigPrimitives)]
 pub struct YoutubeConfig {
 	#[primitives(skip)]
 	pub channels: HashMap<String, String>,
+	#[primitives(skip)]
+	source: UploadSource,
 }
 
 pub struct YoutubeMonitor {
@@ -42,7 +43,6 @@ pub struct YoutubeMonitor {
 	telegram_config: TelegramConfig,
 	llm_config: LlmConfig,
 }
-
 impl YoutubeMonitor {
 	pub fn new(youtube_config: YoutubeConfig, telegram_config: TelegramConfig, llm_config: LlmConfig) -> Self {
 		Self {
@@ -51,6 +51,25 @@ impl YoutubeMonitor {
 			llm_config,
 		}
 	}
+}
+
+/// Where uploads are learned of: the RSS feeds go dark for hours most nights; the Data API spends a daily quota.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UploadSource {
+	Rss,
+	Api(DataApi),
+}
+
+#[derive(Clone, Debug, MyConfigPrimitives)]
+struct DataApi {
+	key: String,
+}
+
+struct Upload {
+	video_id: String,
+	title: String,
+	published: Timestamp,
 }
 
 impl Client for YoutubeMonitor {
@@ -93,13 +112,13 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 	//LOOP: daemon - runs until process termination
 	loop {
 		for (channel_name, channel_id) in &youtube_config.channels {
-			match check_channel(&client, channel_id, channel_name, &mut last_uploaded, &telegram, llm_config).await {
+			match check_channel(&client, &youtube_config.source, channel_id, channel_name, &mut last_uploaded, &telegram, llm_config).await {
 				Ok(_) => {
 					debug!("Checked channel: {channel_name}");
 					last_read.insert(channel_name.as_str(), Timestamp::now());
 				}
 				Err(Fault::Transient(e)) => warn!("Error checking channel {channel_name}: {e}"),
-				Err(Fault::Degraded(e)) => debug!("Feed of {channel_name} unavailable: {e}"), // reported by `degradation` when it spans the announce window
+				Err(Fault::Degraded(e)) => debug!("Uploads of {channel_name} unavailable: {e}"), // reported by `degradation` when it spans the announce window
 				Err(fault) => return Err(fault),
 			}
 		}
@@ -112,29 +131,23 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 			.filter(|(_, read)| now.duration_since(**read) >= ANNOUNCE_WINDOW)
 			.map(|(name, _)| *name)
 			.collect();
-		let now = (!blind.is_empty()).then(|| format!("no successful RSS read in {ANNOUNCE_WINDOW:#} for {}", blind.join(", ")));
+		let now = (!blind.is_empty()).then(|| format!("no successful read in {ANNOUNCE_WINDOW:#} for {}", blind.join(", ")));
 		degradation.observe(&telegram, SURFACE, now).await;
 		time::sleep(Duration::from_secs(60)).await;
 	}
 }
 
-#[instrument(skip(client, last_uploaded, telegram, llm_config))]
+#[instrument(skip(client, source, last_uploaded, telegram, llm_config))]
 async fn check_channel(
 	client: &reqwest::Client,
+	source: &UploadSource,
 	channel_id: &str,
 	channel_name: &str,
 	last_uploaded: &mut LastUploadedTitles,
 	telegram: &TelegramNotifier,
 	llm_config: &LlmConfig,
 ) -> Result<(), Fault> {
-	let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
-
-	let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed").map_err(Fault::transient)?;
-	let response = ok_or_classify(response, "youtube_rss", DEGRADED).await?;
-
-	let xml_content = response.text().await.map_err(Fault::transient)?;
-
-	let (video_id, title, published) = parse_youtube_rss(&xml_content)?;
+	let Upload { video_id, title, published } = newest_upload(client, source, channel_id).await?;
 
 	let now = Timestamp::now();
 	let time_since_upload: SignedDuration = now.duration_since(published);
@@ -158,7 +171,97 @@ async fn check_channel(
 	Ok(())
 }
 
-fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
+async fn newest_upload(client: &reqwest::Client, source: &UploadSource, channel_id: &str) -> Result<Upload, Fault> {
+	match source {
+		UploadSource::Rss => {
+			let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
+			let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed").map_err(Fault::transient)?;
+			let response = ok_or_classify(response, "youtube_rss", rss_known).await?;
+			Ok(parse_youtube_rss(&response.text().await.map_err(Fault::transient)?)?)
+		}
+		UploadSource::Api(DataApi { key }) => {
+			let uploads = format!(
+				"UU{}",
+				channel_id
+					.strip_prefix("UC")
+					.ok_or_else(|| Fault::Unhandled(format!("channel id {channel_id:?} is not a `UC…` id")))?
+			);
+			let response = client
+				.get("https://www.googleapis.com/youtube/v3/playlistItems")
+				.query(&[("part", "contentDetails,snippet"), ("maxResults", "1"), ("playlistId", &uploads), ("key", key)])
+				.send()
+				.await
+				.context("Failed to fetch the uploads playlist")
+				.map_err(Fault::transient)?;
+			let response = ok_or_classify(response, "youtube_playlist_items", api_known).await?;
+			let page: PlaylistItems = serde_json::from_str(&response.text().await.map_err(Fault::transient)?)?;
+			let item = page.items.into_iter().next().ok_or_else(|| Fault::Unhandled(format!("uploads playlist {uploads} is empty")))?;
+			Ok(Upload {
+				video_id: item.content_details.video_id,
+				title: item.snippet.title,
+				published: item.content_details.video_published_at, // `snippet.publishedAt` is when it entered the playlist
+			})
+		}
+	}
+}
+
+/// The feeds endpoint answers 404 for hours most nights, any channel.
+pub(crate) fn rss_known(status: StatusCode, _: &str) -> Option<fn(String) -> Fault> {
+	(status == StatusCode::NOT_FOUND).then_some(Fault::Degraded)
+}
+
+/// Google's 403 is overloaded; the reason in the body says which.
+pub(crate) fn api_known(_: StatusCode, body: &str) -> Option<fn(String) -> Fault> {
+	#[derive(Deserialize)]
+	struct Body {
+		error: GoogleError,
+	}
+	#[derive(Deserialize)]
+	struct GoogleError {
+		#[serde(default)]
+		errors: Vec<Reason>,
+		#[serde(default)]
+		details: Vec<Reason>,
+	}
+	#[derive(Deserialize)]
+	struct Reason {
+		reason: Option<String>,
+	}
+	let body: Body = serde_json::from_str(body).ok()?; // not Google's error body (a proxy's 502 page): the status is all there is
+	body.error
+		.errors
+		.iter()
+		.chain(&body.error.details)
+		.filter_map(|r| r.reason.as_deref())
+		.find_map(|reason| match reason {
+			"quotaExceeded" | "rateLimitExceeded" | "RATE_LIMIT_EXCEEDED" => Some(Fault::Degraded as fn(String) -> Fault), // the daily quota resets at midnight Pacific
+			"keyInvalid" | "API_KEY_INVALID" | "API_KEY_SERVICE_BLOCKED" | "forbidden" | "accessNotConfigured" | "SERVICE_DISABLED" => Some(Fault::Auth),
+			_ => None,
+		})
+}
+
+#[derive(Deserialize)]
+struct PlaylistItems {
+	items: Vec<PlaylistItem>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaylistItem {
+	snippet: Snippet,
+	content_details: ContentDetails,
+}
+#[derive(Deserialize)]
+struct Snippet {
+	title: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentDetails {
+	video_id: String,
+	video_published_at: Timestamp,
+}
+
+fn parse_youtube_rss(xml: &str) -> Result<Upload> {
 	let mut reader = Reader::from_str(xml);
 	reader.config_mut().trim_text(true);
 
@@ -198,7 +301,11 @@ fn parse_youtube_rss(xml: &str) -> Result<(String, String, Timestamp)> {
 					let published_dt: Timestamp = dt_str.parse()?;
 
 					#[allow(clippy::unnecessary_unwrap)]
-					return Ok((video_id.unwrap(), title.unwrap(), published_dt));
+					return Ok(Upload {
+						video_id: video_id.unwrap(),
+						title: title.unwrap(),
+						published: published_dt,
+					});
 				}
 			}
 			_ => {}

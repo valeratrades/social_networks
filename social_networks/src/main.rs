@@ -161,8 +161,13 @@ fn main() {
 		}),
 		Commands::Youtube(_) => {
 			let llm_config = exit_on_error(config.require_llm("youtube"));
+			let youtube_config = exit_on_error(
+				config
+					.youtube
+					.ok_or_else(|| color_eyre::eyre::eyre!("the youtube surface needs a `youtube` section in the config")),
+			);
 			run_async("youtube", || async {
-				let mut adapter = YoutubeMonitor::new(config.youtube, config.telegram, llm_config);
+				let mut adapter = YoutubeMonitor::new(youtube_config, config.telegram, llm_config);
 				let err = adapter.listen().await.unwrap_err();
 				alert(&err).await;
 				Err::<(), AdapterError>(err)
