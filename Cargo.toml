@@ -65,9 +65,9 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip"] } # a tape read back is the tape written
 sha1 = "=0.11.0"
 
-social_networks_adapters = { path = "social_networks_adapters", version = "0.6.13" }
-social_networks_reach = { path = "social_networks_reach", version = "0.6.13" }
-social_networks_utils = { path = "social_networks_utils", version = "0.6.13" }
+social_networks_adapters = { path = "social_networks_adapters", version = "0.6.14" }
+social_networks_reach = { path = "social_networks_reach", version = "0.6.14" }
+social_networks_utils = { path = "social_networks_utils", version = "0.6.14" }
 strum = { version = "=0.28.0", features = ["derive"] }
 tg = "=0.9.7"
 thiserror = "=2.0.21"
