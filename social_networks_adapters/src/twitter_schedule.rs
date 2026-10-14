@@ -16,7 +16,7 @@ use social_networks_utils::{
 	utils::{btc_price, format_num_with_thousands},
 };
 use tokio::time;
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 use v_utils::{Timeframe, macros::MyConfigPrimitives};
 
 use crate::{
@@ -134,9 +134,11 @@ async fn schedule_sentiment_poll(twitter_config: &TwitterConfig, notifier: &Tele
 				}
 				Err(ScheduleError::Unhandled(e)) => {
 					db.finish_twitter_schedule_attempt(row, Err(&e)).await?;
-					error!("post_failed attempt={attempt}/{} error={e}", poll_config.num_of_retries);
 					if attempt == poll_config.num_of_retries {
+						error!("post_failed attempt={attempt}/{} error={e}", poll_config.num_of_retries);
 						println!("✗ Failed to post poll: {e}");
+					} else {
+						warn!("post_failed attempt={attempt}/{} error={e}", poll_config.num_of_retries);
 					}
 				}
 			}

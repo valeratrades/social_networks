@@ -113,7 +113,7 @@ impl DiscordDms {
 		let (mut read, write, heartbeat_secs) = match self.connect().await {
 			Ok(c) => c,
 			Err(e) => {
-				error!("Discord connection error: {e:#}");
+				warn!("Discord connection error: {e:#}");
 				return Ok(());
 			}
 		};
@@ -163,7 +163,7 @@ impl DiscordDms {
 						}
 					};
 					if write.lock().await.send(Message::Text(msg.into())).await.is_err() {
-						error!("Failed to send Discord heartbeat, reconnecting...");
+						warn!("Failed to send Discord heartbeat, reconnecting...");
 						return Ok(());
 					}
 				}
