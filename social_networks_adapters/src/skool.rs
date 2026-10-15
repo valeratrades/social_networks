@@ -529,6 +529,7 @@ impl Skool {
 			executable: chromium,
 			headless: true,
 			viewport: None,
+			args: vec![],
 		};
 		let captures = Artifacts {
 			dir: xdg::BaseDirectories::with_prefix("social_networks").create_state_directory("skool")?.join("browser_captures"),

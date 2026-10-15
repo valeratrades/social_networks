@@ -9,7 +9,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use browser_manipulation::{Browser, Launch, Noise, Shot};
+use browser_manipulation::{Browser, Launch, Noise};
 use color_eyre::eyre::{Result, bail, ensure, eyre};
 use serde_json::Value;
 use social_networks_adapters::{
@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
 			executable: executable.clone(),
 			headless: true,
 			viewport: None,
+			args: vec![],
 		},
 		// `send`'s pointer: a native click misses whichever of facebook's stacked twin buttons is underneath
 		Noise::builder()
@@ -124,7 +125,7 @@ async fn main() -> Result<()> {
 		println!("boxes: {boxes}");
 		println!("step {step}: {}", serde_json::to_string_pretty(&seen)?);
 		let shot = shots.join(format!("probe_{step}.png"));
-		std::fs::write(&shot, tab.screenshot(Shot::Full).await?)?;
+		std::fs::write(&shot, tab.screenshot().await?)?;
 		println!("screenshot: {}", shot.display());
 		let front = &seen["front"];
 		let Some(pass) = front["pass"].as_str().filter(|_| through) else {
@@ -162,7 +163,7 @@ async fn main() -> Result<()> {
 			println!("in the composer: {seen}\nfocus: {}", tab.eval::<Value>(FOCUS, COMPOSER).await?);
 		}
 		let shot = shots.join("probe_focus.png");
-		std::fs::write(&shot, tab.screenshot(Shot::Full).await?)?;
+		std::fs::write(&shot, tab.screenshot().await?)?;
 		println!("screenshot: {}", shot.display());
 	}
 	tab.close().await?;

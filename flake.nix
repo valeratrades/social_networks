@@ -6,7 +6,7 @@
       inputs.nixpkgs.follows = "v_flakes/nixpkgs";
     };
     browser_manipulation = {
-      url = "github:valeratrades/browser_manipulation?ref=v0.3.0"; # the same tag as the cargo dep: its driver is pinned to it
+      url = "github:valeratrades/browser_manipulation?ref=v0.4.4"; # the same version as the cargo dep: its driver is pinned to it
       inputs.v_flakes.follows = "v_flakes";
     };
   };
@@ -96,8 +96,7 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            outputHashes."browser_manipulation-0.3.0" = "sha256-FCTGZIbAXeq26EuHwa8Rw6yfOKF4NUFdvQ5rSmpoD/4=";
-            outputHashes."derivs-0.1.0" = "sha256-U9l3eEyGiRJV4icpKGFCpR/g8S2CEd9jctmv8TVnNOA=";
+            allowBuiltinFetchGit = true;
           };
           src = pkgs.lib.cleanSource ./.;
         };

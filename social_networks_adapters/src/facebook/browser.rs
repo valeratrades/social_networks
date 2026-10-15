@@ -275,6 +275,7 @@ pub(super) async fn launch<T>(chrome: &Path, profile: &Path, headless: bool, dir
 		executable: chrome.to_path_buf(),
 		headless,
 		viewport: None,
+		args: vec![],
 	};
 	let browser = Browser::launch(launch, motion(), Some(artifacts(dir))).await.map_err(browser_failure)?;
 	let r = async {
