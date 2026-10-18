@@ -147,7 +147,9 @@ async fn check_channel(
 	telegram: &TelegramNotifier,
 	llm_config: &LlmConfig,
 ) -> Result<(), Fault> {
-	let Upload { video_id, title, published } = newest_upload(client, source, channel_id).await?;
+	let Some(Upload { video_id, title, published }) = newest_upload(client, source, channel_id).await? else {
+		return Ok(());
+	};
 
 	let now = Timestamp::now();
 	let time_since_upload: SignedDuration = now.duration_since(published);
@@ -171,13 +173,13 @@ async fn check_channel(
 	Ok(())
 }
 
-async fn newest_upload(client: &reqwest::Client, source: &UploadSource, channel_id: &str) -> Result<Upload, Fault> {
+async fn newest_upload(client: &reqwest::Client, source: &UploadSource, channel_id: &str) -> Result<Option<Upload>, Fault> {
 	match source {
 		UploadSource::Rss => {
 			let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}");
 			let response = client.get(&url).send().await.context("Failed to fetch YouTube RSS feed").map_err(Fault::transient)?;
 			let response = ok_or_classify(response, "youtube_rss", rss_known).await?;
-			Ok(parse_youtube_rss(&response.text().await.map_err(Fault::transient)?)?)
+			Ok(Some(parse_youtube_rss(&response.text().await.map_err(Fault::transient)?)?))
 		}
 		UploadSource::Api(DataApi { key }) => {
 			let uploads = format!(
@@ -188,21 +190,31 @@ async fn newest_upload(client: &reqwest::Client, source: &UploadSource, channel_
 			);
 			let response = client
 				.get("https://www.googleapis.com/youtube/v3/playlistItems")
-				.query(&[("part", "contentDetails,snippet"), ("maxResults", "1"), ("playlistId", &uploads), ("key", key)])
+				.query(&[("part", "contentDetails,snippet"), ("maxResults", "50"), ("playlistId", &uploads), ("key", key)])
 				.send()
 				.await
 				.context("Failed to fetch the uploads playlist")
 				.map_err(Fault::transient)?;
 			let response = ok_or_classify(response, "youtube_playlist_items", api_known).await?;
-			let page: PlaylistItems = serde_json::from_str(&response.text().await.map_err(Fault::transient)?)?;
-			let item = page.items.into_iter().next().ok_or_else(|| Fault::Unhandled(format!("uploads playlist {uploads} is empty")))?;
-			Ok(Upload {
-				video_id: item.content_details.video_id,
-				title: item.snippet.title,
-				published: item.content_details.video_published_at, // `snippet.publishedAt` is when it entered the playlist
-			})
+			newest_published(&response.text().await.map_err(Fault::transient)?)
 		}
 	}
+}
+
+/// A page of 50 costs the same quota unit as 1, and lets a premiere scheduled on top not hide the uploads under it.
+fn newest_published(page: &str) -> Result<Option<Upload>, Fault> {
+	let page: PlaylistItems = serde_json::from_str(page)?;
+	Ok(page
+		.items
+		.into_iter()
+		.filter_map(|item| {
+			Some(Upload {
+				published: item.content_details.video_published_at?, // `snippet.publishedAt` is when it entered the playlist
+				video_id: item.content_details.video_id,
+				title: item.snippet.title,
+			})
+		})
+		.max_by_key(|upload| upload.published))
 }
 
 /// The feeds endpoint answers 404 for hours most nights, any channel.
@@ -258,7 +270,7 @@ struct Snippet {
 #[serde(rename_all = "camelCase")]
 struct ContentDetails {
 	video_id: String,
-	video_published_at: Timestamp,
+	video_published_at: Option<Timestamp>, // absent until the video is public: scheduled premieres, upcoming lives, private
 }
 
 fn parse_youtube_rss(xml: &str) -> Result<Upload> {
@@ -333,4 +345,30 @@ async fn analyze_sentiment(title: &str, llm_config: &LlmConfig) -> Result<String
 	let sentiment = response.text.split_whitespace().next().ok_or_else(|| eyre!("LLM returned an empty sentiment for {title:?}"))?;
 
 	Ok(sentiment.to_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn unpublished_items_are_not_uploads() {
+		let item = |id: &str, published: Option<&str>| {
+			let published = published.map(|t| format!(r#", "videoPublishedAt": "{t}""#)).unwrap_or_default();
+			format!(r#"{{"kind": "youtube#playlistItem", "snippet": {{"publishedAt": "2026-10-17T10:00:00Z", "title": "{id} title"}}, "contentDetails": {{"videoId": "{id}"{published}}}}}"#)
+		};
+		let page = |items: &[String]| format!(r#"{{"kind": "youtube#playlistItemListResponse", "items": [{}]}}"#, items.join(","));
+
+		let upload = newest_published(&page(&[
+			item("premiere", None),
+			item("old", Some("2026-10-01T10:00:00Z")),
+			item("new", Some("2026-10-17T10:00:00Z")),
+		]))
+		.unwrap()
+		.expect("two items are published");
+		assert_eq!(upload.video_id, "new");
+
+		assert!(newest_published(&page(&[item("premiere", None)])).unwrap().is_none());
+		assert!(newest_published(&page(&[])).unwrap().is_none());
+	}
 }

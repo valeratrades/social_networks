@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use color_eyre::eyre::Report;
 use reqwest::StatusCode;
 use thiserror::Error;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::telegram_notifier::TelegramNotifier;
 
@@ -44,11 +44,11 @@ impl v_utils::utils::SysexitCode for AdapterError {
 /// Failures to spawn `v_notify` are logged but never escalated: a broken alerting path
 /// must not also kill the surfaces that are still working.
 pub async fn alert(err: &AdapterError) {
-	let text = format!("[social_networks] {err}");
-	error!("{text}");
+	let text = format!("[social_networks] {err}"); // logged by `exit_on_error`, which every caller ends in
 	match tokio::process::Command::new("v_notify").args(["-l", "error"]).arg(&text).status().await {
 		Ok(s) if s.success() => {}
 		Ok(s) => error!("v_notify exited with {s}"),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => debug!("no v_notify here: {e}"), // in-cluster, see ARCHITECTURE
 		Err(e) => error!("failed to spawn v_notify: {e}"),
 	}
 }
@@ -65,6 +65,7 @@ pub fn install_panic_alert(surface: &'static str) {
 		match std::process::Command::new("v_notify").args(["-l", "error"]).arg(&text).status() {
 			Ok(s) if s.success() => {}
 			Ok(s) => error!("v_notify exited with {s}"),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => debug!("no v_notify here: {e}"),
 			Err(e) => error!("failed to spawn v_notify: {e}"),
 		}
 		default(info);
