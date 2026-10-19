@@ -1,0 +1,46 @@
+{
+ "data": {
+  "user": {
+   "username": "x",
+   "is_private": false,
+   "edge_owner_to_timeline_media": {
+    "count": 3,
+    "page_info": {
+     "has_next_page": false,
+     "end_cursor": ""
+    },
+    "edges": [
+     {
+      "node": {
+       "__typename": "GraphImage",
+       "shortcode": "s1544989541",
+       "taken_at_timestamp": 1544989541,
+       "pinned_for_users": [
+        {
+         "id": "1"
+        }
+       ]
+      }
+     },
+     {
+      "node": {
+       "__typename": "GraphImage",
+       "shortcode": "s1791993604",
+       "taken_at_timestamp": 1791993604,
+       "pinned_for_users": []
+      }
+     },
+     {
+      "node": {
+       "__typename": "GraphImage",
+       "shortcode": "s1791907183",
+       "taken_at_timestamp": 1791907183,
+       "pinned_for_users": []
+      }
+     }
+    ]
+   }
+  }
+ },
+ "status": "ok"
+}

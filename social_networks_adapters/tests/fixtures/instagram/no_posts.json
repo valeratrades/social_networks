@@ -1,0 +1,17 @@
+{
+ "data": {
+  "user": {
+   "username": "x",
+   "is_private": false,
+   "edge_owner_to_timeline_media": {
+    "count": 0,
+    "page_info": {
+     "has_next_page": false,
+     "end_cursor": ""
+    },
+    "edges": []
+   }
+  }
+ },
+ "status": "ok"
+}

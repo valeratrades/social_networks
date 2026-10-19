@@ -8,6 +8,7 @@ pub mod dm_event;
 pub mod email;
 pub mod facebook;
 pub mod github;
+pub mod instagram;
 pub mod linkedin;
 pub mod llm;
 mod nominatim;
