@@ -115,16 +115,21 @@ fn a_longer_half_life_forgives_the_same_wait() {
 	assert!(cohort("120d") < cohort("60d"));
 }
 
-/// `last_login` is a timestamp a human writes, so no pull brings it closer to the truth.
+/// A timestamp no platform states is one a human writes, so no pull brings it closer to the truth.
+fn rank_by(raw: &mut serde_json::Value, rank: serde_json::Value) {
+	raw["tags"]["contacted"] = serde_json::json!({ "type": "timestamp" });
+	raw["rank"] = rank;
+}
+
 #[test]
 fn a_term_no_pull_refreshes_costs_nothing() {
 	let ranked = check(
 		"unrefreshed",
-		|raw| raw["rank"] = serde_json::json!([{ "of": "last_login", "decay": 3, "weight": 1 }]),
+		|raw| rank_by(raw, serde_json::json!([{ "of": "contacted", "decay": 3, "weight": 1 }])),
 		&[
 			Lead {
 				name: "never",
-				tags: r#"last_login = "2026-01-01T00:00:00Z";"#,
+				tags: r#"contacted = "2026-01-01T00:00:00Z";"#,
 				synced: None,
 			},
 			Lead {
@@ -141,10 +146,15 @@ fn a_term_no_pull_refreshes_costs_nothing() {
 /// With the rest of the score out of a pull's reach, the loss is the refreshable term's share of it.
 #[test]
 fn the_loss_scales_with_the_weight_share() {
-	let with = |last_login: u32| {
+	let with = |contacted_weight: u32| {
 		let ranked = check(
-			&format!("share_{last_login}"),
-			|raw| raw["rank"] = serde_json::json!([{ "of": "business", "weight": 1 }, { "of": "last_login", "decay": 3, "weight": last_login }]),
+			&format!("share_{contacted_weight}"),
+			|raw| {
+				rank_by(
+					raw,
+					serde_json::json!([{ "of": "business", "weight": 1 }, { "of": "contacted", "decay": 3, "weight": contacted_weight }]),
+				)
+			},
 			&[
 				Lead {
 					name: "owner",
@@ -194,4 +204,27 @@ fn a_seed_far_from_the_synced_cohort_stands_to_move_more() {
 		],
 	);
 	assert!(stale(&ranked, "seeded_far") > stale(&ranked, "seeded_near"));
+}
+
+/// A pull is what brings `last_login` in, so a lead no pull has reached stands to move by its share.
+#[test]
+fn last_login_is_refreshed_by_a_pull() {
+	let ranked = check(
+		"last_login",
+		|raw| raw["rank"] = serde_json::json!([{ "of": "last_login", "decay": 3, "weight": 1 }]),
+		&[
+			Lead {
+				name: "never",
+				tags: r#"last_login = "2026-01-01T00:00:00Z";"#,
+				synced: None,
+			},
+			Lead {
+				name: "today",
+				tags: r#"last_login = "2026-01-01T00:00:00Z";"#,
+				synced: Some(SignedDuration::ZERO),
+			},
+		],
+	);
+	assert!(stale(&ranked, "never") > 0.0, "{}", stale(&ranked, "never"));
+	assert!(stale(&ranked, "today") < 1e-6, "{}", stale(&ranked, "today"));
 }

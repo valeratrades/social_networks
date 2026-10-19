@@ -93,3 +93,38 @@ fn a_birthday_moves_only_to_better_evidence() {
 	assert_eq!(weigh(exact("1990-05-01")), exact("1990-05-01"), "a date beats any range");
 	assert_eq!(weigh(rough(1995, 1995, Some("2030-01-01"))), exact("1990-05-01"), "and no range beats a date");
 }
+
+/// `last_login` is the newest evidence of activity any platform showed, so it only ever moves forward,
+/// and silence never takes it back.
+#[test]
+fn last_login_moves_only_forward() {
+	use social_networks_reach::person::{Person, Value};
+	let at = |t: &str| Some(Value::Timestamp(t.parse().unwrap()));
+	let mut p = Person::skeleton("x");
+	let mut weigh = |value: Option<Value>| {
+		p.weigh("last_login", value);
+		p.tags["last_login"].clone()
+	};
+
+	assert_eq!(weigh(at("2026-10-01T00:00:00Z")), at("2026-10-01T00:00:00Z"), "fills a gap");
+	assert_eq!(weigh(at("2026-09-01T00:00:00Z")), at("2026-10-01T00:00:00Z"), "an older sighting changes nothing");
+	assert_eq!(weigh(None), at("2026-10-01T00:00:00Z"), "silence erases nothing");
+	assert_eq!(weigh(at("2026-10-05T00:00:00Z")), at("2026-10-05T00:00:00Z"), "a newer one moves it");
+}
+
+#[test]
+fn last_login_is_declared_as_a_timestamp() {
+	let declared = |kind: serde_json::Value| {
+		serde_json::from_value::<Purposes>(serde_json::json!({ "reviews": {
+			"path": "/nonexistent",
+			"tags": { "last_login": kind },
+			"rank": [{ "of": "interactions", "weight": 1 }],
+			"stale_half_life": "30d",
+			"unanswered_half_life": "1w",
+		}}))
+		.map_err(|e| e.to_string())
+	};
+	declared(serde_json::json!({ "type": "timestamp" })).unwrap();
+	let e = declared(serde_json::json!({ "type": "bool" })).unwrap_err();
+	assert!(e.contains("last_login") && e.contains("timestamp"), "{e}");
+}

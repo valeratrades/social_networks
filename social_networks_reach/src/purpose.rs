@@ -23,11 +23,13 @@ use crate::{
 pub const LIVES_IN: &str = "lives_in";
 /// When a platform says somebody was born, or what they said their age was.
 pub const BIRTHDAY: &str = "birthday";
+/// The newest moment any platform showed evidence that somebody was active: a lower bound on their last login.
+pub const LAST_LOGIN: &str = "last_login";
 /// Signals every purpose has without declaring them, derived at rank time from the transcripts.
 const BUILTINS: [&str; 3] = ["interactions", "last_interaction", "venue_activity"];
 /// Tags a platform states rather than anybody judging them, which `pull` writes from what a platform
 /// answered. A purpose opts into one by declaring a tag of that name, of that type.
-const FACTS: [(&str, TagType); 2] = [(LIVES_IN, TagType::Place), (BIRTHDAY, TagType::Birthday { about: None })];
+const FACTS: [(&str, TagType); 3] = [(LIVES_IN, TagType::Place), (BIRTHDAY, TagType::Birthday { about: None }), (LAST_LOGIN, TagType::Timestamp)];
 
 /// `purposes` in the config, keyed by the name the CLI addresses a purpose by. Checked whole at load,
 /// so no command ever holds a purpose whose ranking or procurement names what its vocabulary does not.
@@ -278,7 +280,7 @@ impl Purpose {
 		};
 		match &term.signal {
 			Signal::Interactions | Signal::LastInteraction { .. } => Refresh::Fetch,
-			Signal::Place(_) | Signal::Age { .. } if FACTS.iter().any(|(fact, _)| *fact == term.of) => Refresh::Fetch,
+			Signal::Place(_) | Signal::Age { .. } | Signal::Timestamp { .. } if FACTS.iter().any(|(fact, _)| *fact == term.of) => Refresh::Fetch,
 			Signal::Bool | Signal::Present | Signal::Number { .. } | Signal::Age { .. } => reasoned(),
 			// `recon` writes the venues and a human the timestamps
 			Signal::Place(_) | Signal::Timestamp { .. } | Signal::VenueActivity { .. } => Refresh::Never,

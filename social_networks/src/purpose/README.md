@@ -178,7 +178,7 @@ stale = Σ_t  (w_t / Σw)  ·  (1 − 2^(−Δt / stale_half_life))  ·  E|v_t �
 
 Δt   since what refreshes t:  a fact, interactions, last_interaction → the last pull every handle answered
                               a tag with an `about`                 → the last time a model read all of it
-                              anything else (timestamps, venue_activity, a tag without `about`) → nothing: 0
+                              anything else (other timestamps, venue_activity, a tag without `about`) → nothing: 0
      never ⇒ the factor is 1
 V_t  t's values across those already synced, plus one uniform draw on [0,1] — so an empty cohort still spreads
 ```
@@ -223,9 +223,14 @@ made: a person missing any of them is extracted on the next `pull` whether or no
 surfaced, off their year files and venue lines, which is how a tag added to the vocabulary reaches
 everybody already in it.
 
-A **fact** is a tag a platform states rather than anybody judging it: `lives_in` (a place) and
-`birthday`. A purpose opts in by declaring a tag of that name, and a load refuses it declared as
+A **fact** is a tag a platform states rather than anybody judging it: `lives_in` (a place),
+`birthday` and `last_login` (a timestamp). A purpose opts in by declaring a tag of that name, and a load refuses it declared as
 any other type.
+
+`last_login` is the newest moment any platform showed evidence that somebody was active, so a lower bound on
+the real one.
+It moves only forward, a source that shows nothing leaves it as it was, and nothing ever writes the read time
+in place of evidence. Every producer is a `Profile::active`; a gate over the tag is what turns it into a ranking.
 
 A `birthday` is kept rather than an age, so it never goes stale: the age a `within` term reads is
 derived at rank time. It is either a date a platform states (facebook's "September 25, 2002") or a
@@ -260,7 +265,7 @@ rolodex cold ServiceArb                  # any spelling of a name is that name; 
 rolodex rank location:lyon               # and a `<group>:<value>` whole
 ```
 
-`handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin`, `skool` and `facebook`
+`handles` maps platform → handle. `discord`, `telegram`, `github`, `linkedin`, `instagram`, `skool` and `facebook`
 are what `pull` fetches; the rest are seeded from discord's connected accounts and skool's profile links, and
 exist for a human to read. A handle that stops resolving takes only itself down — whatever its
 backfill already checked in stands, and the pull continues.
@@ -272,6 +277,9 @@ Linkedin is read logged out, under no credentials, for the headline and about te
 works now, which no other source states. Anonymous views are authwalled after a handful, so its
 cursor is the date of the last success and a profile fetched within 30 days is skipped: the wall
 turns into a queue that drains over successive pulls instead of a failure to design around.
+
+Instagram is read logged out for one fact only: when the newest public post went up, which is evidence of activity and
+nothing more. A private, empty or missing account states nothing, and a refusal is that handle's failure.
 
 Skool contributes a bio, a location, a display name and the profile's outbound links. It is the one
 source that never needs credentials: a `[skool]` section only adds the posts of groups it shares with

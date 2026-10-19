@@ -295,7 +295,7 @@ fn the_reviews_ranking_is_this_graph() {
 	Σw·v/Σw                WeightedMean [7.0, 6.0, 5.0, 3.0, 2.0, 1.0] <- business.v, interactions.v, last_interaction.v, interest.v, birthday.v, lives_in.v
 	ours_unanswered        Source by send
 	unanswered             Map <- ours_unanswered
-	last_login.age         Source by human
+	last_login.age         Source by pull
 	last_login.gate        Map <- last_login.age
 	multiplier             Cohort <- unanswered, last_login.gate
 	score                  Gate <- Σw·v/Σw, multiplier

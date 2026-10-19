@@ -85,6 +85,7 @@ pub enum Source {
 	Linkedin,
 	Skool,
 	Facebook,
+	Instagram,
 }
 impl Source {
 	/// Whether there is anything below the newest item to page down to. A github feed and a linkedin
@@ -209,6 +210,10 @@ pub struct Profile {
 	/// A birth date the platform states with its year. Silence is not an answer here: a hidden year
 	/// says nothing about an age.
 	pub born: Option<jiff::civil::Date>,
+	/// The newest moment this read holds evidence that they were active on the platform: a lower
+	/// bound on their last login, never an estimate of it. `None` when the platform shows nothing, and
+	/// then nothing is written — a pull never substitutes the read time.
+	pub active: Option<Timestamp>,
 	pub activity: Page,
 }
 impl Profile {

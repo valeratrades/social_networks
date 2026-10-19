@@ -45,6 +45,7 @@ social_networks/
 │       ├── nominatim.rs                    # place name → point, ≤1 req/s, cached on disk forever
 │       ├── github.rs                       # public event feeds, org/repo rosters
 │       ├── linkedin.rs                     # logged-out profile reads, behind a refresh queue
+│       ├── instagram.rs                    # logged-out: the time of the newest public post, as evidence of activity
 │       ├── telegram_notifier.rs            # central notification hub
 │       ├── skool.rs                        # `__NEXT_DATA__` reads (feed, roster, classroom), chat writes, browser-minted cookie; the chat poller
 │       └── youtube.rs                      # upload monitoring over RSS or the Data API, sentiment analysis; yt-dlp reads of a channel or a video, on demand (feature `youtube-reads`)
@@ -229,6 +230,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - **The ranking is computed through its tape**: `rank` reads every value off a `derivs::Tape`, so the graph `purpose <name> graph` draws is the computation itself, never a description of it.
 - **A purpose is checked whole at load**: no command holds a purpose whose ranking, procurement or people disagree with its vocabulary.
 - **A fact outranks its seed**: `lives_in` and `birthday` are tags platforms state. `procure` seeds `lives_in` from a roster row that places somebody; a `pull` visit overwrites it, and a visit that finds no current city removes it.
+- **`last_login` is evidence, never a guess**: the newest moment a platform showed somebody active, written by `pull` from `Profile::active`. It moves only forward, silence leaves it, and the read time is never written in place of a sighting.
 - **A birthday moves only to better evidence**: a stated date over any range of birth years; a newer or narrower range over an older one; undated words only fill a gap. An age is never stored.
 - **Facebook**:
   - no `Runtime.enable`: `browser_manipulation`'s invariant 4, held by its patchright driver and tested by its `page_sees_no_automation`;

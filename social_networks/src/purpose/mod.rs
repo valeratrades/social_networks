@@ -22,6 +22,7 @@ use jiff::Timestamp;
 use social_networks_adapters::{
 	facebook::{self, Facebook},
 	github::Github,
+	instagram::Instagram,
 	linkedin::Linkedin,
 	llm::LlmConfig,
 	reach::{Author, Direct, INITIAL_ITEMS, Item, Kind, Page, Place, Profiles, Source, VenueRef, Window},
@@ -31,7 +32,7 @@ use social_networks_adapters::{
 use social_networks_reach::{
 	history::{self, Cursor},
 	person::{self, Birthday, Person, Value},
-	purpose::{BIRTHDAY, LIVES_IN, Purpose, TagType},
+	purpose::{BIRTHDAY, LAST_LOGIN, LIVES_IN, Purpose, TagType},
 	rank::{self, Ranked},
 	venue,
 };
@@ -484,7 +485,7 @@ async fn probe_all(config: &AppConfig, dir: &Path, candidates: Vec<(Person, Vec<
 				}
 				Source::Skool => skool.direct(handle, Window::probe(), &assets).await,
 				// `has_history` is what put a source in the list
-				Source::Github | Source::Linkedin | Source::Facebook => unreachable!("{} holds no conversation", source.as_ref()),
+				Source::Github | Source::Linkedin | Source::Facebook | Source::Instagram => unreachable!("{} holds no conversation", source.as_ref()),
 			};
 			match page {
 				Ok(page) => exclude |= !page.items.is_empty(),
@@ -578,6 +579,7 @@ struct Fetched {
 	venues: Option<Vec<VenueRef>>,
 	lives_in: Option<Option<Place>>,
 	born: Option<jiff::civil::Date>,
+	active: Option<Timestamp>,
 }
 
 async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: Vec<Person>, telegram: Option<&Client>, mut facebook: Option<&mut Facebook<'_, '_>>) -> Result<()> {
@@ -586,6 +588,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 	let mut discord = social_networks_adapters::discord::Rest::new(config.dms.discord.user_token.clone(), config.dms.discord.my_username.clone());
 	let mut github = Github::default();
 	let mut linkedin = Linkedin;
+	let mut instagram = Instagram::default();
 	// credentials only widen what skool answers; without them the public profile is still a whole result
 	let mut skool = Skool::try_new(config.skool.clone()).await?;
 
@@ -618,6 +621,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 		let mut member_of: Option<Vec<String>> = None;
 		let mut lives_in: Option<Option<Place>> = None;
 		let mut born: Option<jiff::civil::Date> = None;
+		let mut active: Option<Timestamp> = None;
 		let mut complete = true;
 		let mut labelled = true;
 
@@ -637,6 +641,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 				}
 				Source::Github => stated(&mut github, handle, source, &mut cursor).await,
 				Source::Linkedin => stated(&mut linkedin, handle, source, &mut cursor).await,
+				Source::Instagram => stated(&mut instagram, handle, source, &mut cursor).await,
 				Source::Skool => converse(&mut skool, handle, source, &mut cursor, &assets).await,
 				Source::Facebook => match facebook.as_deref_mut() {
 					Some(client) => stated(client, handle, source, &mut cursor).await,
@@ -655,6 +660,7 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 						lives_in = Some(stated);
 					}
 					born = born.or(fetch.born);
+					active = active.max(fetch.active);
 				}
 				// isolated per handle: whatever the backfill already checked in stands, and the rest of
 				// the pull continues
@@ -705,6 +711,11 @@ async fn pull_all(config: &AppConfig, purpose: &Purpose, venues: &Path, people: 
 			&& let Some(date) = born
 		{
 			person.weigh(BIRTHDAY, Some(Value::Birthday(Birthday::Exact(date))));
+		}
+		if purpose.tags.contains_key(LAST_LOGIN)
+			&& let Some(at) = active
+		{
+			person.weigh(LAST_LOGIN, Some(Value::Timestamp(at)));
 		}
 		let moved = person.set_venues(member_of) | (person.tags != facts_before);
 		let owed = purpose.tags.iter().any(|(tag, kind)| kind.about().is_some() && !person.tags.contains_key(tag));
@@ -849,6 +860,7 @@ async fn stated<C: Profiles>(client: &mut C, handle: &str, source: Source, curso
 		venues: source.states_venues().then_some(profile.venues),
 		lives_in: profile.lives_in,
 		born: profile.born,
+		active: profile.active,
 	})
 }
 
@@ -879,6 +891,7 @@ async fn converse<C: Profiles + Direct>(client: &mut C, handle: &str, source: So
 		venues: source.states_venues().then_some(profile.venues),
 		lives_in: profile.lives_in,
 		born: profile.born,
+		active: profile.active,
 	})
 }
 

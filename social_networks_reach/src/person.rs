@@ -88,11 +88,13 @@ impl Person {
 	}
 
 	/// Puts `value` under `tag` unless what is there is better evidence: a birthday moves only to one
-	/// that [supersedes](Birthday::supersedes) it, and a judgement of nothing never erases one.
+	/// that [supersedes](Birthday::supersedes) it, a timestamp only forward, and a judgement of nothing
+	/// never erases either.
 	pub fn weigh(&mut self, tag: &str, value: Option<Value>) {
 		match (self.tags.get(tag), &value) {
 			(Some(Some(Value::Birthday(old))), Some(Value::Birthday(new))) if !new.supersedes(old) => {}
-			(Some(Some(Value::Birthday(_))), None) => {}
+			(Some(Some(Value::Timestamp(old))), Some(Value::Timestamp(new))) if new <= old => {}
+			(Some(Some(Value::Birthday(_) | Value::Timestamp(_))), None) => {}
 			_ => {
 				self.tags.insert(tag.to_string(), value);
 			}

@@ -28,7 +28,7 @@ use v_utils::Timeframe;
 use crate::{
 	history::{self, ME},
 	person::{Person, Value},
-	purpose::{GateOf, Near, Purpose, Refresh, Signal, Term},
+	purpose::{GateOf, LAST_LOGIN, Near, Purpose, Refresh, Signal, Term},
 	venue,
 };
 
@@ -118,7 +118,7 @@ fn evaluate(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<(Ve
 		.map(|gate| {
 			let (writer, transcripts, cells) = match gate.reads {
 				GateOf::Timestamp => (
-					"human",
+					if gate.of == LAST_LOGIN { "pull" } else { "human" },
 					Fidelity::Exact,
 					people
 						.iter()
