@@ -18,6 +18,7 @@ config.nix
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      ├─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
+     ├─ gates    [ { of = <timestamp tag | last_interaction>; until = "2w"; } … ]
      ├─ stale_half_life       how fast what a pull refreshes goes out of date, e.g. "60d"
      └─ unanswered_half_life  how fast the penalty on a lead whose last line is ours wears off, e.g. "1w"
 ```
@@ -138,8 +139,8 @@ name is not load-bearing, since a pattern searches handles too.
 person dir ────────┤
                    └── year files ──► builtins: interactions, last_interaction, venue_activity
                                   │
-   rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w  ·  (1 − 2^(−Δt / unanswered_half_life))
-                                                                            └ Δt since our last line, when it is the newest ┘
+   rank term: value ∈ [0,1] (absent → 0, shown as ·) ──► score = Σ w·v / Σ w  ·  (1 − 2^(−Δt / unanswered_half_life))  ·  Π max(0, 1 − age / until)
+                                                                            └ Δt since our last line, when it is the newest ┘   └ per gate ┘
 ```
 
 | type / builtin | term params | value |
@@ -159,6 +160,11 @@ newest year-file line in either direction, `venue_activity` their lines across e
 transcript. Recency is `ln(age)` over the cohort, as [`rank`](../../../social_networks_reach/src/rank.rs)
 explains, so a score means nothing outside the cohort it was ranked in. A person still backfilling has
 no year files yet, and is marked rather than read as having none.
+
+A `gate` is the same layer for a moment: ×`(1 − age / until)`, linear in the age and nothing from `until` on,
+so a login yesterday costs a few percent and one past `until` takes the lead out of the ranking. The age is absolute, not
+relative to the cohort as a term's recency is. Somebody it holds no moment for is not gated — absent is the ungated
+multiplier, as for the unanswered decay — so a gate over a tag nobody has filled changes nothing.
 
 The unanswered decay multiplies the whole score rather than adding a term, because a term can only ever be a bonus. A facebook send is
 written into their year file as it goes out, since no pull reads that conversation back; discord,

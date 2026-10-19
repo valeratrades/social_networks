@@ -28,7 +28,7 @@ use v_utils::Timeframe;
 use crate::{
 	history::{self, ME},
 	person::{Person, Value},
-	purpose::{Near, Purpose, Refresh, Signal, Term},
+	purpose::{GateOf, Near, Purpose, Refresh, Signal, Term},
 	venue,
 };
 
@@ -112,7 +112,51 @@ fn evaluate(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<(Ve
 			.duration()
 			.as_secs_f64();
 	let unanswered = tape.map("unanswered", ours, &[], Some([0.0, four]), |c, _| 1.0 - half_life.left(Duration::from_secs_f64(point(c))));
-	let score = tape.gate("score", mean, unanswered);
+	let factors: Vec<Id> = purpose
+		.gates
+		.iter()
+		.map(|gate| {
+			let (writer, transcripts, cells) = match gate.reads {
+				GateOf::Timestamp => (
+					"human",
+					Fidelity::Exact,
+					people
+						.iter()
+						.map(|p| {
+							p.tags.get(&gate.of).and_then(Option::as_ref).map(|v| match v {
+								Value::Timestamp(at) => Cell::At(since(*at)),
+								v => unreachable!("`{}` = {} was typed against the purpose at load", gate.of, v.nix()),
+							})
+						})
+						.collect(),
+				),
+				GateOf::LastInteraction => {
+					let backfilling = facts.iter().filter(|f| f.backfilling).count();
+					let fidelity = match backfilling {
+						0 => Fidelity::Exact,
+						n => Fidelity::Partial(format!("{n} backfilling, read as absent")),
+					};
+					("pull", fidelity, facts.iter().map(|f| f.last.filter(|_| !f.backfilling).map(|at| Cell::At(since(at)))).collect())
+				}
+			};
+			let age = tape.source(&format!("{}.age", gate.of), writer, Some("seconds since"), transcripts, cells);
+			let until = gate.until.duration().as_secs_f64();
+			tape.map(&format!("{}.gate", gate.of), age, &[], Some([0.0, until]), |c, _| (1.0 - point(c) / until).max(0.0))
+		})
+		.collect();
+	let multiplier = match factors.is_empty() {
+		true => unanswered,
+		false => {
+			let deps: Vec<Id> = std::iter::once(unanswered).chain(factors).collect();
+			// an absent factor leaves the row ungated, as `Tape::gate` reads an absent multiplier
+			tape.cohort("multiplier", &deps, |columns| {
+				(0..people.len())
+					.map(|i| Some(columns.iter().map(|column| column[i].as_ref().map_or(1.0, point)).product()))
+					.collect()
+			})
+		}
+	};
+	let score = tape.gate("score", mean, multiplier);
 	let synced = [("fetched", Refresh::Fetch), ("reasoned", Refresh::Reasoning)].map(|(name, by)| {
 		let cells = facts.iter().map(|f| synced(f, by).map(|at| Cell::At(since(at)))).collect();
 		tape.source(name, "pull", Some("seconds since"), Fidelity::Exact, cells)

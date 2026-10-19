@@ -198,6 +198,8 @@ is on [`adapters::skool`](../social_networks_adapters/src/skool.rs).
 score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while their newest line is ours
          └ terms ┘   └──── on the whole result ────┘
          just sent ×0 · 1w ×½ · 2w ×¾ · 4w ×15/16 · they reply → ×1
+        ×  Π max(0, 1 − age / until)                         per `gates` entry; no moment on record → ×1
+         with until = 2w: today ×1 · 2d ×0.86 · 1w ×½ · 2w and beyond ×0
 ```
 
 ## Key Entities
@@ -209,7 +211,7 @@ score = Σwv/Σw  ×  (1 − 2^(−Δt / unanswered_half_life))    only while th
 - `Profiles` / `Direct` / `Venue` / `Item` (adapters::reach): the contract every on-demand read goes through.
 - `Purpose` (reach::purpose): what the people in one folder are *for* — its tag vocabulary, its procurement strategies, its ranking terms. Every writer of a tag goes through `Purpose::check`.
 - `Person` (reach::person): a person directory's `__main__.nix`, tags typed against their purpose.
-- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `stale_half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it. The score as a whole is then ×`(1 − 2^(−Δt / unanswered_half_life))` while their newest line is ours. Evaluated through a [derivs](https://github.com/valeratrades/derivs) `Tape`, which `purpose <name> graph` writes out and draws.
+- `rank` (reach::rank): `Σ w·v / Σ w` over terms in `[0,1]`; the builtins are derived from the transcripts at rank time, never stored. Beside the score, `stale`: what a pull stands to move it by, off the purpose's `stale_half_life` and the `fetched_at` / `reasoned_at` in `meta.json`; `pull` walks people by it. The score as a whole is then ×`(1 − 2^(−Δt / unanswered_half_life))` while their newest line is ours, and ×`max(0, 1 − age / until)` for each of the purpose's `gates`, which fade it linearly on how long ago a timestamp tag or `last_interaction` was. Evaluated through a [derivs](https://github.com/valeratrades/derivs) `Tape`, which `purpose <name> graph` writes out and draws.
 
 ## Invariants
 

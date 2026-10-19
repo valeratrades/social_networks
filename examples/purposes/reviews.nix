@@ -14,10 +14,13 @@
     { of = "business"; weight = 7; }
     { of = "interactions"; weight = 6; }
     { of = "last_interaction"; decay = 3; weight = 5; }
-    { of = "last_login"; decay = 3; weight = 4; }
     { of = "interest"; weight = 3; }
     { of = "birthday"; within = [ 12 26 ]; weight = 2; }
     # the business location
     { of = "lives_in"; near = { lat = 48.8566; lon = 2.3522; radius_km = 30; halving_km = 50; }; weight = 1; }
+  ];
+  # a layer over the whole score, not a term in it: nobody is ranked high for having logged in once
+  gates = [
+    { of = "last_login"; until = "2w"; }
   ];
 }

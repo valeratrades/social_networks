@@ -201,6 +201,40 @@ fn our_last_message_cools_a_lead_until_it_decays_or_they_answer() {
 	assert!(cooled < warm && cooled > 0.9 * warm, "a month is four half-lives of a week: {cooled} against {warm}");
 }
 
+/// A gate multiplies the finished score, so what separates twins who differ only in `last_login` is
+/// the factor alone: linear in the hours since, nothing at `until`, and no say over somebody it knows
+/// nothing about.
+#[test]
+fn a_stale_login_gates_the_whole_score_linearly() {
+	let ago = |days: i64| {
+		let at = Timestamp::now() - SignedDuration::from_hours(24 * days);
+		format!("business = true; last_login = \"{}\";", Timestamp::from_second(at.as_second()).unwrap())
+	};
+	let tags: Vec<(String, String)> = [0, 1, 2, 7, 13, 14, 30].map(|days| (format!("login_{days}d"), ago(days))).into();
+	let mut leads: Vec<Lead> = tags
+		.iter()
+		.map(|(name, tags)| Lead {
+			name: Box::leak(name.clone().into_boxed_str()),
+			tags: Box::leak(tags.clone().into_boxed_str()),
+			lines: Vec::new(),
+		})
+		.collect();
+	leads.push(lead("never_logged_in", "business = true;"));
+	let ranked = check("login_gate", &leads);
+
+	let fresh = score(&ranked, "login_0d");
+	for days in [1.0, 2.0, 7.0, 13.0] {
+		let factor = score(&ranked, &format!("login_{days}d")) / fresh;
+		assert!((factor - (1.0 - days / 14.0)).abs() < 1e-3, "{days} days out came out ×{factor}, not ×{}", 1.0 - days / 14.0);
+	}
+	assert_eq!(score(&ranked, "login_14d"), 0.0, "`until` is where it reaches nothing");
+	assert_eq!(score(&ranked, "login_30d"), 0.0, "and it does not go negative past it");
+	assert!(
+		(score(&ranked, "never_logged_in") - fresh).abs() < 1e-3,
+		"no timestamp, nothing to gate by: the multiplier is the tape's absent 1"
+	);
+}
+
 fn graph(cohort: &str) -> Tape {
 	on_disk(
 		cohort,
@@ -252,22 +286,22 @@ fn the_reviews_ranking_is_this_graph() {
 	last_interaction       Source by pull
 	last_interaction.span  Reduce to newest, width <- last_interaction
 	last_interaction.v     Map <- last_interaction, last_interaction.span
-	last_login             Source by human
-	last_login.span        Reduce to newest, width <- last_login
-	last_login.v           Map <- last_login, last_login.span
 	interest               Source by extraction
 	interest.v             Map <- interest
 	birthday               Source by pull
 	birthday.v             Map <- birthday
 	lives_in               Source by pull
 	lives_in.v             Map <- lives_in
-	Σw·v/Σw                WeightedMean [7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0] <- business.v, interactions.v, last_interaction.v, last_login.v, interest.v, birthday.v, lives_in.v
+	Σw·v/Σw                WeightedMean [7.0, 6.0, 5.0, 3.0, 2.0, 1.0] <- business.v, interactions.v, last_interaction.v, interest.v, birthday.v, lives_in.v
 	ours_unanswered        Source by send
 	unanswered             Map <- ours_unanswered
-	score                  Gate <- Σw·v/Σw, unanswered
+	last_login.age         Source by human
+	last_login.gate        Map <- last_login.age
+	multiplier             Cohort <- unanswered, last_login.gate
+	score                  Gate <- Σw·v/Σw, multiplier
 	fetched                Source by pull
 	reasoned               Source by pull
-	stale                  Cohort <- business.v, interactions.v, last_interaction.v, last_login.v, interest.v, birthday.v, lives_in.v, fetched, reasoned
+	stale                  Cohort <- business.v, interactions.v, last_interaction.v, interest.v, birthday.v, lives_in.v, fetched, reasoned
 	");
 }
 
@@ -275,7 +309,7 @@ fn the_reviews_ranking_is_this_graph() {
 #[test]
 fn every_cohort_coupled_term_reads_a_reduction() {
 	let tape = graph("graph_reductions");
-	for of in ["interactions", "last_interaction", "last_login"] {
+	for of in ["interactions", "last_interaction"] {
 		let v = tape.nodes().iter().find(|n| n.name == format!("{of}.v")).unwrap_or_else(|| panic!("{of}.v is recorded"));
 		assert!(v.deps.iter().any(|id| matches!(tape.node(*id).kind, Kind::Reduce { .. })), "{of}.v reads no reduction");
 	}

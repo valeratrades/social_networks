@@ -12,7 +12,7 @@ use color_eyre::eyre::{Report, Result, WrapErr, bail, eyre};
 use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use social_networks_adapters::reach::VenueRef;
-use v_utils::HalfLife;
+use v_utils::{HalfLife, Timeframe};
 
 use crate::{
 	person::{Birthday, Value},
@@ -69,6 +69,8 @@ pub struct Purpose {
 	pub procure: BTreeMap<String, Strategy>,
 	/// Never empty: a purpose is kept in order to be ranked.
 	pub rank: Vec<Term>,
+	/// Layers over the whole score, each ×`[0, 1]`; unlike a term, a gate can only take away.
+	pub gates: Vec<Gate>,
 	/// How fast what a pull refreshes goes out of date; what `stale` in a [ranking](crate::rank) is measured by.
 	pub stale_half_life: HalfLife,
 	/// How fast the penalty on a lead whose last line is ours wears off; see [`crate::rank`].
@@ -100,10 +102,12 @@ impl Purpose {
 			tags,
 			procure: BTreeMap::new(),
 			rank: Vec::new(),
+			gates: Vec::new(),
 			stale_half_life: raw.stale_half_life,
 			unanswered_half_life: raw.unanswered_half_life,
 		};
 		purpose.rank = raw.rank.into_iter().map(|term| purpose.term(term)).collect::<Result<_>>()?;
+		purpose.gates = raw.gates.into_iter().map(|gate| purpose.gate(gate)).collect::<Result<_>>()?;
 		purpose.procure = raw
 			.procure
 			.into_iter()
@@ -219,6 +223,20 @@ impl Purpose {
 			(None, _) => bail!("rank term `{of}` is neither a tag of this purpose nor a builtin ({})", BUILTINS.join(", ")),
 		};
 		Ok(Term { of, weight, signal })
+	}
+
+	fn gate(&self, raw: RawGate) -> Result<Gate> {
+		let RawGate { of, until } = raw;
+		let of = snake(&of);
+		if until.duration().is_zero() {
+			bail!("gate `{of}` is until {until}; a gate fades over a span of time");
+		}
+		let reads = match (self.tags.get(&of), of.as_str()) {
+			(Some(TagType::Timestamp), _) => GateOf::Timestamp,
+			(None, "last_interaction") => GateOf::LastInteraction,
+			_ => bail!("gate `{of}` reads neither a timestamp tag of this purpose nor `last_interaction`; only a moment has an age to fade by"),
+		};
+		Ok(Gate { of, until, reads })
 	}
 
 	fn strategy(&self, raw: RawStrategy) -> Result<Strategy> {
@@ -390,6 +408,15 @@ pub struct Term {
 	pub(crate) weight: f64,
 	pub(crate) signal: Signal,
 }
+/// ×`(1 − age / until)` over the whole score, nothing from `until` on. Linear in the age, so a day
+/// costs the same at any point of the way; somebody it has no moment for is not gated.
+#[derive(Clone, Debug)]
+pub struct Gate {
+	/// The tag or builtin it reads, as the config names it.
+	pub of: String,
+	pub(crate) until: Timeframe,
+	pub(crate) reads: GateOf,
+}
 /// How people get procured into a purpose: selection over what `recon` already wrote, which fetches
 /// nothing. Generic over the groups its `$<group>` placeholders name, and run only once [bound](Self::bind).
 #[derive(Clone, Debug)]
@@ -458,6 +485,12 @@ pub struct Bound {
 	/// What it was bound with.
 	pub bindings: BTreeMap<String, String>,
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GateOf {
+	Timestamp,
+	LastInteraction,
+}
+
 /// Every `$<name>` in `text`: the bytes it spans, and the name.
 fn placeholders(text: &str) -> Vec<(Range<usize>, &str)> {
 	let mut found = Vec::new();
@@ -578,6 +611,8 @@ struct RawPurpose {
 	#[serde(default)]
 	procure: BTreeMap<String, RawStrategy>,
 	rank: Vec<RawTerm>,
+	#[serde(default)]
+	gates: Vec<RawGate>,
 	stale_half_life: HalfLife,
 	unanswered_half_life: HalfLife,
 }
@@ -654,6 +689,13 @@ struct RawTerm {
 	within: Option<[f64; 2]>,
 	near: Option<Near>,
 	decay: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGate {
+	of: String,
+	until: Timeframe,
 }
 
 #[derive(Deserialize)]
