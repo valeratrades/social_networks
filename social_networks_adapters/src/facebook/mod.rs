@@ -4,7 +4,7 @@
 //! ```text
 //!   attached  the user's own chrome     city/<page id>   people search under the City filter
 //!   launched  our chrome, the burner    group/<id>       a group's member listing
-//!                                       profile(<id>)    the About tab, for where somebody lives
+//!                                       profile(<id>)    the main page and the About tab: where somebody lives, when they last posted
 //!   send      our chrome, its account   send(<id>)       a Messenger conversation; `launched` when unset
 //!                                       noise(<span>)    idle browsing after it, on either of ours
 //! ```
@@ -233,11 +233,14 @@ impl Facebook<'_, '_> {
 		Ok(())
 	}
 
-	async fn section(&mut self, handle: &str, section: &str) -> Result<Section> {
+	/// `None` is the profile's main page.
+	async fn section(&mut self, handle: &str, section: Option<&str>) -> Result<Section> {
 		// a vanity name is what a link to them carries; the id is what a listing does
-		let url = match handle.bytes().all(|b| b.is_ascii_digit()) {
-			true => format!("https://www.facebook.com/profile.php?id={handle}&sk={section}"),
-			false => format!("https://www.facebook.com/{handle}/{section}"),
+		let url = match (handle.bytes().all(|b| b.is_ascii_digit()), section) {
+			(true, Some(section)) => format!("https://www.facebook.com/profile.php?id={handle}&sk={section}"),
+			(true, None) => format!("https://www.facebook.com/profile.php?id={handle}"),
+			(false, Some(section)) => format!("https://www.facebook.com/{handle}/{section}"),
+			(false, None) => format!("https://www.facebook.com/{handle}"),
 		};
 		self.load(&url, &[FEED]).await?;
 		Section::parse(&self.tab.scripts().await?.join("\n"))
@@ -373,21 +376,23 @@ impl Venue for Facebook<'_, '_> {
 }
 
 impl Profiles for Facebook<'_, '_> {
-	/// Where they live, their work and education, and the accounts they link. Every call visits: who
-	/// is due one is the purpose's `stale_half_life`'s to say.
+	/// Where they live, their work and education, the accounts they link, and when their newest own
+	/// post went up. Every call visits: who is due one is the purpose's `stale_half_life`'s to say.
 	async fn profile(&mut self, handle: &str, _: Window) -> Result<Profile> {
 		ensure!(self.session == Session::Launched, "a profile is visited from the launched session only");
 
-		let personal = self.section(handle, "directory_personal_details").await?;
+		let main = self.section(handle, None).await?;
+		let personal = self.section(handle, Some("directory_personal_details")).await?;
 		let mut others = Vec::new();
 		for name in ["directory_work", "directory_education", "directory_contact_info"] {
 			others.push(match personal.present.iter().any(|s| s == name) {
-				true => self.section(handle, name).await?,
+				true => self.section(handle, Some(name)).await?,
 				false => Section::default(),
 			});
 		}
 		let [work, education, contact] = &others[..] else { unreachable!("three names") };
 		let mut profile = profile::stated(&personal, work, education, contact);
+		profile.active = main.posted;
 		profile.lives_in = Some(match profile.sources.get("facebook:lives_in").cloned() {
 			Some(name) => {
 				let at = self

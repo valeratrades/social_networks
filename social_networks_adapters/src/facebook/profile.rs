@@ -1,29 +1,32 @@
 //! The About tab, which facebook splits into `directory_*` sections; every page of it lists the
 //! sections that profile has.
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{Result, WrapErr, eyre};
+use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::reach::Profile;
 
-/// What one About section page embeds.
+/// What one profile page embeds: an About section, or the main page, which carries `posted` and no fields.
 #[derive(Debug, Default)]
 pub struct Section {
 	fields: Vec<Field>,
 	/// e.g. `directory_work`: the sections this profile has
 	pub present: Vec<String>,
+	/// The newest of the person's own stories in the page's first render; stories about them, shared by them or commented on by others are not theirs to date
+	pub posted: Option<Timestamp>,
 }
 impl Section {
 	/// From the page's embedded `application/json` scripts, concatenated.
 	pub fn parse(scripts: &str) -> Result<Self> {
 		let mut s = Self::default();
 		for doc in serde_json::Deserializer::from_str(scripts).into_iter::<Value>() {
-			s.walk(&doc.wrap_err("an embedded script is not JSON")?);
+			s.walk(&doc.wrap_err("an embedded script is not JSON")?)?;
 		}
 		Ok(s)
 	}
 
-	fn walk(&mut self, v: &Value) {
+	fn walk(&mut self, v: &Value) -> Result<()> {
 		match v {
 			Value::Object(o) => {
 				if let (Some(kind), Some(text)) = (o.get("field_type").and_then(Value::as_str), v.pointer("/title/text").and_then(Value::as_str)) {
@@ -45,10 +48,25 @@ impl Section {
 						}
 					}
 				}
-				o.values().for_each(|x| self.walk(x));
+				if let (Some(owner), Some(Value::Array(edges))) = (o.get("id").and_then(Value::as_str), v.pointer("/timeline_list_feed_units/edges")) {
+					for node in edges.iter().filter_map(|e| e.get("node")) {
+						let theirs = node
+							.get("actors")
+							.and_then(Value::as_array)
+							.is_some_and(|a| a.iter().any(|a| a.get("id").and_then(Value::as_str) == Some(owner)));
+						if theirs {
+							let at = node
+								.get("creation_time")
+								.and_then(Value::as_i64)
+								.ok_or_else(|| eyre!("a story of {owner}'s on their timeline carries no creation_time"))?;
+							self.posted = self.posted.max(Some(Timestamp::from_second(at)?));
+						}
+					}
+				}
+				o.values().try_for_each(|x| self.walk(x))
 			}
-			Value::Array(a) => a.iter().for_each(|x| self.walk(x)),
-			_ => {}
+			Value::Array(a) => a.iter().try_for_each(|x| self.walk(x)),
+			_ => Ok(()),
 		}
 	}
 

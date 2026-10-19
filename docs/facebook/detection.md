@@ -37,9 +37,15 @@ Facts from the 2026-09-22 live work, plus known general behaviour; each is marke
 - The typical response to bursts of profile views is "You're going too fast" / "You can't use this feature right now", for hours to days. Repeated, it escalates to a checkpoint or account restrictions.
 
 ## Throughput as built
-- 1 profile view per member (`directory_personal_details`), plus 0–3 per in-area member (work, education, contact info when present).
+- 2 profile views per member (the main page, then `directory_personal_details`), plus 0–3 per in-area member (work, education, contact info when present).
 - At `profile_views_per_hour = 30`: 720 views/day, so a 10k-member group is ~14 days.
 - Member listing: ~10 members per scroll. A 10k group is ~1000 scrolls, and the window must be visible throughout.
+
+## A profile's main page (2026-10-19, observed on the burner: a public figure and two ordinary accounts, seen as a stranger)
+- The first render embeds `data.user.timeline_list_feed_units.edges`, with exactly one edge in all three; the rest of the feed is placeholders filled by GraphQL as the page scrolls, which we never do. `user.id` sits beside it.
+- An edge's `node` is a `Story` with its own `creation_time` (unix seconds, the moment of posting) and `actors` (`[{id}]`). Under it, `attached_story` (a shared post), `comet_sections.*.story.creation_time` (copies of the same moment) and `feedback…comment.created_time` (anybody's comment, later than the post) are not the person's own moments. `backdated_time.time` is whatever the poster set, not read.
+- No other date of the person's is in that payload: a profile-picture or cover change is a story in the same feed (so it counts when it is the newest), and `__spin_t`/`server_time` are the read time. Check-ins, photos and comments elsewhere need their own loads.
+- Unverified: a locked profile, a profile with no posts, and a profile with a pinned post (`profile_pinned_post` was `null` in all three); the code reads those as no evidence, or the max over the edges.
 
 ## Measured (2026-09-24, group 671440486248842 "Colocation Lyon", `--location Lyon`, `examples/measure.rs`)
 - Members embedded in the first page: 15 (4.6 s). Scrolling adds ~10 per scroll.
