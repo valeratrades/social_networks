@@ -8,9 +8,6 @@ use color_eyre::eyre::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use regex::Regex;
 
-static AGO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Active (?:(now)|(\d+) ?([a-z]+) ago)$").expect("literal pattern"));
-static SEEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Seen(?: (?:by|at|just|\d).*)?$").expect("literal pattern"));
-
 /// The newest time `head` (the thread's text outside its message log) says they were active.
 /// A stated age is rounded to one unit by facebook, so it counts one unit older than it reads.
 pub fn active(head: &[String], read: Timestamp) -> Result<Option<Timestamp>> {
@@ -37,8 +34,9 @@ pub fn active(head: &[String], read: Timestamp) -> Result<Option<Timestamp>> {
 	}
 	Ok(newest)
 }
-
 /// Whether `last`, the final line of the message log, is a receipt: only our own messages carry one.
 pub fn seen(last: &str) -> bool {
 	SEEN.is_match(last)
 }
+static AGO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Active (?:(now)|(\d+) ?([a-z]+) ago)$").expect("literal pattern"));
+static SEEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Seen(?: (?:by|at|just|\d).*)?$").expect("literal pattern"));
