@@ -16,8 +16,8 @@ use social_networks_adapters::{
 };
 use social_networks_reach::{
 	history,
-	person::{self, Person, Refused},
-	purpose::Purpose,
+	person::{self, Person, Refused, Value},
+	purpose::{LAST_LOGIN, Purpose},
 };
 use social_networks_utils::db::Database;
 use strum::{AsRefStr, EnumString};
@@ -140,6 +140,7 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 
 	// one `Direct::send`, a session per messenger: the same enum dispatch the reads go through
 	let mut sent_at = Vec::with_capacity(bubbles.len());
+	let mut sighting = None;
 	let r = match messenger {
 		Messenger::Discord =>
 			burst(
@@ -158,7 +159,9 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 				if let Some(span) = browse.before {
 					session.noise(span).await?;
 				}
-				burst(session, handle, &bubbles, &mut sent_at).await?;
+				let r = burst(session, handle, &bubbles, &mut sent_at).await;
+				sighting = Some((session.active, session.seen));
+				r?;
 				match browse.after {
 					Some(span) => session.noise(span).await,
 					None => Ok(()),
@@ -212,7 +215,18 @@ pub async fn send_to(config: &AppConfig, purpose: &Purpose, person: &Person, mes
 		};
 		person.unreachable.insert(platform.to_string(), refused);
 	}
-	if was.is_some() || person.unreachable.contains_key(platform) {
+	// a receipt dates to the newest line on record, which is one of our own sends: nothing facebook is read back
+	let seen_at = match sighting {
+		Some((_, true)) => history::Meta::load(&person.dir(dir))?.last_message(Source::Facebook),
+		_ => None,
+	};
+	let tags = person.tags.clone();
+	if purpose.tags.contains_key(LAST_LOGIN)
+		&& let Some(at) = sighting.and_then(|(active, _)| active).max(seen_at)
+	{
+		person.weigh(LAST_LOGIN, Some(Value::Timestamp(at)));
+	}
+	if was.is_some() || person.unreachable.contains_key(platform) || person.tags != tags {
 		person.write(dir)?;
 	}
 	let read_back = match messenger {

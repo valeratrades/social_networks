@@ -7,9 +7,9 @@ use std::{path::Path, time::Duration};
 
 use color_eyre::eyre::{Result, bail, ensure};
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
-use super::{FEED, Facebook, Session};
+use super::{FEED, Facebook, Session, presence};
 use crate::{
 	behaviour::Action,
 	reach::{Direct, Page, Refusal, Unreachable, Window},
@@ -59,6 +59,10 @@ struct Seen {
 	shown: Option<usize>,
 	/// the line under the message's last bubble, where Messenger says whether it went out
 	status: Option<String>,
+	/// the text of the page outside the message log, where the header says whether they are active
+	head: Vec<String>,
+	/// the message log's final line
+	last: Option<String>,
 	/// the recipient field's contact list, open over the composer of a new conversation
 	suggesting: bool,
 	front: Option<Front>,
@@ -207,6 +211,12 @@ impl Direct for Facebook<'_, '_> {
 			);
 			open = seen;
 		}
+		match presence::active(&open.head, jiff::Timestamp::now()) {
+			Ok(at) => self.active = self.active.max(at),
+			// evidence on the side of the send, which must not fail for want of it; a header this cannot read states nothing
+			Err(e) => warn!("the header of the conversation with {handle}: {e}"),
+		}
+		self.seen |= open.last.as_deref().is_some_and(presence::seen);
 		ensure!(open.composers == 1, "{} Messenger composers on the page", open.composers);
 		ensure!(open.recipients.len() <= 1, "the conversation with {handle} is addressed to {:?}", open.recipients);
 		ensure!(!open.covered, "something lies over the composer to {handle}, where a click into it would land");

@@ -117,6 +117,11 @@ impl Meta {
 		})
 	}
 
+	/// The newest item on record for `source`.
+	pub fn last_message(&self, source: Source) -> Option<Timestamp> {
+		self.sources.get(source.as_ref()).and_then(|s| s.last_message)
+	}
+
 	/// `None` once every source has reached the end of its history.
 	pub fn backfill_status(&self) -> Option<String> {
 		let pending: Vec<(&str, usize)> = self.sources.iter().filter(|(_, s)| !s.backfill_done).map(|(name, s)| (name.as_str(), s.messages)).collect();

@@ -17,6 +17,7 @@ pub mod lead_rate;
 pub mod members;
 mod messenger;
 mod noise;
+pub mod presence;
 pub mod profile;
 pub mod search;
 mod searched;
@@ -86,6 +87,10 @@ pub struct Facebook<'t, 'c> {
 	dir: PathBuf,
 	/// the Messenger conversation the tab is on, by handle
 	conversation: Option<String>,
+	/// the newest time a conversation opened by `send` said the other side was active
+	pub active: Option<jiff::Timestamp>,
+	/// a conversation opened by `send` showed a receipt under our last message
+	pub seen: bool,
 }
 impl Facebook<'_, '_> {
 	/// People search for each first name in turn under the City filter; everyone it lists counts as
@@ -320,6 +325,8 @@ async fn launched<T>(c: &LaunchedConfig, session: Session, work: impl AsyncFnOnc
 			geocoder,
 			dir: dir.clone(),
 			conversation: None,
+			active: None,
+			seen: false,
 		})
 		.await
 	})
@@ -339,6 +346,8 @@ async fn with_attached<T>(config: &FacebookConfig, work: impl AsyncFnOnce(&mut F
 			geocoder,
 			dir: dir.clone(),
 			conversation: None,
+			active: None,
+			seen: false,
 		})
 		.await
 	})

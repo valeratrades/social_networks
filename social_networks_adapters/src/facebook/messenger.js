@@ -2,7 +2,9 @@
 // conversation, which is how it is recognised whatever the bubble renders emoji and line breaks as;
 // `null` without a `main`. `front`: the topmost dialog, or without a composer a notice in `main`, with
 // the first button of `PASS` it offers; `pin` when it asks for the end-to-end-encryption PIN.
-// `status`: the line under the message's last bubble. `covered`: some point a click into the composer could land on is something else's.
+// `status`: the line under the message's last bubble. `head`: the text of `main` outside its message log,
+// where a thread says "Active now"; `last`: the log's final line, where a receipt for our last message sits.
+// `covered`: some point a click into the composer could land on is something else's.
 ([composer, message]) => {
 	// most specific first: on "Continue without restoring?", Close and Cancel lead back to the PIN
 	const PASS = ["Don't restore messages", 'Skip', 'Not now', 'Continue', 'OK', 'Got it', 'Dismiss', 'Decline optional cookies', 'Close'];
@@ -24,7 +26,13 @@
 		const notice = offered(main, main.innerText);
 		if (notice.pass) front = { kind: 'notice', ...notice };
 	}
-	const lines = (main?.querySelector('[role="log"]')?.innerText ?? '').split('\n').map(norm);
+	const log = main?.querySelector('[role="log"]');
+	const lines = (log?.innerText ?? '').split('\n').map(norm);
+	const head = [];
+	if (main) {
+		const walk = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+		for (let n; (n = walk.nextNode());) if (!log?.contains(n) && visible(n.parentElement) && norm(n.textContent)) head.push(norm(n.textContent));
+	}
 	const box = boxes[0];
 	const rect = box?.getBoundingClientRect();
 	const covered = !!rect && [[0.5, 0.5], [0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [0.9, 0.9]].some(([fx, fy]) => {
@@ -41,6 +49,8 @@
 		suggesting: !!main?.querySelector('[role="combobox"][aria-expanded="true"]'),
 		shown: main ? letters(main.innerText).split(letters(message)).length - 1 : null,
 		status: lines[lines.findLastIndex(l => letters(l) === letters(message)) + 1] ?? null,
+		head,
+		last: lines.findLast(l => l) ?? null,
 		front,
 	};
 }
