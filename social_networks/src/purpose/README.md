@@ -18,7 +18,8 @@ config.nix
      │             <group> = [ "<value>" … ]; }
      ├─ procure  { <name> = { venue = "skool:x"; where = "<sql, may name $<group>>"; tags = { <group> = "$<group>"; … }; }; }
      ├─ rank     [ { of = <tag | builtin>; weight; <shape params> } … ]
-     ├─ gates    [ { of = <timestamp tag | last_interaction>; until = "2w"; } … ]
+     ├─ gates    [ { of = <timestamp tag | last_interaction>; until = "2w"; }
+     │             { of = <place tag>; within = { lat; lon; radius_km; }; } … ]
      ├─ stale_half_life       how fast what a pull refreshes goes out of date, e.g. "60d"
      └─ unanswered_half_life  how fast the penalty on a lead whose last line is ours wears off, e.g. "1w"
 ```
@@ -165,6 +166,8 @@ A `gate` is the same layer for a moment: ×`(1 − age / until)`, linear in the 
 so a login yesterday costs a few percent and one past `until` takes the lead out of the ranking. The age is absolute, not
 relative to the cohort as a term's recency is. Somebody it holds no moment for is not gated — absent is the ungated
 multiplier, as for the unanswered decay — so a gate over a tag nobody has filled changes nothing.
+
+Over a place, `within` is a switch: ×1 inside the circle, ×0 outside, and no place on record is ×1 as above.
 
 The unanswered decay multiplies the whole score rather than adding a term, because a term can only ever be a bonus. A facebook send is
 written into their year file as it goes out, since no pull reads that conversation back; discord,

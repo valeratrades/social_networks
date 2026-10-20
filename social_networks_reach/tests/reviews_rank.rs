@@ -137,20 +137,36 @@ fn distance_costs_only_outside_the_radius() {
 	assert!(score(&ranked, "near") > score(&ranked, "far"));
 }
 
-/// Absent is no credit, so a lost closeness bonus is the whole of a penalty for distance: somebody
-/// known to live far away still beats somebody whose place is unknown.
+/// Absent is no credit, so somebody with any known value beats somebody with none.
 #[test]
 fn a_known_value_beats_an_absent_one() {
 	let ranked = check(
 		"known",
 		&[
 			lead("unknown", ""),
-			lead("far", r#"lives_in = { name = "Lyon"; lat = 45.764; lon = 4.8357; };"#),
+			lead("suburb", r#"lives_in = { name = "Versailles"; lat = 48.8049; lon = 2.1204; };"#),
 			lead("aged", "birthday = { min = 2010; max = 2012; };"),
 		],
 	);
-	assert!(score(&ranked, "far") > score(&ranked, "unknown"));
+	assert!(score(&ranked, "suburb") > score(&ranked, "unknown"));
 	assert!(score(&ranked, "aged") > score(&ranked, "unknown"));
+}
+
+/// A place gate is a switch: inside its circle the score stands, outside it is nothing, and somebody
+/// with no place on record is not gated.
+#[test]
+fn a_place_gate_switches_off_everyone_outside_it() {
+	let ranked = check(
+		"place_gate",
+		&[
+			lead("center", r#"business = true; lives_in = { name = "Paris"; lat = 48.8566; lon = 2.3522; };"#),
+			lead("unknown", "business = true;"),
+			lead("far", r#"business = true; lives_in = { name = "Marseille"; lat = 43.2965; lon = 5.3698; };"#),
+		],
+	);
+	assert!(score(&ranked, "center") > 0.0);
+	assert_eq!(score(&ranked, "far"), 0.0);
+	assert!(score(&ranked, "unknown") > 0.0, "no place, nothing to gate by");
 }
 
 #[test]
@@ -297,7 +313,9 @@ fn the_reviews_ranking_is_this_graph() {
 	unanswered             Map <- ours_unanswered
 	last_login.age         Source by pull
 	last_login.gate        Map <- last_login.age
-	multiplier             Cohort <- unanswered, last_login.gate
+	lives_in.km            Source by pull
+	lives_in.gate          Map <- lives_in.km
+	multiplier             Cohort <- unanswered, last_login.gate, lives_in.gate
 	score                  Gate <- Σw·v/Σw, multiplier
 	fetched                Source by pull
 	reasoned               Source by pull

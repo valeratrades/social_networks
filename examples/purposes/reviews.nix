@@ -22,5 +22,7 @@
   # a layer over the whole score, not a term in it: nobody is ranked high for having logged in once
   gates = [
     { of = "last_login"; until = "2w"; }
+    # serving range: Lyon in, Marseille out
+    { of = "lives_in"; within = { lat = 48.8566; lon = 2.3522; radius_km = 500; }; }
   ];
 }

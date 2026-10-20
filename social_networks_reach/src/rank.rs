@@ -28,7 +28,7 @@ use v_utils::Timeframe;
 use crate::{
 	history::{self, ME},
 	person::{Person, Value},
-	purpose::{GateOf, LAST_LOGIN, Near, Purpose, Refresh, Signal, Term},
+	purpose::{GateOf, LAST_LOGIN, LIVES_IN, Near, Purpose, Refresh, Signal, Term},
 	venue,
 };
 
@@ -116,32 +116,57 @@ fn evaluate(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<(Ve
 		.gates
 		.iter()
 		.map(|gate| {
-			let (writer, transcripts, cells) = match gate.reads {
-				GateOf::Timestamp => (
-					if gate.of == LAST_LOGIN { "pull" } else { "human" },
+			let writer = match (gate.reads, gate.of.as_str()) {
+				(GateOf::LastInteraction(_), _) | (_, LAST_LOGIN | LIVES_IN) => "pull",
+				_ => "human",
+			};
+			let tags = |f: &dyn Fn(&Value) -> Option<Cell>| -> Vec<Option<Cell>> {
+				people
+					.iter()
+					.map(|p| {
+						p.tags
+							.get(&gate.of)
+							.and_then(Option::as_ref)
+							.map(|v| f(v).unwrap_or_else(|| unreachable!("`{}` = {} was typed against the purpose at load", gate.of, v.nix())))
+					})
+					.collect()
+			};
+			let (until, transcripts, cells) = match gate.reads {
+				GateOf::Within(circle) => {
+					let km = tape.source(
+						&format!("{}.km", gate.of),
+						writer,
+						Some(&format!("km from {}, {}", circle.lat, circle.lon)),
+						Fidelity::Exact,
+						tags(&|v| match v {
+							Value::Place { lat, lon, .. } => Some(Cell::At(haversine_km((circle.lat, circle.lon), (*lat, *lon)))),
+							_ => None,
+						}),
+					);
+					return tape.map(&format!("{}.gate", gate.of), km, &[], Some([0.0, 2.0 * circle.radius_km]), move |c, _| {
+						f64::from(u8::from(point(c) <= circle.radius_km))
+					});
+				}
+				GateOf::Timestamp(until) => (
+					until,
 					Fidelity::Exact,
-					people
-						.iter()
-						.map(|p| {
-							p.tags.get(&gate.of).and_then(Option::as_ref).map(|v| match v {
-								Value::Timestamp(at) => Cell::At(since(*at)),
-								v => unreachable!("`{}` = {} was typed against the purpose at load", gate.of, v.nix()),
-							})
-						})
-						.collect(),
+					tags(&|v| match v {
+						Value::Timestamp(at) => Some(Cell::At(since(*at))),
+						_ => None,
+					}),
 				),
-				GateOf::LastInteraction => {
+				GateOf::LastInteraction(until) => {
 					let backfilling = facts.iter().filter(|f| f.backfilling).count();
 					let fidelity = match backfilling {
 						0 => Fidelity::Exact,
 						n => Fidelity::Partial(format!("{n} backfilling, read as absent")),
 					};
-					("pull", fidelity, facts.iter().map(|f| f.last.filter(|_| !f.backfilling).map(|at| Cell::At(since(at)))).collect())
+					(until, fidelity, facts.iter().map(|f| f.last.filter(|_| !f.backfilling).map(|at| Cell::At(since(at)))).collect())
 				}
 			};
 			let age = tape.source(&format!("{}.age", gate.of), writer, Some("seconds since"), transcripts, cells);
-			let until = gate.until.duration().as_secs_f64();
-			tape.map(&format!("{}.gate", gate.of), age, &[], Some([0.0, until]), |c, _| (1.0 - point(c) / until).max(0.0))
+			let until = until.duration().as_secs_f64();
+			tape.map(&format!("{}.gate", gate.of), age, &[], Some([0.0, until]), move |c, _| (1.0 - point(c) / until).max(0.0))
 		})
 		.collect();
 	let multiplier = match factors.is_empty() {

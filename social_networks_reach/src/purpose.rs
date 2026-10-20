@@ -228,17 +228,21 @@ impl Purpose {
 	}
 
 	fn gate(&self, raw: RawGate) -> Result<Gate> {
-		let RawGate { of, until } = raw;
+		let RawGate { of, until, within } = raw;
 		let of = snake(&of);
-		if until.duration().is_zero() {
+		if let Some(until) = until.filter(|until| until.duration().is_zero()) {
 			bail!("gate `{of}` is until {until}; a gate fades over a span of time");
 		}
-		let reads = match (self.tags.get(&of), of.as_str()) {
-			(Some(TagType::Timestamp), _) => GateOf::Timestamp,
-			(None, "last_interaction") => GateOf::LastInteraction,
-			_ => bail!("gate `{of}` reads neither a timestamp tag of this purpose nor `last_interaction`; only a moment has an age to fade by"),
+		if let Some(within) = within.filter(|within| !(within.radius_km.is_finite() && within.radius_km > 0.0)) {
+			bail!("gate `{of}` is within {} km; a circle has a positive radius", within.radius_km);
+		}
+		let reads = match (self.tags.get(&of), of.as_str(), until, within) {
+			(Some(TagType::Timestamp), _, Some(until), None) => GateOf::Timestamp(until),
+			(None, "last_interaction", Some(until), None) => GateOf::LastInteraction(until),
+			(Some(TagType::Place), _, None, Some(within)) => GateOf::Within(within),
+			_ => bail!("gate `{of}`: `until` over a timestamp tag or `last_interaction`, `within` over a place tag; exactly one"),
 		};
-		Ok(Gate { of, until, reads })
+		Ok(Gate { of, reads })
 	}
 
 	fn strategy(&self, raw: RawStrategy) -> Result<Strategy> {
@@ -410,13 +414,11 @@ pub struct Term {
 	pub(crate) weight: f64,
 	pub(crate) signal: Signal,
 }
-/// ×`(1 − age / until)` over the whole score, nothing from `until` on. Linear in the age, so a day
-/// costs the same at any point of the way; somebody it has no moment for is not gated.
+/// A factor in `[0, 1]` over the whole score; somebody it has no value for is not gated.
 #[derive(Clone, Debug)]
 pub struct Gate {
 	/// The tag or builtin it reads, as the config names it.
 	pub of: String,
-	pub(crate) until: Timeframe,
 	pub(crate) reads: GateOf,
 }
 /// How people get procured into a purpose: selection over what `recon` already wrote, which fetches
@@ -489,8 +491,19 @@ pub struct Bound {
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum GateOf {
-	Timestamp,
-	LastInteraction,
+	/// ×`(1 − age / until)`, nothing from `until` on: a day costs the same at any point of the way.
+	Timestamp(Timeframe),
+	LastInteraction(Timeframe),
+	/// ×1 inside, ×0 outside.
+	Within(Circle),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Circle {
+	pub(crate) lat: f64,
+	pub(crate) lon: f64,
+	pub(crate) radius_km: f64,
 }
 
 /// Every `$<name>` in `text`: the bytes it spans, and the name.
@@ -697,7 +710,8 @@ struct RawTerm {
 #[serde(deny_unknown_fields)]
 struct RawGate {
 	of: String,
-	until: Timeframe,
+	until: Option<Timeframe>,
+	within: Option<Circle>,
 }
 
 #[derive(Deserialize)]
