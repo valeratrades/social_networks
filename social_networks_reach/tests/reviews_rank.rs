@@ -315,8 +315,7 @@ fn the_reviews_ranking_is_this_graph() {
 	last_login.gate        Map <- last_login.age
 	lives_in.km            Source by pull
 	lives_in.gate          Map <- lives_in.km
-	multiplier             Cohort <- unanswered, last_login.gate, lives_in.gate
-	score                  Gate <- Σw·v/Σw, multiplier
+	score                  Gate <- Σw·v/Σw, unanswered, last_login.gate, lives_in.gate
 	fetched                Source by pull
 	reasoned               Source by pull
 	stale                  Cohort <- business.v, interactions.v, last_interaction.v, interest.v, birthday.v, lives_in.v, fetched, reasoned

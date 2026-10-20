@@ -1249,16 +1249,16 @@ dependencies = [
 
 [[package]]
 name = "derivs"
-version = "0.1.0"
-source = "git+https://github.com/valeratrades/derivs?tag=v0.1.0#5789bd1c50d42df3283befc695539c677a77504c"
+version = "0.2.0"
+source = "git+https://github.com/valeratrades/derivs?tag=v0.2.0#f4b79d1c62dd4c55fb5dd118a347575bd61c7f91"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "derivs_view"
-version = "0.1.0"
-source = "git+https://github.com/valeratrades/derivs?tag=v0.1.0#5789bd1c50d42df3283befc695539c677a77504c"
+version = "0.2.0"
+source = "git+https://github.com/valeratrades/derivs?tag=v0.2.0#f4b79d1c62dd4c55fb5dd118a347575bd61c7f91"
 dependencies = [
  "derivs",
  "serde_json",

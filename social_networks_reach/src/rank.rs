@@ -169,19 +169,8 @@ fn evaluate(purpose: &Purpose, venues: &Path, people: Vec<Person>) -> Result<(Ve
 			tape.map(&format!("{}.gate", gate.of), age, &[], Some([0.0, until]), move |c, _| (1.0 - point(c) / until).max(0.0))
 		})
 		.collect();
-	let multiplier = match factors.is_empty() {
-		true => unanswered,
-		false => {
-			let deps: Vec<Id> = std::iter::once(unanswered).chain(factors).collect();
-			// an absent factor leaves the row ungated, as `Tape::gate` reads an absent multiplier
-			tape.cohort("multiplier", &deps, |columns| {
-				(0..people.len())
-					.map(|i| Some(columns.iter().map(|column| column[i].as_ref().map_or(1.0, point)).product()))
-					.collect()
-			})
-		}
-	};
-	let score = tape.gate("score", mean, multiplier);
+	let by: Vec<Id> = std::iter::once(unanswered).chain(factors).collect();
+	let score = tape.gate("score", mean, &by);
 	let synced = [("fetched", Refresh::Fetch), ("reasoned", Refresh::Reasoning)].map(|(name, by)| {
 		let cells = facts.iter().map(|f| synced(f, by).map(|at| Cell::At(since(at)))).collect();
 		tape.source(name, "pull", Some("seconds since"), Fidelity::Exact, cells)
@@ -356,7 +345,7 @@ fn record(tape: &mut Tape, purpose: &Purpose, term: &Term, people: &[Person], fa
 					v => mistyped(v),
 				}),
 			);
-			tape.map(&v, raw, &[], Some([*lo, *hi]), |c, _| match c {
+			tape.map(&v, raw, &[], Some([0.0, 2.0 * hi]), |c, _| match c {
 				Cell::At(age) => f64::from(u8::from((lo..=hi).contains(&age))),
 				Cell::Within(min, max) => (max.min(*hi) - min.max(*lo)).max(0.0) / (max - min),
 				Cell::Each(_) => unreachable!("an age is a point or a range"),
@@ -427,7 +416,7 @@ fn record(tape: &mut Tape, purpose: &Purpose, term: &Term, people: &[Person], fa
 				let activity: Vec<f64> = c[0].iter().flatten().map(point).collect();
 				(!activity.is_empty()).then(|| [activity.into_iter().fold(0.0, f64::max)])
 			});
-			tape.map(&v, activity, &[top], Some([0.0, 0.0]), |c, s| point(c) / s[0])
+			tape.map(&v, activity, &[top], None, |c, s| point(c) / s[0])
 		}
 	}
 }
