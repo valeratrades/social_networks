@@ -8,7 +8,7 @@ authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "the transcript format of the on-demand axis, and the CLI that fills it"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
-include = ["src/**/*", "build.rs", "README.md"]
+include = ["src/**/*", "README.md", "build.rs"]
 
 # only the bin crate tags releases
 [package.metadata.release]
