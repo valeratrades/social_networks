@@ -190,7 +190,8 @@ async fn newest_upload(client: &reqwest::Client, source: &UploadSource, channel_
 			);
 			let response = client
 				.get("https://www.googleapis.com/youtube/v3/playlistItems")
-				.query(&[("part", "contentDetails,snippet"), ("maxResults", "50"), ("playlistId", &uploads), ("key", key)])
+				.query(&[("part", "contentDetails,snippet"), ("maxResults", "50"), ("playlistId", &uploads)])
+				.header("x-goog-api-key", key) // reqwest errors print the URL
 				.send()
 				.await
 				.context("Failed to fetch the uploads playlist")
