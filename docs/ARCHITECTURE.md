@@ -128,7 +128,7 @@ Both variants end `listen`: the binary calls `alert()` and exits 78 (`EX_CONFIG`
 | Telegram DMs / channel watch | io, dropped, transport errors, RPC 5xx, `FLOOD_WAIT` (sleeps its value), runner exit | — | RPC 401, `AUTH_KEY_*` (incl. `AUTH_KEY_DUPLICATED`), `SESSION_*`, `USER_DEACTIVATED*`, `API_ID_INVALID`, `PHONE_NUMBER_BANNED`; transport 404; not authorized with no terminal |
 | Twitter monitor | 429, 5xx, request not sent | 402 (credits depleted): re-checked hourly | 401, 403 |
 | Twitter schedule | — up to `num_of_retries` attempts per post | 402 (credits depleted): the slot is skipped, reported once | 401, 403 |
-| Email (IMAP + OAuth) | io, IMAP connection lost / BYE, Gmail transport and 429/5xx, transient SMTP | — | IMAP login failure; SMTP login failure; OAuth refresh 401/403 |
+| Email (IMAP + OAuth) | io, IMAP connection lost / BYE, IMAP `[UNAVAILABLE]` and Gmail's `Lookup failed`, Gmail transport and 429/5xx, transient SMTP | — | IMAP `[AUTHENTICATIONFAILED]`; SMTP login failure; OAuth refresh 401/403 |
 | YouTube | 429, 5xx, request not sent | RSS: 404 (the feeds endpoint goes dark for hours most nights). API: `quotaExceeded`, `rateLimitExceeded` (the daily quota resets at midnight Pacific). Either is waited out, and reported once a channel has had no successful read for the 15 min announce window, where an upload can be missed | 401, 403; API: `keyInvalid` (a 400), `forbidden`, `accessNotConfigured`, `API_KEY_SERVICE_BLOCKED` |
 | Skool chat | any refused poll, up to 5 in a row | — | — a dead cookie is re-minted in-process |
 

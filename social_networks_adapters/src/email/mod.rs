@@ -216,7 +216,7 @@ impl EmailMonitor {
 
 		let client = imap::ClientBuilder::new("imap.gmail.com", 993).connect().context("Failed to connect to Gmail IMAP")?;
 
-		let session = client.login(&self.config.email, pass).map_err(|e| eyre!("IMAP login failed: {:?}", e.0))?;
+		let session = client.login(&self.config.email, pass).map_err(|(e, _)| e).context("IMAP login failed")?;
 
 		Ok(session)
 	}
@@ -884,10 +884,9 @@ impl AdapterClient for EmailMonitor {
 	}
 }
 
-/// Auth by the error's text, transient by the type of something in its chain; anything else is `Unhandled`.
+/// Auth and the server's refusals by the error's text, transient by the type of something in its chain; anything else is `Unhandled`.
 fn classify(e: &color_eyre::eyre::Report) -> Fault {
-	const AUTH: [&str; 9] = [
-		"imap login failed",
+	const AUTH: [&str; 8] = [
 		"smtp authentication failed",
 		"authenticationfailed",
 		"invalid_grant",
@@ -901,6 +900,9 @@ fn classify(e: &color_eyre::eyre::Report) -> Fault {
 	let lc = detail.to_lowercase();
 	if AUTH.iter().any(|t| lc.contains(t)) {
 		return Fault::Auth(detail);
+	}
+	if ["[unavailable]", "lookup failed"].iter().any(|t| lc.contains(t)) {
+		return Fault::Transient(detail); // RFC 5530's server-side refusal, and Gmail's untagged one
 	}
 	let transient = e.chain().any(|c| {
 		c.is::<std::io::Error>()
@@ -1072,5 +1074,21 @@ mod tests {
 		assert_eq!(rules.decide(&email("Alex Hormozi <a@acq.com>", "Appointment booked")), Some(Action::Important));
 		assert_eq!(rules.decide(&email("noreply@imperiumlabs.io", "hi")), Some(Action::Discard));
 		assert_eq!(rules.decide(&email("stranger@example.com", "hi")), None);
+	}
+
+	#[test]
+	fn imap_login_refusals_classify_by_response() {
+		let class = |e: color_eyre::eyre::Report| match classify(&e) {
+			Fault::Transient(_) => "transient",
+			Fault::Degraded(_) => "degraded",
+			Fault::Auth(_) => "auth",
+			Fault::Unhandled(_) => "unhandled",
+		};
+		let no = |information: &str| class(eyre!("No Response: {information}").wrap_err("IMAP login failed")); // `imap::error::No` is non-exhaustive
+		assert_eq!(no("[AUTHENTICATIONFAILED] Invalid credentials (Failure)"), "auth");
+		assert_eq!(no("Lookup failed cdcc0902adbc2-43a940e5826mb213820300d76"), "transient");
+		assert_eq!(no("[UNAVAILABLE] Temporary System Error"), "transient");
+		assert_eq!(no("[ALERT] Application-specific password required"), "unhandled");
+		assert_eq!(class(color_eyre::eyre::Report::new(imap::Error::ConnectionLost).wrap_err("IMAP login failed")), "transient");
 	}
 }
