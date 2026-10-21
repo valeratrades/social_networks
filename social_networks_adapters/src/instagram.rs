@@ -32,9 +32,10 @@ impl Profiles for Instagram {
 			.wrap_err_with(|| format!("instagram `{handle}`"))?;
 		let status = response.status().as_u16();
 		let body = response.text().await.wrap_err_with(|| format!("instagram `{handle}`"))?;
-		let mut profile = Profile::default();
-		profile.active = newest_post(status, &body).wrap_err_with(|| format!("instagram `{handle}`"))?;
-		Ok(profile)
+		Ok(Profile {
+			active: newest_post(status, &body).wrap_err_with(|| format!("instagram `{handle}`"))?,
+			..Default::default()
+		})
 	}
 }
 
