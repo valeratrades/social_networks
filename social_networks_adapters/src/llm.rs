@@ -20,6 +20,7 @@ impl From<&LlmConfig> for ask_llm::config::AppConfig {
 			openai_token: config.openai_token.clone(),
 			google_credentials: None, // vertex is only `ask_llm::video`
 			google_location: None,
+			fal_key: None, // fal is only `ask_llm::segment`
 		}
 	}
 }

@@ -20,7 +20,7 @@ get_last_with_len = "allow"
 unused_features = "allow"
 
 [workspace.dependencies]
-ask_llm = "3.6"
+ask_llm = "3.10"
 base64 = "=0.23.1"
 browser_manipulation = "0.4.4"
 clap = { version = "=4.6.7", features = ["derive", "string"] }
@@ -49,7 +49,7 @@ imap-proto = "=0.16.7"
 indicatif = "=0.18.6"
 
 insta = "=1.48.0"
-jiff = { version = "=0.2.37", features = ["serde"] }
+jiff = { version = "=0.2.38", features = ["serde"] }
 lettre = { version = "=0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "aws-lc-rs", "rustls-native-certs"] }
 libsql = "=0.9.30"
 mail-parser = "=0.11.9"
