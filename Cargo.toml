@@ -19,6 +19,9 @@ get_last_with_len = "allow"
 [workspace.lints.rust]
 unused_features = "allow"
 
+[workspace.lints.cargo]
+non_kebab_case_bins = "allow"
+
 [workspace.dependencies]
 ask_llm = "3.10"
 base64 = "=0.23.1"
