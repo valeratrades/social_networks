@@ -9,6 +9,7 @@ description = "long-running social network surface adapters for social_networks"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/social_networks"
 include = ["src/**/*", "build.rs"]
+autotests = false
 
 # only the bin crate tags releases
 [package.metadata.release]
@@ -65,6 +66,19 @@ yup-oauth2.workspace = true
 [dev-dependencies]
 insta.workspace = true
 tracing-subscriber.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+# set `XDG_STATE_HOME` for the whole process, so each needs one of its own
+[[test]]
+name = "breaker"
+path = "tests/breaker.rs"
+
+[[test]]
+name = "youtube"
+path = "tests/youtube.rs"
 
 [lints]
 workspace = true
