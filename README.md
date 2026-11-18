@@ -57,6 +57,7 @@ The email command supports two authentication methods:
    scp ~/.local/state/social_networks/gmail_tokens.json <remote-server>:~/.local/state/social_networks/
    ```
 
+
 </details>
 <!-- markdownlint-restore -->
 

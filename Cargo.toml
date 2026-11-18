@@ -17,6 +17,7 @@ get_first = "allow"
 get_last_with_len = "allow"
 
 [workspace.lints.rust]
+stable_features = "allow"
 unused_features = "allow"
 
 [workspace.lints.cargo]
