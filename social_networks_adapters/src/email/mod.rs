@@ -997,7 +997,8 @@ impl EmailMessage {
 		let parsed = mail_parser::MessageParser::default().parse(raw).with_context(|| format!("{id} is not an RFC822 message"))?;
 		let sender = parsed.from().and_then(|a| a.first()).with_context(|| format!("{id} has no From"))?;
 		let from_address = sender.address().with_context(|| format!("{id} has a From without an address"))?.to_owned();
-		let ids = |v: &mail_parser::HeaderValue| v.as_text_list().map(|ids| ids.iter().map(|id| id.to_string()).collect()).unwrap_or_default();
+		let ids = |v: Option<mail_parser::TextList>| v.map(|ids| ids.iter().map(str::to_owned).collect()).unwrap_or_default();
+		let raw = |name: &str| parsed.headers().get(name).map(|h| String::from_utf8_lossy(h.raw_value()).trim().to_owned());
 		Ok(Self {
 			from: match sender.name() {
 				Some(name) => format!("{name} <{from_address}>"),
@@ -1012,10 +1013,10 @@ impl EmailMessage {
 				.map(|t| t.lines().filter(|l| !l.starts_with('>')).collect::<Vec<_>>().join("\n"))
 				.unwrap_or_default(),
 			reply_to: parsed.reply_to().and_then(|a| a.first()?.address()).map(str::to_owned),
-			list_unsubscribe: parsed.header_raw("List-Unsubscribe").map(|v| v.trim().to_owned()),
+			list_unsubscribe: raw("List-Unsubscribe"),
 			extra_headers: ["X-Mailer", "User-Agent", "X-Auto-Response-Suppress", "Auto-Submitted", "Precedence"]
 				.into_iter()
-				.filter_map(|h| Some(format!("{h}: {}", parsed.header_raw(h)?.trim())))
+				.filter_map(|h| Some(format!("{h}: {}", raw(h)?)))
 				.collect::<Vec<_>>()
 				.join("\n"),
 			message_id: parsed.message_id().map(str::to_owned),

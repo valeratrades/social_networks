@@ -31,6 +31,7 @@
 
         rs = v_flakes.rs {
           inherit pkgs rust;
+          pinDeps = true;
           cranelift = true;
           build = {
             enable = true;
