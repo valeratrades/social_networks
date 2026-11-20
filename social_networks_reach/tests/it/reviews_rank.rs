@@ -214,7 +214,8 @@ fn our_last_message_cools_a_lead_until_it_decays_or_they_answer() {
 	assert_eq!(order(&ranked).last(), Some(&"just_messaged"));
 	assert_eq!(score(&ranked, "answered"), score(&ranked, "never_messaged"), "their reply lifts it");
 	let (cooled, warm) = (score(&ranked, "messaged_a_month_ago"), score(&ranked, "silent_a_month"));
-	assert!(cooled < warm && cooled > 0.9 * warm, "a month is four half-lives of a week: {cooled} against {warm}");
+	assert!(cooled < warm, "a month is four half-lives of a week: {cooled} against {warm}");
+	assert!(cooled > 0.9 * warm, "a month is four half-lives of a week: {cooled} against {warm}");
 }
 
 /// A gate multiplies the finished score, so what separates twins who differ only in `last_login` is

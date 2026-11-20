@@ -19,7 +19,8 @@ fn purpose(lives_in: serde_json::Value) -> Result<Purposes, String> {
 fn a_fact_is_declared_with_its_own_type() {
 	purpose(serde_json::json!({ "type": "place" })).unwrap();
 	let e = purpose(serde_json::json!({ "type": "bool" })).unwrap_err();
-	assert!(e.contains("lives_in") && e.contains("place"), "{e}");
+	assert!(e.contains("lives_in"), "{e}");
+	assert!(e.contains("place"), "{e}");
 }
 
 fn row(handle: &str, bio: &str) -> Member {
@@ -126,5 +127,6 @@ fn last_login_is_declared_as_a_timestamp() {
 	};
 	declared(serde_json::json!({ "type": "timestamp" })).unwrap();
 	let e = declared(serde_json::json!({ "type": "bool" })).unwrap_err();
-	assert!(e.contains("last_login") && e.contains("timestamp"), "{e}");
+	assert!(e.contains("last_login"), "{e}");
+	assert!(e.contains("timestamp"), "{e}");
 }

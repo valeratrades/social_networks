@@ -464,7 +464,8 @@ impl Span {
 	/// `None` when the cohort did nothing at all, which is not a score of zero — there is no axis to
 	/// put anybody on.
 	fn over(at: impl IntoIterator<Item = f64>, decay: f64) -> Option<Self> {
-		assert!(decay.is_finite() && decay >= 0.0, "a decay is a finite discount of age, got {decay}");
+		assert!(decay.is_finite(), "a decay is a finite discount of age, got {decay}");
+		assert!(decay >= 0.0, "a decay is a finite discount of age, got {decay}");
 		let (mut newest, mut oldest): (Option<f64>, Option<f64>) = (None, None);
 		for at in at {
 			newest = Some(newest.map_or(at, |new: f64| new.max(at)));

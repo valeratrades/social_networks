@@ -73,11 +73,14 @@ impl Behaviour {
 	pub fn load(config: &BehaviourConfig, dir: &Path) -> Result<Self> {
 		let c = config;
 		let [start, end] = c.active_hours;
-		assert!(start < end && end <= 24, "`active_hours` is `[start, end)` within a day, got {:?}", c.active_hours);
-		assert!(c.burst_min > 0. && c.break_min > 0., "a burst and a break take time");
+		assert!(start < end, "`active_hours` is `[start, end)` within a day, got {:?}", c.active_hours);
+		assert!(end <= 24, "`active_hours` is `[start, end)` within a day, got {:?}", c.active_hours);
+		assert!(c.burst_min > 0., "a burst and a break take time");
+		assert!(c.break_min > 0., "a burst and a break take time");
 		assert!((0. ..1.).contains(&c.noise_share), "`noise_share` is a share of loads below 1");
 		for (per_hour, per_day, spread) in [(c.load.per_hour, c.load.per_day, c.load.spread), (c.scroll.per_hour, c.scroll.per_day, c.scroll.spread)] {
-			assert!(per_hour > 0 && per_day >= per_hour, "caps are positive and a day holds at least an hour");
+			assert!(per_hour > 0, "caps are positive and a day holds at least an hour");
+			assert!(per_day >= per_hour, "caps are positive and a day holds at least an hour");
 			assert!(spread >= 0., "`spread` is a σ");
 		}
 		let phase_file = dir.join("phase.toml");
