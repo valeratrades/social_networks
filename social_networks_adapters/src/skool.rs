@@ -147,7 +147,13 @@ impl Skool {
 	/// classifying it is the caller's — `/[group]/about` in place of `/[group]` is how skool says
 	/// "not a member". A session is minted first when there is one to mint.
 	pub async fn page(&mut self, path: &str) -> Result<serde_json::Value> {
-		let payload = self.fetch(path).await?;
+		let payload = match self.fetch(path).await {
+			Err(e) if e.is::<Challenged>() && self.creds.is_some() => {
+				self.refresh().await?;
+				return self.fetch(path).await;
+			}
+			fetched => fetched?,
+		};
 		// `pageProps.self` is the signed-in viewer and rides on every route. The route does not answer
 		// this: a signed-out group feed and a group we are simply not in both land on `/[group]/about`.
 		// `auth_token` is a year-long JWT, so this is a rare path — and only a browser can mint the next
@@ -506,6 +512,9 @@ impl Skool {
 			request = request.header(reqwest::header::COOKIE, cookie);
 		}
 		let response = request.send().await.wrap_err_with(|| format!("GET {path}"))?.error_for_status()?;
+		if response.headers().get("x-amzn-waf-action").is_some_and(|a| a == "challenge") {
+			return Err(Challenged { path: path.to_string() }.into());
+		}
 		let status = response.status();
 		let html = response.text().await?;
 		next_data(&html).wrap_err_with(|| format!("GET {path} answered {status}: {}", html.chars().take(300).collect::<String>()))
@@ -1329,6 +1338,12 @@ struct Cached {
 	cookie: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("GET {path} answered an AWS-WAF challenge, which only a browser solves")]
+struct Challenged {
+	path: String,
+}
+
 async fn login(browser: &Browser<Robot>, creds: &SkoolConfig) -> Result<String> {
 	let mut tab = browser.tab().await.map_err(crate::browser_failure)?;
 	tab.set_timeout(LOGIN_TIMEOUT).await;
@@ -1347,6 +1362,7 @@ async fn login(browser: &Browser<Robot>, creds: &SkoolConfig) -> Result<String> 
 	let mut seen = HashSet::new();
 	Ok(cookies
 		.into_iter()
+		.filter(|c| c.name != "aws-waf-token") // expires within days, after which a page carrying it is a WAF challenge; a page needs none
 		.filter(|c| seen.insert((c.name.clone(), c.domain.clone(), c.path.clone())))
 		.map(|c| format!("{}={}", c.name, c.value))
 		.collect::<Vec<_>>()
