@@ -5,8 +5,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
       - name: Install tokei
-        run: cargo install tokei
+        run: nix-store --realise /nix/store/4m90mv0fyihsdrnidw8gkgmx6zvd5vqm-tokei-15.0.0 > /dev/null && echo /nix/store/4m90mv0fyihsdrnidw8gkgmx6zvd5vqm-tokei-15.0.0/bin >> "$GITHUB_PATH"
       - env:
           loc_gist_token: ${{ secrets.loc_gist_token }}
         name: Ensure loc_gist_token secret is configured

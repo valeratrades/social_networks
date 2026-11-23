@@ -40,10 +40,11 @@
             workspace."./social_networks_utils" = [ ];
           };
         };
+        oldestSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
         github = v_flakes.github {
           inherit pkgs pname rs;
           enable = true;
-          lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
+          inherit oldestSupportedVersion;
           jobs.default = true;
           jobs.errors.install.packages = [ "mold" ]; # the purpose tests evaluate person files with `nix eval`
           jobs.warnings.install = { packages = [ "mold" ]; debug = true; };
@@ -55,7 +56,7 @@
         };
         readme = v_flakes.readme-fw {
           inherit pkgs pname;
-          lastSupportedVersion = "nightly-1.92";
+          inherit oldestSupportedVersion;
           rootDir = ./.;
           licenses = [{ license = v_flakes.files.licenses.gl; }];
           badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];

@@ -1,6 +1,8 @@
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_DEV_STRIP: debuginfo
   RUSTC_WRAPPER: ""
   RUSTUP_MAX_RETRIES: "10"
   RUST_BACKTRACE: short
@@ -19,7 +21,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -36,25 +38,38 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-code-duplication-${{ runner.os }}-
+            nix-lean3-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-code-duplication-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: run
         run: nix run .#test -- --severity warnings code-duplication
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -62,22 +77,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-code-duplication-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-code-duplication-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-code-duplication-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -158,7 +175,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -175,28 +192,42 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-rust-clippy-${{ runner.os }}-
+            nix-lean3-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-rust-clippy-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: particle-cache-0
         name: Restore particle's cache
         uses: actions/cache/restore@v5
         with:
-          key: particles-warnings-rust-clippy-0-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('./Cargo.lock') }}
+          key: particles-warnings-rust-clippy-0-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('./Cargo.lock', './**/Cargo.toml', './**/*.rs') }}
           path: |-
             ./target
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           restore-keys: particles-warnings-rust-clippy-0-${{ runner.os }}-
+      - if: steps.particle-cache-0.outputs.cache-matched-key != ''
+        name: Align the checkout with particle's cache
+        run: |
+          [ -f ./target/.commit ] || exit 0
+          built=$(cat ./target/.commit)
+          git fetch -q --depth=1 origin "$built" || { echo "::notice::$built, the cached build's commit, can't be fetched: every watched file reads as changed"; exit 0; }
+          find . -path ./.git -prune -o -path ./target -prune -o -exec touch -h -d @1 {} +
+          git diff --no-renames --name-only "$built" HEAD | while read -r p; do
+            while [ "$p" != . ]; do
+              [ ! -e "$p" ] || touch -h "$p"
+              p=$(dirname "$p")
+            done
+          done
+        shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.particle-cache-0.outputs.cache-hit != 'true'
         name: Stamp particle's cache
         run: '[ ! -d ./target ] || find ./target -type f -exec touch -a -d @1 {} +'
@@ -219,6 +250,7 @@ jobs:
             dropped=$((dropped + 1))
           done
           echo "cargo units kept: $used, dropped: $dropped"
+          git rev-parse HEAD > ./target/.commit
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.particle-cache-0.outputs.cache-hit != 'true'
         name: Save particle's cache
@@ -238,11 +270,24 @@ jobs:
         name: Drop particle's older caches
         run: gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | xargs -r -n1 gh cache delete -R "$GITHUB_REPOSITORY"
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -250,22 +295,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-clippy-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-rust-clippy-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-rust-clippy-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -286,7 +333,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -303,28 +350,42 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-rust-doc-${{ runner.os }}-
+            nix-lean3-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-rust-doc-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: particle-cache-0
         name: Restore particle's cache
         uses: actions/cache/restore@v5
         with:
-          key: particles-warnings-rust-doc-0-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('./Cargo.lock') }}
+          key: particles-warnings-rust-doc-0-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('./Cargo.lock', './**/Cargo.toml', './**/*.rs') }}
           path: |-
             ./target
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           restore-keys: particles-warnings-rust-doc-0-${{ runner.os }}-
+      - if: steps.particle-cache-0.outputs.cache-matched-key != ''
+        name: Align the checkout with particle's cache
+        run: |
+          [ -f ./target/.commit ] || exit 0
+          built=$(cat ./target/.commit)
+          git fetch -q --depth=1 origin "$built" || { echo "::notice::$built, the cached build's commit, can't be fetched: every watched file reads as changed"; exit 0; }
+          find . -path ./.git -prune -o -path ./target -prune -o -exec touch -h -d @1 {} +
+          git diff --no-renames --name-only "$built" HEAD | while read -r p; do
+            while [ "$p" != . ]; do
+              [ ! -e "$p" ] || touch -h "$p"
+              p=$(dirname "$p")
+            done
+          done
+        shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.particle-cache-0.outputs.cache-hit != 'true'
         name: Stamp particle's cache
         run: '[ ! -d ./target ] || find ./target -type f -exec touch -a -d @1 {} +'
@@ -347,6 +408,7 @@ jobs:
             dropped=$((dropped + 1))
           done
           echo "cargo units kept: $used, dropped: $dropped"
+          git rev-parse HEAD > ./target/.commit
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.particle-cache-0.outputs.cache-hit != 'true'
         name: Save particle's cache
@@ -366,11 +428,24 @@ jobs:
         name: Drop particle's older caches
         run: gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | xargs -r -n1 gh cache delete -R "$GITHUB_REPOSITORY"
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -378,22 +453,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-doc-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-rust-doc-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-rust-doc-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -414,7 +491,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -431,25 +508,38 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-rust-machete-${{ runner.os }}-
+            nix-lean3-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-rust-machete-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: run
         run: nix run .#test -- --severity warnings rust-machete
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -457,22 +547,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-machete-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-rust-machete-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-rust-machete-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -493,7 +585,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -510,25 +602,38 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-rust-sorted-${{ runner.os }}-
+            nix-lean3-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-rust-sorted-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: run
         run: nix run .#test -- --severity warnings rust-sorted
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -536,22 +641,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-sorted-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-rust-sorted-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-rust-sorted-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -572,7 +679,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -589,25 +696,38 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-rust-sorted-derives-${{ runner.os }}-
+            nix-lean3-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-rust-sorted-derives-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: run
         run: nix run .#test -- --severity warnings rust-sorted-derives
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -615,22 +735,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-rust-sorted-derives-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-rust-sorted-derives-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-rust-sorted-derives-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
@@ -651,7 +773,7 @@ jobs:
         run: |
           mkdir -p /tmp/nix-lean-cache
           chmod 0777 /tmp/nix-lean-cache
-          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
           chmod 0755 /tmp/nix-lean-pbh.sh
         shell: bash
       - name: Install Nix
@@ -668,25 +790,38 @@ jobs:
         name: Restore lean nix cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-lean-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
           restore-keys: |-
-            nix-lean-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-            nix-lean-particle-tokei-${{ runner.os }}-
+            nix-lean3-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-lean3-particle-tokei-${{ runner.os }}-
       - id: eval-cache
         name: Restore nix eval cache
         uses: actions/cache/restore@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
       - id: run
         run: nix run .#test -- --severity warnings tokei
       - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Fetch the flake's inputs into the tarball cache
+        run: nix flake archive --store "$RUNNER_TEMP/inputs" --option substitute false > /dev/null && chmod -R u+w "$RUNNER_TEMP/inputs" && rm -rf "$RUNNER_TEMP/inputs"
+      - if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
         name: Save nix eval cache
         uses: actions/cache/save@v5
         with:
-          key: nix-eval-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-eval2-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           path: ~/.cache/nix
+      - env:
+          FAMILY: nix-eval2-${{ runner.os }}-
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.eval-cache.outputs.cache-primary-key }}
+        if: always() && steps.eval-cache.outputs.cache-hit != 'true' && github.ref_name == github.event.repository.default_branch
+        name: Drop older nix eval caches
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id,key -q 'if any(.[]; .key == $ENV.KEY) then .[] | select(.key != $ENV.KEY) | .id else empty end' | while read -r id; do
+            gh cache delete -R "$GITHUB_REPOSITORY" "$id" || ! gh cache list -R "$GITHUB_REPOSITORY" -L 100 --key "$FAMILY" --json id -q '.[].id' | grep -qx "$id"
+          done
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Prune lean nix cache to what this run used
         run: |
@@ -694,22 +829,24 @@ jobs:
           shopt -s nullglob
           narinfos=(*.narinfo)
           ((${#narinfos[@]})) || exit 0
-          paths=$(sed -n 's/^StorePath: //p' "${narinfos[@]}")
-          { xargs nix-store --check-validity --print-invalid <<< "$paths"
-            sed 's|^/nix/store/\([a-z0-9]*\)-.*|-o /dev/null https://valeratrades.cachix.org/\1.narinfo|' <<< "$paths" | xargs curl -s --parallel -w '%{http_code} %{url}\n' | sed -n 's|^200 .*/\(.*\)\.narinfo$|/nix/store/\1|p'
-          } | while read -r p; do
+          [ -e built ] || : > built
+          sed -n 's/^StorePath: //p' "${narinfos[@]}" | sort -u > /tmp/lean-all
+          tr -s ' ' '\n' < built | sed '/^$/d' | sort -u | comm -12 - /tmp/lean-all > /tmp/lean-built
+          xargs -r nix-store --check-validity --print-invalid < /tmp/lean-built | sort -u | comm -23 /tmp/lean-built - > /tmp/lean-keep
+          comm -23 /tmp/lean-all /tmp/lean-keep | while read -r p; do
             n=$(basename "$p") && n=${n%%-*}.narinfo
             echo "$n" && sed -n 's/^URL: //p' "$n"
           done | sudo xargs -r rm -f
+          sudo rm -f built && cp /tmp/lean-keep built
         shell: bash
       - if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'
         name: Save lean nix cache
         uses: actions/cache/save@v5
         with:
-          key: nix-lean-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
+          key: nix-lean3-particle-tokei-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('**/*.nix') }}
           path: /tmp/nix-lean-cache
       - env:
-          FAMILY: nix-lean-particle-tokei-${{ runner.os }}-
+          FAMILY: nix-lean3-particle-tokei-${{ runner.os }}-
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ steps.lean-restore.outputs.cache-primary-key }}
         if: always() && github.ref_name == github.event.repository.default_branch && steps.lean-restore.outputs.cache-hit != 'true'

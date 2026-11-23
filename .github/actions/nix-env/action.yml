@@ -11,7 +11,7 @@ runs:
       run: |
         mkdir -p /tmp/nix-lean-cache
         chmod 0777 /tmp/nix-lean-cache
-        printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+        printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\necho $OUT_PATHS >> /tmp/nix-lean-cache/built\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
         chmod 0755 /tmp/nix-lean-pbh.sh
       shell: bash
     - name: Install Nix
