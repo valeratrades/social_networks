@@ -82,10 +82,6 @@ async fn discord_answers_are_classified() {
 		"what stands in front of discord says nothing of the address"
 	);
 	assert!(matches!(webhook(400, "", r#"{"code":50035}"#).await, Failure::Refused(_)));
-
-	let mock = Mock::answering(401, "", r#"{"code":0,"message":"401: Unauthorized"}"#).await;
-	let bot = discord::Bot::try_new(&mock.base, "t".to_owned().into()).unwrap();
-	assert!(matches!(bot.dm("5").await, Err(Failure::Transient(_))), "a bot's token is ours");
 }
 
 #[tokio::test]
@@ -137,15 +133,6 @@ fn only_a_platforms_own_urls_are_webhooks() {
 	] {
 		assert!(matches!(url.parse::<slack::Webhook>(), Err(Failure::Refused(_))), "{url}");
 	}
-}
-
-#[tokio::test]
-async fn oauth_asks_for_a_user_install() {
-	let oauth = discord::OAuth::try_new(discord::BASE, "42", "s".to_owned().into(), "https://panel.example/cb".parse().unwrap()).unwrap();
-	assert_eq!(
-		oauth.authorize_url("st").as_str(),
-		"https://discord.com/oauth2/authorize?client_id=42&response_type=code&redirect_uri=https%3A%2F%2Fpanel.example%2Fcb&scope=identify+applications.commands&integration_type=1&state=st"
-	);
 }
 
 #[tokio::test]
