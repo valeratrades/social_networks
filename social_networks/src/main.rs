@@ -59,6 +59,7 @@ enum Commands {
 }
 
 fn main() {
+	rustls::crypto::ring::default_provider().install_default().expect("first install in the process"); // reqwest is built without a provider
 	let cli = Cli::parse();
 	let settings = exit_on_error(LiveSettings::new(cli.settings, std::time::Duration::from_secs(60)));
 	let config: AppConfig = exit_on_error(settings.config());

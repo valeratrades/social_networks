@@ -26,7 +26,7 @@ unused_features = "allow"
 non_kebab_case_bins = "allow"
 
 [workspace.dependencies]
-ask_llm = "3.10"
+ask_llm = "3.13"
 base64 = "0.23.1"
 browser_manipulation = "0.4.4"
 clap = { version = "4.6.9", features = ["derive", "string"] }
@@ -47,7 +47,7 @@ grammers-session = "=0.10.0"
 grammers-tl-types = "=0.10.0"
 heck = "=0.5.0"
 hmac = "0.13.0"
-hyper-rustls = "=0.27.10"
+hyper-rustls = { version = "=0.27.10", default-features = false, features = ["native-tokio", "http1", "tls12", "ring"] }
 hyper-util = { version = "0.1.21", features = ["client", "client-legacy", "http1"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 imap = "=3.0.0-alpha.15"
@@ -77,7 +77,7 @@ social_networks_adapters = { path = "social_networks_adapters", version = "0.6.1
 social_networks_reach = { path = "social_networks_reach", version = "0.6.19" }
 social_networks_utils = { path = "social_networks_utils", version = "0.6.19" }
 strum = { version = "0.28.0", features = ["derive"] }
-tg = "=0.9.7"
+tg = "=0.9.10"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }

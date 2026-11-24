@@ -39,6 +39,7 @@ jiff.workspace = true
 miette.workspace = true
 rand.workspace = true
 regex.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 social_networks_adapters.workspace = true

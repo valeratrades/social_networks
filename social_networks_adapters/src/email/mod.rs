@@ -181,7 +181,7 @@ impl EmailMonitor {
 		delay: Option<TimeframeRange>,
 	) -> Result<Self> {
 		// Install default crypto provider for rustls (needed for OAuth)
-		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+		let _ = rustls::crypto::ring::default_provider().install_default();
 		let notifier = TelegramNotifier::new(telegram_config);
 		let db = Database::try_new().await.context("Failed to open database")?;
 		Self::try_new(email_config, llm_config, notifier, db, breakers, dry_run, delay)

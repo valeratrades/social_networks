@@ -215,8 +215,8 @@ fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8]) -> [u8; 32] {
 
 /// The bytes as a secret key, hashed on while they are none: 1 in 2^32 is past the curve's order.
 fn scalar(mut bytes: [u8; 32]) -> SecretKey {
+	//LOOP: each round fails with probability 2^-32
 	loop {
-		//LOOP: each round fails with probability 2^-32
 		match SecretKey::from_slice(&bytes) {
 			Ok(key) => return key,
 			Err(_) => bytes = digest::digest(&digest::SHA256, &bytes).as_ref().try_into().expect("SHA-256's length"),

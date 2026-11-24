@@ -53,9 +53,7 @@ full = [
     "dep:v_utils",
     "dep:xdg",
     "dep:yup-oauth2",
-    "reqwest/default",
     "reqwest/gzip",
-    "rustls/default",
 ]
 # the notify axis alone; ring is its only crypto provider
 notify = [
