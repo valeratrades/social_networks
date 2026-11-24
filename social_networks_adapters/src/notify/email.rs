@@ -25,6 +25,9 @@ const SUBJECT: usize = 200;
 /// What RFC 3463 says of the recipient's address itself.
 const DEAD: [&str; 6] = ["5.1.1", "5.1.2", "5.1.3", "5.1.6", "5.1.10", "5.2.1"];
 
+/// And of our own quota for the day: Gmail's 550.
+const QUOTA: &str = "5.4.5";
+
 const CID: &str = "photo";
 
 pub struct Smtp {
@@ -146,12 +149,14 @@ blockquote {{ margin: 0; padding-left: 12px; border-left: 3px solid #d0d0d0; }}
 
 fn classified(e: lettre::transport::smtp::Error) -> Failure {
 	let why = e.to_string();
+	let says = |codes: &[&str]| why.split(|c: char| !(c.is_ascii_digit() || c == '.')).any(|t| codes.contains(&t));
 	match e.status().map(u16::from) {
+		Some(_) if says(&[QUOTA]) => Failure::RetryAfter(SignedDuration::from_hours(1)),
 		Some(421 | 450 | 452 | 454) => Failure::RetryAfter(SignedDuration::from_secs(60)),
 		// the relay's say about us, not about the address
 		Some(530 | 534 | 535 | 538) => Failure::Transient(format!("the relay refused our sign-in: {why}")),
 		Some(400..500) | None => Failure::Transient(why),
-		Some(_) if why.split(|c: char| !(c.is_ascii_digit() || c == '.')).any(|t| DEAD.contains(&t)) => Failure::Gone(why),
+		Some(_) if says(&DEAD) => Failure::Gone(why),
 		Some(_) => Failure::Refused(why),
 	}
 }

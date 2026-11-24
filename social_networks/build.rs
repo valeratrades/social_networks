@@ -4,6 +4,12 @@ fn main() {
 }
 
 fn git_version() {
+	// a dev build's script never reruns for a commit: each rerun recompiles the package and relinks its tests
+	if std::env::var("PROFILE").as_deref() != Ok("release") {
+		println!("cargo:rerun-if-changed=build.rs");
+		println!("cargo:rustc-env=GIT_HASH=dev");
+		return;
+	}
 	// resolved by git: the package dir need not be the repo root, and in a worktree `.git` is a file.
 	// This checkout's HEAD reflog moves on its every commit/checkout/reset; `refs/` is shared by all worktrees, so watching it rebuilt every checkout on any agent's commit.
 	if let Some(paths) = std::process::Command::new("git")

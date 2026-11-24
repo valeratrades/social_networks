@@ -527,15 +527,17 @@ pub(crate) fn snake(name: &str) -> String {
 	heck::ToSnakeCase::to_snake_case(name)
 }
 
-/// A map keyed by tag names, each [snake]d; two spellings of one name are refused rather than one
-/// silently winning.
-pub(crate) fn snake_keys<'de, D: Deserializer<'de>, V: Deserialize<'de>>(d: D) -> std::result::Result<BTreeMap<String, V>, D::Error> {
+/// A map keyed by tag names, each [snake]d; two spellings of one name are one when they agree, and refused when they don't.
+pub(crate) fn snake_keys<'de, D: Deserializer<'de>, V: Deserialize<'de> + PartialEq>(d: D) -> std::result::Result<BTreeMap<String, V>, D::Error> {
 	let mut out = BTreeMap::new();
 	for (key, value) in BTreeMap::<String, V>::deserialize(d)? {
 		let name = snake(&key);
-		if out.insert(name.clone(), value).is_some() {
-			return Err(D::Error::custom(format!("`{key}` is another spelling of the tag `{name}`, which is already named")));
+		if out.get(&name).is_some_and(|other| *other != value) {
+			return Err(D::Error::custom(format!(
+				"`{key}` is another spelling of the tag `{name}`, which is already named with another value"
+			)));
 		}
+		out.insert(name, value);
 	}
 	Ok(out)
 }
@@ -633,7 +635,7 @@ struct RawPurpose {
 }
 
 /// A list is a group; anything else is read as [`RawTyped`], afterwards, so its own errors survive.
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq)]
 #[serde(untagged)]
 enum RawTag {
 	Group(Vec<String>),

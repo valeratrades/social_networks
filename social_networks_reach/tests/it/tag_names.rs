@@ -1,6 +1,6 @@
 //! A tag is one name however it is spelled: `ServiceArb`, `service-arb` and `service_arb` are the same
 //! tag in the vocabulary, in a person file, in a rank term and in a pattern, and are shown snake_case.
-//! Two spellings of one name side by side are a collision, refused at load.
+//! Two spellings of one name side by side are one when they agree, and a collision refused at load when they don't.
 //!
 //! Needs `nix` to evaluate the person files, which the dev shell provides.
 
@@ -41,12 +41,27 @@ fn every_spelling_is_one_tag() {
 	assert_eq!(purpose.rank[0].of, "service_arb");
 }
 
+/// Named twice with one value is named once: the person file is written back with the one spelling.
+#[test]
+fn two_spellings_agreeing_are_one_tag() {
+	let dir = std::env::temp_dir().join(format!("social_networks_tag_names_{}_agree", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("a")).unwrap();
+	let file = dir.join("a/__main__.nix");
+	std::fs::write(&file, "{ tags = { ServiceArb = true; service-arb = true; }; }\n").unwrap();
+	let purpose = purpose(&dir, serde_json::json!({ "ServiceArb": { "type": "bool" } })).unwrap();
+	person::load_dir(&purpose).unwrap()["a"].write(&dir).unwrap();
+	let written = std::fs::read_to_string(&file).unwrap();
+	std::fs::remove_dir_all(&dir).unwrap();
+	assert!(written.contains("tags = {\n    service_arb = true;\n  };"), "{written}");
+}
+
 #[test]
 fn two_spellings_of_one_name_collide() {
 	assert!(
 		purpose(
 			Path::new("/nonexistent"),
-			serde_json::json!({ "ServiceArb": { "type": "bool" }, "service_arb": { "type": "bool" } })
+			serde_json::json!({ "ServiceArb": { "type": "bool" }, "service_arb": { "type": "text" } })
 		)
 		.is_err()
 	);
