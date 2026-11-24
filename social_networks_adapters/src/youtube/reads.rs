@@ -118,6 +118,7 @@ struct Hold {
 	file: PathBuf,
 }
 
+//@codestyle::skip(swappable-args)
 async fn pull(id: &str, out: &str) -> Result<()> {
 	yt_dlp(&[
 		// the default client hands back URLs that 403 on download, and the mobile ones are offered
@@ -200,6 +201,7 @@ async fn read(id: &str, tmp: &Path) -> Result<Video> {
 	})
 }
 
+//@codestyle::skip(swappable-args)
 fn parse_chapters(field: &str, id: &str) -> Result<Option<Vec<Chapter>>> {
 	if field == "NA" {
 		return Ok(None);

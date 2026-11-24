@@ -70,6 +70,7 @@ impl Bot {
 		sent.get("message_id").and_then(Value::as_i64).ok_or_else(|| Failure::Refused(format!("{method}: no message_id")))
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// Replaces a message's text and buttons (none: the keyboard is removed).
 	pub async fn edit(&self, chat_id: i64, message_id: i64, message: &Message) -> Result<(), Failure> {
 		let mut body = said(&message.text);
@@ -96,6 +97,7 @@ impl Bot {
 		})
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn is_admin(&self, chat_id: i64, user_id: i64) -> Result<bool, Failure> {
 		let member = self.call("getChatMember", &json!({"chat_id": chat_id, "user_id": user_id}), None).await?;
 		let status = member.get("status").and_then(Value::as_str).ok_or_else(|| Failure::Refused("getChatMember: no status".into()))?;

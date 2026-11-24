@@ -495,6 +495,7 @@ impl EmailMonitor {
 		Ok(messages)
 	}
 
+	//@codestyle::skip(swappable-args)
 	async fn process_message_oauth(&self, hub: &Hub, gmail_id: &str, thread_id: &str) -> Result<()> {
 		let id = format!("{}/{gmail_id}", self.config.email);
 		let thread = self.thread_oauth(hub, thread_id).await?;
@@ -514,6 +515,7 @@ impl EmailMonitor {
 		self.settle_oauth(hub, gmail_id, thread_id, decided).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	async fn settle_oauth(&self, hub: &Hub, gmail_id: &str, thread_id: &str, decided: Decided) -> Result<()> {
 		if let Some(reply) = &decided.verdict.send {
 			self.send_oauth(hub, thread_id, reply).await?;

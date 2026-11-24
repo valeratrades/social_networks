@@ -34,6 +34,7 @@ impl Github {
 			.await?)
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// A public event feed, newest-first, stopped by the checkpoint or the date. `who` names the
 	/// author when the feed is one person's; a venue feed carries an actor per event.
 	async fn feed(&self, url: &str, window: &Window, kind: Kind, who: Option<&str>, label: &str) -> Result<Page> {

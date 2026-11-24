@@ -12,7 +12,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
 		my_username: std::env::var("DEFAULT_USERNAME")?,
 	};
 
-	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel(); //UNBOUNDED: producers send from sync and async contexts alike
 	let notifier = TelegramNotifier::new(Default::default());
 	let discord = DiscordDms::new(discord_config, tx, notifier, Timeframe::from_naive(1, TimeframeDesignator::Hours));
 	discord.backfill(Timestamp::now() - SignedDuration::from_hours(1)).await?;

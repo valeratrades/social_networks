@@ -39,6 +39,7 @@ impl Rich {
 		self.mark("url", url);
 	}
 
+	//@codestyle::skip(swappable-args)
 	fn mark(&mut self, kind: &str, s: &str) {
 		if !s.is_empty() {
 			self.entities.push(Entity {

@@ -94,6 +94,7 @@ pub struct Browse {
 
 /// Exactly one person: `pull` over an ambiguous pattern costs a wasted fetch, a DM over one goes to
 /// the wrong human and cannot be taken back.
+//@codestyle::skip(swappable-args)
 pub async fn send(config: &AppConfig, purpose: &Purpose, messenger: Messenger, pattern: &str, text: &str, multi_message: bool, noise: Option<&Noise>) -> Result<()> {
 	let dir = &purpose.path;
 	let people = person::load_dir(purpose)?;

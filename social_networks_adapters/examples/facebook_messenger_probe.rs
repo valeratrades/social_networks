@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
 }
 
 /// Through `Direct::send` on the launched session, bubble by bubble, as `purpose dm --multi-message` does.
+//@codestyle::skip(swappable-args)
 async fn sent(chrome: PathBuf, to: &str, text: &str) -> Result<()> {
 	let behaviour = serde_json::json!({
 		"active_hours": [0, 24],

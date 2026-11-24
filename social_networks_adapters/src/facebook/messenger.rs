@@ -95,6 +95,7 @@ enum Kind {
 
 impl Facebook<'_, '_> {
 	/// The page, polled until `done` holds of it or it says a marker.
+	//@codestyle::skip(swappable-args)
 	async fn watch(&mut self, message: &str, what: &str, done: impl Fn(&Seen) -> bool) -> Result<Seen> {
 		let deadline = tokio::time::Instant::now() + SETTLE;
 		loop {
@@ -132,6 +133,7 @@ impl Facebook<'_, '_> {
 
 	/// The composer of the conversation the tab is on, once every prompt in front of it is clicked
 	/// through. A PIN with no way past it is the human's to enter.
+	//@codestyle::skip(swappable-args)
 	async fn composer(&mut self, handle: &str, message: &str) -> Result<Seen> {
 		for passed in 0.. {
 			if passed > 0 {

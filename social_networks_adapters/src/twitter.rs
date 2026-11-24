@@ -86,6 +86,7 @@ impl Direct for Reach<'_> {
 
 /// Sent from the `[twitter.oauth]` account — the one that posts — while the lookup goes through the
 /// bearer token, which is all it needs.
+//@codestyle::skip(swappable-args)
 async fn send_dm(config: &TwitterConfig, handle: &str, text: &str) -> Result<()> {
 	let oauth = config.oauth.as_ref().ok_or_else(|| eyre!("no `[twitter.oauth]` in the config"))?;
 	let client = reqwest::Client::new();

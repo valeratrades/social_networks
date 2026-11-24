@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
 		password: std::env::var("SKOOL_PASSWORD")?,
 		behaviour: None,
 	};
-	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+	let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel(); //UNBOUNDED: producers send from sync and async contexts alike
 	let mut dms = SkoolDms::try_new(creds, tx).await?;
 
 	let drain = async {

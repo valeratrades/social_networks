@@ -70,7 +70,7 @@ fn main() {
 			runtime.block_on(async { Database::try_new().await.map(|_| ()) })
 		}
 		Commands::Dms(_) => run_async("dms", || async {
-			let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+			let (tx, rx) = tokio::sync::mpsc::unbounded_channel(); //UNBOUNDED: producers send from sync and async contexts alike
 			let notifier = TelegramNotifier::new(config.telegram.clone());
 			let on = |s: DmSource| config.dms.sources.contains(&s);
 			let mut discord = on(DmSource::Discord).then(|| DiscordDms::new(config.dms.discord.clone(), tx.clone(), notifier.clone(), config.dms.notification_horizon));

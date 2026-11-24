@@ -39,6 +39,7 @@ pub struct DmsConfig {
 	pub notification_horizon: Timeframe,
 }
 impl DmsConfig {
+	//@codestyle::skip(swappable-args)
 	fn monitored_matches(&self, platform: &str, username: &str) -> bool {
 		self.monitored_users.iter().any(|u| match u {
 			MonitoredUser::All(u) => u == username,

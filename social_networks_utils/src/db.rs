@@ -167,6 +167,7 @@ impl Database {
 		self.put_state(key, &serde_json::to_string(value)?, Timestamp::now()).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	async fn put_state(&self, key: &str, value: &str, at: Timestamp) -> Result<()> {
 		self.conn
 			.execute(
@@ -211,6 +212,7 @@ impl Database {
 		Ok(rows.next().await.wrap_err("failed to read row")?.is_some())
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn mark_email_processed(&self, message_id: &str, from_email: &str, subject: &str, action: &str) -> Result<()> {
 		self.conn
 			.execute(

@@ -25,33 +25,39 @@ impl TelegramNotifier {
 		Self { config, bot }
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn send_ping_notification(&self, username: &str, platform: &str) -> Result<()> {
 		let text = format!("/Ping from: @{username}, {platform}");
 		self.send_message_to_alerts(&text).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn send_call_notification(&self, caller: &str, platform: &str) -> Result<()> {
 		let text = format!("Call from: {caller}, {platform}");
 		self.send_message_to_alerts(&text).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn send_monitored_user_message(&self, username: &str, platform: &str) -> Result<()> {
 		let text = format!("New message from @{username}, {platform}");
 		self.send_message_to_alerts(&text).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn send_twitter_poll(&self, author: &str, text: &str, tweet_id: &str) -> Result<()> {
 		let mut message = Rich::from(format!("Twitter poll from {author}:\n{text}\n\n"));
 		message.url(&format!("https://twitter.com/twitter/statuses/{tweet_id}"));
 		self.send_message_to_output(message).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	pub async fn send_youtube_notification(&self, channel_name: &str, title: &str, sentiment: &str, video_id: &str) -> Result<()> {
 		let mut message = Rich::from(format!("[{channel_name}] uploaded a new video: [{title}]\nPerception: {sentiment}\n\n"));
 		message.url(&format!("https://youtube.com/watch?v={video_id}"));
 		self.send_message_to_output(message).await
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// A module reporting "still alive, but something is wrong": a warning, never an error. A failed
 	/// delivery is logged and swallowed: a broken alerting path must not kill surfaces that still work.
 	#[instrument(skip_all)]

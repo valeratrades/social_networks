@@ -141,6 +141,7 @@ impl Tab<'_> {
 		self.page.eval(js, arg).await.map_err(browser_failure)
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// Clicks into `selector` and types `text` over whatever it held.
 	pub(super) async fn type_into(&mut self, selector: &str, text: &str) -> Result<()> {
 		self.page.fill(selector, text).await.map_err(browser_failure)
@@ -150,6 +151,7 @@ impl Tab<'_> {
 		self.page.click(selector).await.map_err(browser_failure)
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// `key` as Playwright names it, with `selector` focused.
 	pub(super) async fn press(&mut self, selector: &str, key: &str) -> Result<()> {
 		self.page.press(selector, key).await.map_err(browser_failure)

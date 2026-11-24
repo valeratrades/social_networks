@@ -45,6 +45,7 @@ impl Vapid {
 		&self.public
 	}
 
+	//@codestyle::skip(swappable-args)
 	fn authorization(&self, audience: &str, subject: &str, now: Timestamp) -> String {
 		let part = |v: serde_json::Value| URL_SAFE_NO_PAD.encode(v.to_string());
 		let claims = json!({"aud": audience, "exp": (now + EXPIRES).as_second(), "sub": subject});
@@ -67,6 +68,7 @@ pub struct Subscription {
 }
 impl Subscription {
 	/// As the browser's `PushSubscription.toJSON()` gives them; the endpoint only of a push service we know.
+	//@codestyle::skip(swappable-args)
 	pub fn try_new(endpoint: &str, p256dh: &str, auth: &str) -> Result<Self, Failure> {
 		let refuse = |why: &str| Failure::Refused(format!("the subscription: {why}"));
 		let bytes = |s: &str| URL_SAFE_NO_PAD.decode(s.trim_end_matches('='));
@@ -214,6 +216,7 @@ fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8]) -> [u8; 32] {
 /// The bytes as a secret key, hashed on while they are none: 1 in 2^32 is past the curve's order.
 fn scalar(mut bytes: [u8; 32]) -> SecretKey {
 	loop {
+		//LOOP: each round fails with probability 2^-32
 		match SecretKey::from_slice(&bytes) {
 			Ok(key) => return key,
 			Err(_) => bytes = digest::digest(&digest::SHA256, &bytes).as_ref().try_into().expect("SHA-256's length"),

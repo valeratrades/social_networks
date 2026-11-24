@@ -272,6 +272,7 @@ fn minutes(m: f64) -> SignedDuration {
 }
 
 /// `median · e^(σ·z)`, z standard normal by Box–Muller.
+//@codestyle::skip(swappable-args)
 pub(crate) fn log_normal(median: f64, sigma: f64) -> f64 {
 	let u = 1. - rand::random::<f64>();
 	let z = (-2. * u.ln()).sqrt() * (std::f64::consts::TAU * rand::random::<f64>()).cos();

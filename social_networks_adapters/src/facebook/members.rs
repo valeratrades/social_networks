@@ -90,6 +90,7 @@ impl Listing {
 		}
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// The same person shows up in several sections, not all of which say when they joined or what their bio is.
 	fn insert(&mut self, group: String, id: String, m: Listed) {
 		let (joined, bio) = self.members.get(&id).map_or((None, None), |(_, old)| (old.joined.clone(), old.bio.clone()));

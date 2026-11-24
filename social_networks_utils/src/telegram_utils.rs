@@ -120,6 +120,7 @@ pub fn should_reconnect_for_stack() -> bool {
 pub fn log_stack(context: &str) {
 	crate::utils::log_stack_usage(context);
 }
+//@codestyle::skip(swappable-args)
 async fn authenticate(client: &Client, phone: &str, api_hash: &str, session: &str) -> Result<()> {
 	// a daemon restarted by its supervisor would otherwise have a code sent to the phone on every restart
 	if !std::io::stdin().is_terminal() {

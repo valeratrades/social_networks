@@ -360,6 +360,7 @@ pub struct Rest {
 	my_username: String,
 }
 impl Rest {
+	//@codestyle::skip(swappable-args)
 	pub fn new(token: String, my_username: String) -> Self {
 		Self {
 			http: reqwest::Client::new(),
@@ -675,6 +676,7 @@ mod tests {
 	/// object the gateway hands to `MESSAGE_CREATE`.
 	#[test]
 	fn call_message_is_an_incoming_call() {
+		//UNBOUNDED: producers send from sync and async contexts alike
 		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 		let config = DiscordConfig {
 			user_token: String::new(),

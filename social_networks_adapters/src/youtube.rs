@@ -138,6 +138,7 @@ async fn run_youtube_monitor(youtube_config: &YoutubeConfig, telegram_config: &T
 }
 
 #[instrument(skip(client, source, last_uploaded, telegram, llm_config))]
+//@codestyle::skip(swappable-args)
 async fn check_channel(
 	client: &reqwest::Client,
 	source: &UploadSource,

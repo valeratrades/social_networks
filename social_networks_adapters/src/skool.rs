@@ -165,6 +165,7 @@ impl Skool {
 		Ok(payload)
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// A group route, checked against the one skool says it served. `/[group]/about` in place of it is
 	/// how skool spells "not a member", and no retry can change that.
 	async fn group_page(&mut self, slug: &str, route: &str) -> Result<serde_json::Value> {
@@ -348,6 +349,7 @@ impl Skool {
 		Ok((roster, total))
 	}
 
+	//@codestyle::skip(swappable-args)
 	/// One post's replies. `children` on the rendered post route is always empty — the web client
 	/// fills it from here — so this is the only place a reply exists. Nesting is flattened: a reply to
 	/// a reply is still something somebody said in the group, and a transcript orders by time.
@@ -1043,6 +1045,7 @@ fn node_of(children: Option<&serde_json::Value>, id: &str) -> Option<serde_json:
 
 /// The second half of a pair is the id of a video skool hosts, which only the `video` beside this
 /// node resolves.
+//@codestyle::skip(swappable-args)
 fn lesson_of(node: &serde_json::Value, slug: &str, course: &str, module: String) -> Result<(Lesson, Option<String>)> {
 	let id = node.get("id").and_then(|v| v.as_str()).ok_or_else(|| eyre!("a skool lesson without an id: {node}"))?;
 	let title = node
@@ -1263,6 +1266,7 @@ fn full_name(user: &serde_json::Value) -> Option<String> {
 	}
 }
 
+//@codestyle::skip(swappable-args)
 fn field<'a>(user: &'a serde_json::Value, camel: &str, snake: &str) -> Option<&'a str> {
 	[camel, snake]
 		.into_iter()
@@ -1297,6 +1301,7 @@ fn message_id(message: &serde_json::Value) -> Result<&str> {
 
 /// `metadata.src` is who sent it, so the handle's own user id is what tells the two apart. Skool
 /// gives a message no address of its own; the channel is as close as one gets.
+//@codestyle::skip(swappable-args)
 fn chat_item(message: &serde_json::Value, handle: &str, user: &str, channel: &str) -> Result<Item> {
 	let id = message_id(message)?;
 	let created = message

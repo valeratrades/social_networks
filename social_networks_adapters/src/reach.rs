@@ -47,6 +47,7 @@ pub trait Profiles {
 #[trait_variant::make(Send)]
 pub trait Direct {
 	async fn direct(&mut self, handle: &str, window: Window, assets: &Path) -> Result<Page>;
+	//@codestyle::skip(swappable-args)
 	async fn send(&mut self, handle: &str, text: &str) -> Result<()>;
 }
 /// A named place with members and content.
@@ -372,6 +373,7 @@ pub enum Attachment {
 impl Attachment {
 	/// An image that will not convert is still an attachment that went by, and losing the whole page
 	/// of a backfill over one of them would cost the conversation around it.
+	//@codestyle::skip(swappable-args)
 	pub fn keep(bytes: &[u8], mime: &str, name: String, assets: &Path, file: String) -> Self {
 		if !social_networks_utils::avif::still(mime, bytes) {
 			return Self::File { name };

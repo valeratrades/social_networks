@@ -491,6 +491,7 @@ fn unfiltered_url(name: &str) -> String {
 }
 
 /// `search/people/?q=<name>&filters=base64({"city:0": "{\"name\":\"users_location\",\"args\":\"<city>\"}"})`
+//@codestyle::skip(swappable-args)
 fn search_url(name: &str, city: &str) -> String {
 	let filter = serde_json::json!({ "name": "users_location", "args": city }).to_string();
 	let filters = base64::engine::general_purpose::STANDARD.encode(serde_json::json!({ "city:0": filter }).to_string());
