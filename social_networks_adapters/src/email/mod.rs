@@ -650,7 +650,12 @@ impl EmailMonitor {
 			.await
 			.with_context(|| format!("script `{}` on `{}`", script.name(), email.subject))?;
 		drop(lease);
-		debug!("script `{}` on `{}` (cost: {:.4} cents)", script.name(), email.subject, response.cost_cents);
+		debug!(
+			"script `{}` on `{}` (cost: {} cents)",
+			script.name(),
+			email.subject,
+			response.cents.map_or("unknown".to_string(), |c| format!("{c:.4}"))
+		);
 
 		let verdict = Verdict {
 			action: "script",
@@ -749,7 +754,11 @@ Respond with ONLY "yes" if from a human or "no" if automated/marketing. No expla
 			Action::Discard
 		};
 
-		debug!("LLM evaluation for email from {}: {action:?} (cost: {:.4} cents)", message.from, response.cost_cents);
+		debug!(
+			"LLM evaluation for email from {}: {action:?} (cost: {} cents)",
+			message.from,
+			response.cents.map_or("unknown".to_string(), |c| format!("{c:.4}"))
+		);
 
 		Ok(action)
 	}
