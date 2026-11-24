@@ -1,19 +1,28 @@
-use color_eyre::eyre::{Result, bail, eyre};
-use reqwest::Client;
+use std::time::Duration;
+
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use social_networks_utils::db::Database;
+use tg::TelegramDestination;
 use tracing::{instrument, warn};
 
-use crate::telegram_dms::TelegramConfig;
+use crate::{
+	notify::{
+		Level, Message, Rich,
+		telegram::{BASE, Bot, Target},
+	},
+	telegram_dms::TelegramConfig,
+};
 
 #[derive(Clone, Debug)]
 pub struct TelegramNotifier {
 	config: TelegramConfig,
-	client: Client,
+	bot: Bot,
 }
 
 impl TelegramNotifier {
 	pub fn new(config: TelegramConfig) -> Self {
-		Self { config, client: Client::new() }
+		let bot = Bot::try_new(BASE, config.bot_token.clone().into()).expect("a TLS client builds wherever the OS has its certificates");
+		Self { config, bot }
 	}
 
 	pub async fn send_ping_notification(&self, username: &str, platform: &str) -> Result<()> {
@@ -32,13 +41,15 @@ impl TelegramNotifier {
 	}
 
 	pub async fn send_twitter_poll(&self, author: &str, text: &str, tweet_id: &str) -> Result<()> {
-		let message = format!("Twitter poll from {author}:\n{text}\n\nhttps://twitter.com/twitter/statuses/{tweet_id}");
-		self.send_message_to_output(&message).await
+		let mut message = Rich::from(format!("Twitter poll from {author}:\n{text}\n\n"));
+		message.url(&format!("https://twitter.com/twitter/statuses/{tweet_id}"));
+		self.send_message_to_output(message).await
 	}
 
 	pub async fn send_youtube_notification(&self, channel_name: &str, title: &str, sentiment: &str, video_id: &str) -> Result<()> {
-		let message = format!("[{channel_name}] uploaded a new video: [{title}]\nPerception: {sentiment}\n\nhttps://youtube.com/watch?v={video_id}");
-		self.send_message_to_output(&message).await
+		let mut message = Rich::from(format!("[{channel_name}] uploaded a new video: [{title}]\nPerception: {sentiment}\n\n"));
+		message.url(&format!("https://youtube.com/watch?v={video_id}"));
+		self.send_message_to_output(message).await
 	}
 
 	/// A module reporting "still alive, but something is wrong": a warning, never an error. A failed
@@ -48,7 +59,7 @@ impl TelegramNotifier {
 		let text = format!("[social_networks] {surface}: {detail}");
 		warn!("{text}");
 		let delivered = match self.owner_chat_id().await {
-			Ok(chat_id) => self.send_message(&text, vec![("chat_id", chat_id.to_string())]).await,
+			Ok(chat_id) => self.send(Target { chat_id, topic_id: None }, text.into()).await,
 			Err(e) => Err(e),
 		};
 		if let Err(e) = delivered {
@@ -67,13 +78,10 @@ impl TelegramNotifier {
 			return Ok(chat_id);
 		}
 
-		let url = format!("https://api.telegram.org/bot{}/getUpdates", self.config.bot_token);
-		let response: serde_json::Value = self.client.get(&url).send().await?.json().await?;
-		let updates = response.get("result").and_then(|r| r.as_array()).ok_or_else(|| eyre!("getUpdates returned {response}"))?;
-
+		let updates = self.bot.updates(0, Duration::ZERO).await?;
 		let chat_id = updates
 			.iter()
-			.filter_map(|u| u.get("message")?.get("from"))
+			.filter_map(|(_, u)| u.get("message")?.get("from"))
 			.find(|from| from.get("username").and_then(|u| u.as_str()) == Some(owner))
 			.and_then(|from| from.get("id").and_then(|id| id.as_i64()))
 			.ok_or_else(|| eyre!("no update from @{owner} in the bot's retention window; message the bot once so it learns the chat id"))?;
@@ -83,30 +91,37 @@ impl TelegramNotifier {
 
 	#[instrument(skip_all)]
 	pub async fn send_message_to_alerts(&self, text: &str) -> Result<()> {
-		self.send_message(text, self.config.channel_alerts.destination_params()).await
+		self.send(self.target(&self.config.channel_alerts).await?, text.into()).await
 	}
 
 	#[instrument(skip_all)]
-	async fn send_message_to_output(&self, text: &str) -> Result<()> {
-		self.send_message(text, self.config.channel_output.destination_params()).await
+	async fn send_message_to_output(&self, text: Rich) -> Result<()> {
+		self.send(self.target(&self.config.channel_output).await?, text).await
+	}
+
+	async fn target(&self, destination: &TelegramDestination) -> Result<Target> {
+		let (TelegramDestination::Channel(chat) | TelegramDestination::Group(chat) | TelegramDestination::GroupTopic { group: chat, .. }) = destination;
+		let chat = chat.chat_id_param();
+		let chat_id = match chat.starts_with('@') {
+			true => self.bot.chat(&chat).await?.id,
+			false => chat.parse().wrap_err_with(|| format!("`{chat}` is no chat id"))?,
+		};
+		let topic_id = destination.topic_id().map(i64::try_from).transpose()?;
+		Ok(Target { chat_id, topic_id })
 	}
 
 	#[instrument(skip_all)]
-	async fn send_message(&self, text: &str, chat_params: Vec<(&str, String)>) -> Result<()> {
-		let url = format!("https://api.telegram.org/bot{}/sendMessage", self.config.bot_token);
-
-		let mut params = vec![("text", text.to_string())];
-		params.extend(chat_params);
-		tracing::debug!(?params);
-
-		let response = self.client.post(&url).form(&params).send().await?;
-		tracing::debug!(?response);
-
-		if !response.status().is_success() {
-			let error_text = response.text().await?;
-			bail!("Failed to send Telegram message: {error_text}");
-		}
-
+	async fn send(&self, to: Target, text: Rich) -> Result<()> {
+		let message = Message {
+			title: None,
+			text,
+			level: Level::Normal,
+			links: Vec::new(),
+			buttons: Vec::new(),
+			photo: None,
+			unsubscribe: None,
+		};
+		self.bot.send(to, &message).await.wrap_err("Failed to send Telegram message")?;
 		Ok(())
 	}
 }

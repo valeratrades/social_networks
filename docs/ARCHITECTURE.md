@@ -9,7 +9,7 @@ Unified monitoring daemon for social platforms. Watches Discord, Telegram, Twitt
 The repository is a Cargo workspace with four members:
 
 - `social_networks` — the binary crate. Thin CLI dispatcher, and the commands over a purpose: pull, procure, rank, dm, extraction.
-- `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`, and a session driving a browser by hand `Browsing`.
+- `social_networks_adapters` — how to talk to a platform, and the only place that knows. Daemons implement `Client`; the on-demand axis implements `Profiles` / `Direct` / `Venue`, and a session driving a browser by hand `Browsing`. `notify`, telling one address one thing, stands apart from both: it builds alone (feature `notify`), and others depend on it so.
 - `social_networks_reach` — the transcript format and its store, the purposes over it (people, typed tags, the ranking formula), plus `recon`, the CLI over the venue axis.
 - `social_networks_utils` — shared primitives (db, telegram notifier/utils, image conversion, misc utils).
 
@@ -33,6 +33,7 @@ social_networks/
 │       ├── lib.rs
 │       ├── client.rs                       # `Client` trait, `AdapterError`, `alert()`  — the daemon axis
 │       ├── reach.rs                        # `Profiles`/`Direct`/`Venue`/`Browsing` + `Item` — the on-demand axis
+│       ├── notify/                         # the notify axis: one `Message`, one `Failure`; telegram's Bot API, discord, slack, email, web push, signed webhooks
 │       ├── breaker.rs                      # circuit breakers every send to a person is admitted through
 │       ├── behaviour.rs                    # how a paced session spends its time: active hours, bursts, caps, dwell; a banded shuffle
 │       ├── discord.rs                      # WebSocket gateway, close-frame classification; REST reads and sends

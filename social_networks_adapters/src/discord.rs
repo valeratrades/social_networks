@@ -464,12 +464,9 @@ impl Rest {
 				return Ok(response);
 			}
 			let body: serde_json::Value = response.json().await?;
-			let after = body
-				.get("retry_after")
-				.and_then(|v| v.as_f64())
-				.ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
-			warn!("discord: rate limited, holding off {after}s");
-			time::sleep(Duration::from_secs_f64(after)).await;
+			let after = crate::notify::discord::retry_after(&body).ok_or_else(|| eyre!("a discord 429 carries `retry_after`: {body}"))?;
+			warn!("discord: rate limited, holding off {after:#}");
+			time::sleep(after.try_into().wrap_err("discord asks for no negative wait")?).await;
 		}
 		Err(eyre!("discord: still rate limited after {RATE_LIMIT_RETRIES} waits"))
 	}

@@ -16,55 +16,117 @@ autotests = false
 tag = false
 
 [features]
+default = ["full"]
+# the daemons and the on-demand axis
+full = [
+    "notify",
+    "dep:ask_llm",
+    "dep:browser_manipulation",
+    "dep:clap",
+    "dep:color-eyre",
+    "dep:derive_more",
+    "dep:futures",
+    "dep:futures-util",
+    "dep:google-gmail1",
+    "dep:grammers-client",
+    "dep:grammers-mtproto",
+    "dep:grammers-session",
+    "dep:grammers-tl-types",
+    "dep:hmac",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
+    "dep:imap",
+    "dep:imap-proto",
+    "dep:mail-parser",
+    "dep:miette",
+    "dep:quick-xml",
+    "dep:rand",
+    "dep:regex",
+    "dep:sha1",
+    "dep:social_networks_utils",
+    "dep:strum",
+    "dep:tg",
+    "dep:tokio-tungstenite",
+    "dep:toml",
+    "dep:tracing",
+    "dep:trait-variant",
+    "dep:v_utils",
+    "dep:xdg",
+    "dep:yup-oauth2",
+    "reqwest/default",
+    "reqwest/gzip",
+    "rustls/default",
+]
+# the notify axis alone; ring is its only crypto provider
+notify = [
+    "dep:base64",
+    "dep:jiff",
+    "dep:lettre",
+    "dep:p256",
+    "dep:reqwest",
+    "dep:ring",
+    "dep:rustls",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:url",
+    "dep:zeroize",
+]
 # yt-dlp reads of single videos and channels, on demand; nothing in this workspace calls them
-youtube-reads = []
+youtube-reads = ["full"]
 
 [dependencies]
-ask_llm.workspace = true
-base64.workspace = true
-browser_manipulation.workspace = true
-clap.workspace = true
-color-eyre.workspace = true
-derive_more.workspace = true
-futures.workspace = true
-futures-util.workspace = true
-google-gmail1.workspace = true
-grammers-client.workspace = true
-grammers-mtproto.workspace = true
-grammers-session.workspace = true
-grammers-tl-types.workspace = true
-hmac.workspace = true
-hyper-rustls.workspace = true
-hyper-util.workspace = true
-imap.workspace = true
-imap-proto.workspace = true
-jiff.workspace = true
-lettre.workspace = true
-mail-parser.workspace = true
-miette.workspace = true
-quick-xml.workspace = true
-rand.workspace = true
-regex.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha1.workspace = true
-social_networks_utils.workspace = true
-strum.workspace = true
-tg.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
-tokio-tungstenite.workspace = true
-toml.workspace = true
-tracing.workspace = true
-trait-variant.workspace = true
-v_utils.workspace = true
-xdg.workspace = true
-yup-oauth2.workspace = true
+ask_llm = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+browser_manipulation = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+color-eyre = { workspace = true, optional = true }
+derive_more = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+google-gmail1 = { workspace = true, optional = true }
+grammers-client = { workspace = true, optional = true }
+grammers-mtproto = { workspace = true, optional = true }
+grammers-session = { workspace = true, optional = true }
+grammers-tl-types = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+imap = { workspace = true, optional = true }
+imap-proto = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
+lettre = { workspace = true, optional = true }
+mail-parser = { workspace = true, optional = true }
+miette = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+social_networks_utils = { workspace = true, optional = true }
+strum = { workspace = true, optional = true }
+tg = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+trait-variant = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+v_utils = { workspace = true, optional = true }
+xdg = { workspace = true, optional = true }
+yup-oauth2 = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true
+tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [[test]]
