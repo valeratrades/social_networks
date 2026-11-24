@@ -33,6 +33,9 @@ pub struct Person {
 	/// fetch; the rest come from discord's connected accounts and are there for a human to read.
 	#[serde(default)]
 	pub handles: BTreeMap<String, String>,
+	/// Occasion → date. Written by hand: no `pull` touches it.
+	#[serde(default)]
+	pub significant_dates: BTreeMap<String, Date>,
 	#[serde(default)]
 	pub summary: String,
 	#[serde(default)]
@@ -317,6 +320,14 @@ fn render(person: &Person) -> String {
 	}
 	s.push_str("  };\n");
 
+	if !person.significant_dates.is_empty() {
+		s.push_str("  significant_dates = {\n");
+		for (occasion, date) in &person.significant_dates {
+			s.push_str(&format!("    {} = {};\n", nix_attr(occasion), nix_dq(&date.to_string())));
+		}
+		s.push_str("  };\n");
+	}
+
 	s.push_str(&format!("  summary = {};\n", nix_str(&person.summary, 2)));
 
 	s.push_str("  log = [\n");
@@ -471,6 +482,7 @@ mod tests {
 				("location".to_string(), Some(Value::Text("lyon".to_string()))),
 			]),
 			handles: BTreeMap::from([("discord".to_string(), "dev_ardi".to_string()), ("telegram".to_string(), "deevsdeevs".to_string())]),
+			significant_dates: BTreeMap::from([("birthday".to_string(), "2002-09-25".parse().unwrap())]),
 			summary: "Rust dev. Crab guy.\n\nWrites \"exchange adapters\".".to_string(),
 			log: vec![
 				LogEntry {
